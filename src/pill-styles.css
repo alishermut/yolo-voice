@@ -1,0 +1,8 @@
+@import "tailwindcss";
+
+@layer base {
+  html, body, #root {
+    background: transparent !important;
+    background-color: transparent !important;
+  }
+}
