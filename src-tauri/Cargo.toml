@@ -26,6 +26,9 @@ cpal = "0.17"
 rdev = "0.5"
 hound = "3.5"
 arboard = "3"
+tauri-plugin-updater = "2.10.0"
+tauri-plugin-process = "2.3.1"
+regex = "1"
 
 [dependencies.windows]
 version = "0.58"

@@ -7,7 +7,9 @@ use crate::config::{self, AppConfig, ConfigState};
 use crate::recorder::{self, RecordingState};
 use crate::sidecar::{self, SidecarState};
 use crate::startup;
-use crate::transcription::{self, ModelInfo, Profile};
+use crate::transcription::{
+    self, GlobalDictionary, GlobalDictionaryState, IndustryPackInfo, ModelInfo, Profile,
+};
 
 pub struct AudioState(pub Mutex<Option<AudioStream>>);
 
@@ -307,4 +309,73 @@ pub fn get_app_info() -> AppInfo {
 #[tauri::command]
 pub fn quit_app(app_handle: tauri::AppHandle) {
     app_handle.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7: Global Dictionary & Industry Packs
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn get_global_dictionary(
+    state: State<'_, GlobalDictionaryState>,
+) -> Result<GlobalDictionary, String> {
+    let guard = state.0.lock().map_err(|e| e.to_string())?;
+    Ok(guard.clone())
+}
+
+#[tauri::command]
+pub fn save_global_dictionary_cmd(
+    dictionary: GlobalDictionary,
+    app_handle: tauri::AppHandle,
+    state: State<'_, GlobalDictionaryState>,
+) -> Result<(), String> {
+    transcription::save_global_dictionary(&app_handle, &dictionary)?;
+    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    *guard = dictionary;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_industry_packs() -> Result<Vec<IndustryPackInfo>, String> {
+    transcription::list_industry_packs()
+}
+
+#[tauri::command]
+pub fn apply_industry_pack(
+    pack_id: String,
+    app_handle: tauri::AppHandle,
+    dict_state: State<'_, GlobalDictionaryState>,
+    config_state: State<'_, ConfigState>,
+) -> Result<GlobalDictionary, String> {
+    let pack = transcription::load_industry_pack(&pack_id)?;
+
+    let mut guard = dict_state.0.lock().map_err(|e| e.to_string())?;
+
+    // Merge vocabulary (add new, deduplicate)
+    for word in &pack.vocabulary {
+        if !guard.vocabulary.iter().any(|w| w.eq_ignore_ascii_case(word)) {
+            guard.vocabulary.push(word.clone());
+        }
+    }
+
+    // Merge replacements (add new, skip duplicates by find key)
+    for rule in &pack.replacements {
+        if !guard
+            .replacements
+            .iter()
+            .any(|r| r.find.eq_ignore_ascii_case(&rule.find))
+        {
+            guard.replacements.push(rule.clone());
+        }
+    }
+
+    // Save to disk
+    transcription::save_global_dictionary(&app_handle, &guard)?;
+
+    // Update config with active pack
+    let mut config_guard = config_state.0.lock().map_err(|e| e.to_string())?;
+    config_guard.active_industry_pack = pack_id;
+    config::save_config(&app_handle, &config_guard)?;
+
+    Ok(guard.clone())
 }

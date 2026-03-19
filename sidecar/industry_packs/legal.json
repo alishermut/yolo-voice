@@ -1,0 +1,38 @@
+{
+  "id": "legal",
+  "name": "Legal",
+  "description": "Legal terminology, Latin phrases, court procedures, and contract terms",
+  "vocabulary": [
+    "Plaintiff", "Defendant", "Appellant", "Appellee", "Petitioner", "Respondent",
+    "Jurisdiction", "Venue", "Standing", "Mootness", "Ripeness",
+    "Tort", "Negligence", "Liability", "Indemnity", "Damages", "Restitution",
+    "Breach of contract", "Force majeure", "Liquidated damages", "Specific performance",
+    "Habeas corpus", "Certiorari", "Mandamus", "Injunction", "Subpoena",
+    "Deposition", "Interrogatory", "Discovery", "Motion to dismiss", "Summary judgment",
+    "Voir dire", "Arraignment", "Indictment", "Plea bargain", "Acquittal", "Conviction",
+    "Statute of limitations", "Precedent", "Stare decisis", "Res judicata",
+    "Pro bono", "Pro se", "Ad hoc", "De facto", "De jure", "Prima facie",
+    "Amicus curiae", "Mens rea", "Actus reus", "Sua sponte", "In camera",
+    "Fiduciary", "Escrow", "Lien", "Encumbrance", "Easement", "Covenant",
+    "Arbitration", "Mediation", "ADR", "Litigation", "Settlement",
+    "Intellectual property", "Patent", "Trademark", "Copyright", "Trade secret",
+    "NDA", "Non-compete", "Non-solicitation", "Non-disclosure",
+    "LLC", "Corporation", "Partnership", "Sole proprietorship",
+    "Securities", "Compliance", "Regulation", "Statute", "Ordinance",
+    "GDPR", "HIPAA", "SOX", "ADA", "FOIA"
+  ],
+  "replacements": [
+    {"find": "habeas corpus", "replace": "habeas corpus"},
+    {"find": "sir sure airy", "replace": "certiorari"},
+    {"find": "in junction", "replace": "injunction"},
+    {"find": "sub pina", "replace": "subpoena"},
+    {"find": "sub peena", "replace": "subpoena"},
+    {"find": "prima facie", "replace": "prima facie"},
+    {"find": "amicus curiae", "replace": "amicus curiae"},
+    {"find": "star a decisis", "replace": "stare decisis"},
+    {"find": "NDA", "replace": "NDA"},
+    {"find": "res judicata", "replace": "res judicata"},
+    {"find": "for smell jure", "replace": "force majeure"},
+    {"find": "force major", "replace": "force majeure"}
+  ]
+}

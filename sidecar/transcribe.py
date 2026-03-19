@@ -136,6 +136,7 @@ def handle_transcribe(req: dict) -> None:
 
     wav_path = req.get("wav_path", "")
     language = req.get("language", "en")
+    initial_prompt = req.get("initial_prompt", None)
 
     if not os.path.isfile(wav_path):
         respond({
@@ -154,6 +155,10 @@ def handle_transcribe(req: dict) -> None:
         }
         if language and language != "auto":
             transcribe_kwargs["language"] = language
+        if initial_prompt:
+            # Truncate to ~800 chars to stay within Whisper's 224 token limit
+            transcribe_kwargs["initial_prompt"] = initial_prompt[:800]
+            log(f"Using initial_prompt ({len(initial_prompt)} chars, {len(initial_prompt.split(', '))} terms)")
 
         segments, info = _model.transcribe(wav_path, **transcribe_kwargs)
 

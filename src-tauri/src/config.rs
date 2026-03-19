@@ -50,7 +50,11 @@ pub struct AppConfig {
     pub launch_on_startup: bool,
     #[serde(default)]
     pub start_minimized: bool,
+    #[serde(default = "default_industry_pack")]
+    pub active_industry_pack: String,
 }
+
+fn default_industry_pack() -> String { "general".to_string() }
 
 fn default_whisper_model() -> String { "base".to_string() }
 fn default_device() -> String { "auto".to_string() }
@@ -85,6 +89,7 @@ impl Default for AppConfig {
             onboarding_completed: false,
             launch_on_startup: false,
             start_minimized: false,
+            active_industry_pack: default_industry_pack(),
         }
     }
 }

@@ -5,6 +5,8 @@ import { KeybindingInput } from "../components/KeybindingInput";
 import { ModelSelector } from "../components/ModelSelector";
 import { ProfileEditor } from "../components/ProfileEditor";
 import { LLMSettings } from "../components/LLMSettings";
+import { ReplacementRules } from "../components/ReplacementRules";
+import { IndustryPackSelector } from "../components/IndustryPackSelector";
 
 interface AppConfig {
   hotkey: string;
@@ -26,17 +28,47 @@ interface AppConfig {
   onboarding_completed: boolean;
   launch_on_startup: boolean;
   start_minimized: boolean;
+  active_industry_pack: string;
+}
+
+interface GlobalDictionary {
+  vocabulary: string[];
+  replacements: { find: string; replace: string }[];
 }
 
 export function Settings() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [globalDict, setGlobalDict] = useState<GlobalDictionary>({
+    vocabulary: [],
+    replacements: [],
+  });
+  const [vocabInput, setVocabInput] = useState("");
+
+  const loadDict = () => {
+    invoke<GlobalDictionary>("get_global_dictionary")
+      .then((d) => {
+        setGlobalDict(d);
+        setVocabInput(d.vocabulary.join(", "));
+      })
+      .catch(() => {});
+  };
 
   useEffect(() => {
     invoke<AppConfig>("get_config")
       .then(setConfig)
       .catch((e) => setError(String(e)));
+    loadDict();
   }, []);
+
+  const saveDict = async (dict: GlobalDictionary) => {
+    try {
+      await invoke("save_global_dictionary_cmd", { dictionary: dict });
+      setGlobalDict(dict);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
 
   const updateConfig = async (updates: Partial<AppConfig>) => {
     if (!config) return;
@@ -232,6 +264,71 @@ export function Settings() {
           <option value="hi">Hindi</option>
           <option value="ru">Russian</option>
         </select>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold text-gray-200 mb-3">
+          Dictionary & Vocabulary
+        </h2>
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-300 mb-2">
+              Industry Pack
+            </h3>
+            <IndustryPackSelector
+              activePack={config?.active_industry_pack ?? "general"}
+              onApply={() => {
+                loadDict();
+                invoke<AppConfig>("get_config").then(setConfig).catch(() => {});
+              }}
+            />
+          </div>
+
+          <div>
+            <h3 className="text-sm font-semibold text-gray-300 mb-2">
+              Vocabulary Words
+            </h3>
+            <p className="text-xs text-gray-500 mb-2">
+              Words sent to Whisper to improve recognition. Comma-separated.
+            </p>
+            <textarea
+              value={vocabInput}
+              onChange={(e) => {
+                setVocabInput(e.target.value);
+              }}
+              onBlur={() => {
+                const words = vocabInput
+                  .split(",")
+                  .map((w) => w.trim())
+                  .filter((w) => w.length > 0);
+                saveDict({ ...globalDict, vocabulary: words });
+              }}
+              rows={3}
+              placeholder="Supabase, Vercel, Kubernetes, ..."
+              className="w-full bg-gray-800 border border-gray-700 text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 resize-y"
+            />
+            {globalDict.vocabulary.length > 0 && (
+              <p className="text-xs text-gray-500 mt-1">
+                {globalDict.vocabulary.length} vocabulary term
+                {globalDict.vocabulary.length !== 1 ? "s" : ""}
+              </p>
+            )}
+          </div>
+
+          <div>
+            <h3 className="text-sm font-semibold text-gray-300 mb-2">
+              Replacement Rules
+            </h3>
+            <p className="text-xs text-gray-500 mb-2">
+              Auto-correct misrecognized words after every transcription (no LLM
+              needed).
+            </p>
+            <ReplacementRules
+              rules={globalDict.replacements}
+              onChange={(rules) => saveDict({ ...globalDict, replacements: rules })}
+            />
+          </div>
+        </div>
       </section>
 
       <section>

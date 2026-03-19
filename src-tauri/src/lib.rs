@@ -14,6 +14,7 @@ use recorder::RecordingState;
 use sidecar::SidecarState;
 use std::sync::Mutex;
 use text_insert::FocusedWindowState;
+use transcription::GlobalDictionaryState;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
@@ -42,12 +43,15 @@ fn emit_all<S: serde::Serialize + Clone>(app: &tauri::AppHandle, event: &str, pa
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(AudioState(Mutex::new(None)))
         .manage(ConfigState(Mutex::new(config::AppConfig::default())))
         .manage(RecordingState(Mutex::new(None)))
         .manage(FocusedWindowState(Mutex::new(0)))
         .manage(SidecarState(Mutex::new(None)))
         .manage(PillUiState::default())
+        .manage(GlobalDictionaryState(Mutex::new(transcription::GlobalDictionary::default())))
         .invoke_handler(tauri::generate_handler![
             commands::list_devices,
             commands::start_test,
@@ -69,12 +73,21 @@ pub fn run() {
             commands::get_app_info,
             commands::quit_app,
             commands::get_pill_state,
+            commands::get_global_dictionary,
+            commands::save_global_dictionary_cmd,
+            commands::get_industry_packs,
+            commands::apply_industry_pack,
         ])
         .setup(|app| {
             // Load persisted config
             let saved_config = config::load_config(&app.handle());
             let config_state = app.state::<ConfigState>();
             *config_state.0.lock().unwrap() = saved_config.clone();
+
+            // Load global dictionary
+            let saved_dict = transcription::load_global_dictionary(&app.handle());
+            let dict_state = app.state::<GlobalDictionaryState>();
+            *dict_state.0.lock().unwrap() = saved_dict;
 
             // Build tray menu
             let show_item =
@@ -238,6 +251,7 @@ pub fn run() {
                                     let transcription_mode = config.transcription_mode.clone();
                                     let cloud_provider = config.cloud_stt_provider.clone();
                                     let cloud_api_key = config.cloud_stt_api_key.clone();
+                                    let global_dict = app_handle.state::<GlobalDictionaryState>().0.lock().unwrap().clone();
 
                                     std::thread::spawn(move || {
                                         // Ensure sidecar is running
@@ -258,15 +272,26 @@ pub fn run() {
                                             }
                                         };
 
+                                        // Build initial_prompt from global vocabulary + profile dictionary
+                                        let vocab_words = global_dict.vocabulary.clone();
+                                        // Profile dictionary words will be added below if post-processing is enabled
+                                        let initial_prompt = if vocab_words.is_empty() {
+                                            None
+                                        } else {
+                                            Some(vocab_words.join(", "))
+                                        };
+
                                         // Choose transcription method
                                         let transcribe_result = if transcription_mode == "cloud" {
                                             transcription::cloud_transcribe(sc, &wav_path, &cloud_provider, &cloud_api_key, &language)
                                         } else {
-                                            transcription::transcribe_wav(sc, &wav_path, &language)
+                                            transcription::transcribe_wav(sc, &wav_path, &language, initial_prompt.as_deref())
                                         };
 
                                         match transcribe_result {
                                             Ok(raw_text) => {
+                                                // Apply replacement rules
+                                                let raw_text = transcription::apply_replacements(&raw_text, &global_dict.replacements);
                                                 let final_text = if pp_enabled && !raw_text.is_empty() {
                                                     // Load the active profile and post-process
                                                     let profiles_dir = transcription::get_profiles_dir(&app)
@@ -305,6 +330,9 @@ pub fn run() {
                                                 } else {
                                                     raw_text
                                                 };
+
+                                                // Apply replacements again after post-processing
+                                                let final_text = transcription::apply_replacements(&final_text, &global_dict.replacements);
 
                                                 if !final_text.is_empty() {
                                                     // Auto-append period if text doesn't end with punctuation

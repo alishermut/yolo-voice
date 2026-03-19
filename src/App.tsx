@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { Settings } from "./pages/Settings";
 import { About } from "./pages/About";
 import { Onboarding } from "./pages/Onboarding";
@@ -10,11 +12,20 @@ type Page = "settings" | "about";
 function App() {
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
   const [page, setPage] = useState<Page>("settings");
+  const [updateAvailable, setUpdateAvailable] = useState<string | null>(null);
+  const [updating, setUpdating] = useState(false);
 
   useEffect(() => {
     invoke<{ onboarding_completed: boolean }>("get_config")
       .then((config) => setOnboarded(config.onboarding_completed))
       .catch(() => setOnboarded(true)); // On error, skip onboarding
+
+    // Check for updates on startup
+    check().then((update) => {
+      if (update?.available) {
+        setUpdateAvailable(update.version);
+      }
+    }).catch(() => {}); // Silently fail if update check fails
   }, []);
 
   // Loading state
@@ -79,6 +90,33 @@ function App() {
           </button>
         </div>
       </div>
+
+      {/* Update banner */}
+      {updateAvailable && (
+        <div className="mx-6 mt-4 flex items-center justify-between rounded-lg bg-blue-900/40 border border-blue-700/50 px-4 py-2.5">
+          <span className="text-sm text-blue-200">
+            Version {updateAvailable} is available
+          </span>
+          <button
+            onClick={async () => {
+              setUpdating(true);
+              try {
+                const update = await check();
+                if (update?.available) {
+                  await update.downloadAndInstall();
+                  await relaunch();
+                }
+              } catch {
+                setUpdating(false);
+              }
+            }}
+            disabled={updating}
+            className="px-3 py-1 rounded-md text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 transition-colors"
+          >
+            {updating ? "Updating..." : "Update now"}
+          </button>
+        </div>
+      )}
 
       {/* Page content */}
       <div className="p-6">

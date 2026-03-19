@@ -1,0 +1,41 @@
+{
+  "id": "medical",
+  "name": "Medical",
+  "description": "Medical terminology, drug names, anatomical terms, and clinical abbreviations",
+  "vocabulary": [
+    "Acetaminophen", "Amoxicillin", "Atorvastatin", "Metformin", "Lisinopril",
+    "Omeprazole", "Amlodipine", "Metoprolol", "Losartan", "Gabapentin",
+    "Hydrochlorothiazide", "Sertraline", "Fluoxetine", "Prednisone", "Albuterol",
+    "Ibuprofen", "Naproxen", "Warfarin", "Clopidogrel", "Levothyroxine",
+    "Hypertension", "Hypotension", "Tachycardia", "Bradycardia", "Arrhythmia",
+    "Myocardial infarction", "Angina", "Atherosclerosis", "Thrombosis", "Embolism",
+    "Pneumonia", "Bronchitis", "Asthma", "COPD", "Emphysema", "Atelectasis",
+    "Diabetes mellitus", "Hypothyroidism", "Hyperthyroidism", "Cushing syndrome",
+    "Anemia", "Leukemia", "Lymphoma", "Thrombocytopenia", "Hemophilia",
+    "Gastritis", "Colitis", "Hepatitis", "Pancreatitis", "Cholecystitis",
+    "Appendicitis", "Diverticulitis", "Crohn's disease", "Celiac disease",
+    "Osteoarthritis", "Rheumatoid arthritis", "Osteoporosis", "Fibromyalgia",
+    "Meningitis", "Encephalitis", "Epilepsy", "Parkinson's disease", "Alzheimer's",
+    "MRI", "CT scan", "X-ray", "Ultrasound", "ECG", "EEG", "EKG", "PET scan",
+    "CBC", "BMP", "CMP", "HbA1c", "TSH", "PSA", "INR", "PT", "PTT",
+    "ICU", "ER", "OR", "NICU", "PACU", "CCU",
+    "Anterior", "Posterior", "Superior", "Inferior", "Lateral", "Medial",
+    "Proximal", "Distal", "Bilateral", "Unilateral", "Contralateral", "Ipsilateral",
+    "Subcutaneous", "Intramuscular", "Intravenous", "Sublingual", "Transdermal",
+    "Diagnosis", "Prognosis", "Etiology", "Pathology", "Comorbidity"
+  ],
+  "replacements": [
+    {"find": "blood pressure", "replace": "blood pressure"},
+    {"find": "see oh PD", "replace": "COPD"},
+    {"find": "see BC", "replace": "CBC"},
+    {"find": "hemo globe in", "replace": "hemoglobin"},
+    {"find": "a fib", "replace": "AFib"},
+    {"find": "my oh cardinal", "replace": "myocardial"},
+    {"find": "tie Lenol", "replace": "Tylenol"},
+    {"find": "ace at a minute fin", "replace": "acetaminophen"},
+    {"find": "met foreman", "replace": "Metformin"},
+    {"find": "lis in a pearl", "replace": "Lisinopril"},
+    {"find": "I see you", "replace": "ICU"},
+    {"find": "E are", "replace": "ER"}
+  ]
+}
