@@ -47,53 +47,38 @@ jobs:
             Write-Host "Python sidecar environment already cached, skipping."
           }
 
-      - name: Build and release Tauri app
-        id: tauri
-        uses: tauri-apps/tauri-action@v0
+      - name: Build Tauri app
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tagName: v__VERSION__
-          releaseName: 'YOLO Voice v__VERSION__'
-          releaseBody: |
-            Patch release focused on production packaging reliability.
+        run: npm run tauri build
 
-            Highlights:
-            - fix offline transcription in installed builds by resolving bundled sidecar resources from the packaged `sidecar` directory
-            - fix bundled industry pack lookup in installed builds
-            - harden updater asset publishing so `latest.json`, `.nsis.zip`, and `.nsis.zip.sig` are always uploaded
-          releaseDraft: false
-          prerelease: false
-          includeUpdaterJson: true
-
-      # tauri-action often fails to upload latest.json ("Signature not found").
-      # This step manually builds and uploads it from the build artifacts.
-      - name: Generate and upload updater JSON
+      - name: Publish GitHub release
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
           $bundleDir = Resolve-Path "src-tauri/target/release/bundle/nsis"
+          $tag = "v$version"
+          $repo = "${{ github.repository }}"
+          $releaseNotesPath = "docs/releases/v$version.md"
 
           Write-Host "Bundle directory: $bundleDir"
           Write-Host "Bundle directory contents:"
           Get-ChildItem -Path $bundleDir -Recurse | Select-Object FullName | Format-Table -HideTableHeaders
 
-          # Find the .nsis.zip and its .sig
+          $installer = Get-ChildItem -Path $bundleDir -Filter *setup.exe -File -Recurse | Select-Object -First 1
           $nsisZip = Get-ChildItem -Path $bundleDir -Filter *.nsis.zip -File -Recurse | Select-Object -First 1
           $nsisSig = Get-ChildItem -Path $bundleDir -Filter *.nsis.zip.sig -File -Recurse | Select-Object -First 1
 
-          if (!$nsisZip -or !$nsisSig) {
-            Write-Host "::warning::Could not find NSIS zip or signature files. Updater JSON not uploaded."
-            exit 0
+          if (!$installer -or !$nsisZip -or !$nsisSig) {
+            Write-Host "::error::Missing expected release artifacts."
+            exit 1
           }
 
           $signature = Get-Content $nsisSig.FullName -Raw
-          $tag = "v$version"
-          $repo = "${{ github.repository }}"
           $zipName = $nsisZip.Name
           $url = "https://github.com/$repo/releases/download/$tag/$zipName"
           $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
@@ -115,11 +100,11 @@ jobs:
           Write-Host "Generated latest.json:"
           Write-Host $json
 
-          # Upload the .nsis.zip (updater download) and .nsis.zip.sig to the release
-          gh release upload $tag "$($nsisZip.FullName)" --clobber
-          gh release upload $tag "$($nsisSig.FullName)" --clobber
+          if (!(Test-Path $releaseNotesPath)) {
+            Set-Content -Path "release-notes.md" -Value "YOLO Voice v$version"
+            $releaseNotesPath = "release-notes.md"
+          }
 
-          # Upload latest.json to the release
-          gh release upload $tag latest.json --clobber
+          gh release create $tag "$($installer.FullName)" "$($nsisZip.FullName)" "$($nsisSig.FullName)" latest.json --title "YOLO Voice v$version" --notes-file "$releaseNotesPath"
 
-          Write-Host "Uploaded latest.json, $zipName, and signature to release $tag"
+          Write-Host "Published release $tag with installer, updater zip, signature, and latest.json"
