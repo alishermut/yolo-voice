@@ -29,6 +29,8 @@ interface AppConfig {
   launch_on_startup: boolean;
   start_minimized: boolean;
   active_industry_pack: string;
+  start_sound: string;
+  stop_sound: string;
 }
 
 interface GlobalDictionary {
@@ -44,6 +46,7 @@ export function Settings() {
     replacements: [],
   });
   const [vocabInput, setVocabInput] = useState("");
+  const [availableSounds, setAvailableSounds] = useState<string[]>([]);
 
   const loadDict = () => {
     invoke<GlobalDictionary>("get_global_dictionary")
@@ -58,6 +61,9 @@ export function Settings() {
     invoke<AppConfig>("get_config")
       .then(setConfig)
       .catch((e) => setError(String(e)));
+    invoke<string[]>("get_available_sounds")
+      .then(setAvailableSounds)
+      .catch(() => {});
     loadDict();
   }, []);
 
@@ -264,6 +270,62 @@ export function Settings() {
           <option value="hi">Hindi</option>
           <option value="ru">Russian</option>
         </select>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold text-gray-200 mb-3">Sounds</h2>
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-gray-400 w-32">Start recording</span>
+            <select
+              value={config?.start_sound ?? "chime"}
+              onChange={(e) => updateConfig({ start_sound: e.target.value })}
+              className="flex-1 bg-gray-800 border border-gray-700 text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+            >
+              {availableSounds.map((s) => (
+                <option key={s} value={s}>
+                  {s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() =>
+                invoke("preview_sound", {
+                  soundName: config?.start_sound ?? "chime",
+                })
+              }
+              className="p-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors"
+              title="Preview sound"
+            >
+              🔊
+            </button>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-gray-400 w-32">Stop recording</span>
+            <select
+              value={config?.stop_sound ?? "ding"}
+              onChange={(e) => updateConfig({ stop_sound: e.target.value })}
+              className="flex-1 bg-gray-800 border border-gray-700 text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+            >
+              {availableSounds.map((s) => (
+                <option key={s} value={s}>
+                  {s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() =>
+                invoke("preview_sound", {
+                  soundName: config?.stop_sound ?? "ding",
+                })
+              }
+              className="p-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors"
+              title="Preview sound"
+            >
+              🔊
+            </button>
+          </div>
+        </div>
       </section>
 
       <section>

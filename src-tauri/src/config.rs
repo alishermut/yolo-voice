@@ -52,6 +52,10 @@ pub struct AppConfig {
     pub start_minimized: bool,
     #[serde(default = "default_industry_pack")]
     pub active_industry_pack: String,
+    #[serde(default = "default_start_sound")]
+    pub start_sound: String,
+    #[serde(default = "default_stop_sound")]
+    pub stop_sound: String,
 }
 
 fn default_industry_pack() -> String { "general".to_string() }
@@ -66,6 +70,8 @@ fn default_llm_model() -> String { "llama3.1:8b".to_string() }
 fn default_llm_base_url() -> String { "http://localhost:11434".to_string() }
 fn default_transcription_mode() -> String { "offline".to_string() }
 fn default_cloud_stt_provider() -> String { "groq".to_string() }
+fn default_start_sound() -> String { "chime".to_string() }
+fn default_stop_sound() -> String { "ding".to_string() }
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -90,6 +96,8 @@ impl Default for AppConfig {
             launch_on_startup: false,
             start_minimized: false,
             active_industry_pack: default_industry_pack(),
+            start_sound: default_start_sound(),
+            stop_sound: default_stop_sound(),
         }
     }
 }

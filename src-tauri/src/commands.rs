@@ -312,6 +312,24 @@ pub fn quit_app(app_handle: tauri::AppHandle) {
 }
 
 // ---------------------------------------------------------------------------
+// Sound commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn preview_sound(sound_name: String) -> Result<(), String> {
+    crate::text_insert::play_sound(&sound_name);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_available_sounds() -> Vec<String> {
+    crate::text_insert::AVAILABLE_SOUNDS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Sidecar setup commands
 // ---------------------------------------------------------------------------
 
@@ -371,23 +389,8 @@ pub fn apply_industry_pack(
 
     let mut guard = dict_state.0.lock().map_err(|e| e.to_string())?;
 
-    // Merge vocabulary (add new, deduplicate)
-    for word in &pack.vocabulary {
-        if !guard.vocabulary.iter().any(|w| w.eq_ignore_ascii_case(word)) {
-            guard.vocabulary.push(word.clone());
-        }
-    }
-
-    // Merge replacements (add new, skip duplicates by find key)
-    for rule in &pack.replacements {
-        if !guard
-            .replacements
-            .iter()
-            .any(|r| r.find.eq_ignore_ascii_case(&rule.find))
-        {
-            guard.replacements.push(rule.clone());
-        }
-    }
+    // Use shared merge helper
+    transcription::merge_pack_into_dictionary(&mut guard, &pack);
 
     // Save to disk
     transcription::save_global_dictionary(&app_handle, &guard)?;

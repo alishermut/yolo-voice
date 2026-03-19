@@ -18,8 +18,44 @@ use windows::core::PCWSTR;
 
 pub struct FocusedWindowState(pub Mutex<isize>);
 
-const START_SOUND: &[u8] = include_bytes!("../sounds/start.wav");
-const DONE_SOUND: &[u8] = include_bytes!("../sounds/done.wav");
+// Sound registry: all available notification sounds
+const SOUND_CHIME: &[u8] = include_bytes!("../sounds/chime.wav");
+const SOUND_POP: &[u8] = include_bytes!("../sounds/pop.wav");
+const SOUND_BELL: &[u8] = include_bytes!("../sounds/bell.wav");
+const SOUND_DING: &[u8] = include_bytes!("../sounds/ding.wav");
+const SOUND_CLICK: &[u8] = include_bytes!("../sounds/click.wav");
+const SOUND_WHOOSH: &[u8] = include_bytes!("../sounds/whoosh.wav");
+const SOUND_BUBBLE: &[u8] = include_bytes!("../sounds/bubble.wav");
+const SOUND_TAP: &[u8] = include_bytes!("../sounds/tap.wav");
+const SOUND_GENTLE: &[u8] = include_bytes!("../sounds/gentle.wav");
+const SOUND_BRIGHT: &[u8] = include_bytes!("../sounds/bright.wav");
+const SOUND_CLASSIC_START: &[u8] = include_bytes!("../sounds/classic_start.wav");
+const SOUND_CLASSIC_DONE: &[u8] = include_bytes!("../sounds/classic_done.wav");
+
+/// All available sound names for the frontend.
+pub const AVAILABLE_SOUNDS: &[&str] = &[
+    "chime", "pop", "bell", "ding", "click",
+    "whoosh", "bubble", "tap", "gentle", "bright",
+    "classic_start", "classic_done",
+];
+
+fn get_sound_bytes(name: &str) -> &'static [u8] {
+    match name {
+        "chime" => SOUND_CHIME,
+        "pop" => SOUND_POP,
+        "bell" => SOUND_BELL,
+        "ding" => SOUND_DING,
+        "click" => SOUND_CLICK,
+        "whoosh" => SOUND_WHOOSH,
+        "bubble" => SOUND_BUBBLE,
+        "tap" => SOUND_TAP,
+        "gentle" => SOUND_GENTLE,
+        "bright" => SOUND_BRIGHT,
+        "classic_start" => SOUND_CLASSIC_START,
+        "classic_done" => SOUND_CLASSIC_DONE,
+        _ => SOUND_CHIME, // fallback
+    }
+}
 
 pub fn capture_foreground_window() -> isize {
     unsafe { GetForegroundWindow().0 as isize }
@@ -149,16 +185,24 @@ fn make_key_input(vk: VIRTUAL_KEY, key_up: bool) -> INPUT {
     }
 }
 
-pub fn play_start_sound() {
-    thread::spawn(|| {
-        play_wav_from_memory(START_SOUND);
+pub fn play_sound(name: &str) {
+    let sound_data = get_sound_bytes(name);
+    // We need to copy the pointer since the data is 'static
+    let ptr = sound_data.as_ptr() as usize;
+    let len = sound_data.len();
+    thread::spawn(move || {
+        // SAFETY: sound data is 'static, pointer is valid for program lifetime
+        let data = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
+        play_wav_from_memory(data);
     });
 }
 
-pub fn play_done_sound() {
-    thread::spawn(|| {
-        play_wav_from_memory(DONE_SOUND);
-    });
+pub fn play_start_sound(sound_name: &str) {
+    play_sound(sound_name);
+}
+
+pub fn play_done_sound(sound_name: &str) {
+    play_sound(sound_name);
 }
 
 fn play_wav_from_memory(data: &[u8]) {

@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 
 interface AppInfo {
   version: string;
@@ -9,10 +11,45 @@ interface AppInfo {
 
 export function About() {
   const [info, setInfo] = useState<AppInfo | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<
+    "idle" | "checking" | "downloading" | "ready" | "up-to-date" | "error"
+  >("idle");
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+  const [updateObj, setUpdateObj] = useState<Awaited<
+    ReturnType<typeof check>
+  > | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
 
   useEffect(() => {
     invoke<AppInfo>("get_app_info").then(setInfo).catch(console.error);
   }, []);
+
+  const checkForUpdates = async () => {
+    setUpdateStatus("checking");
+    setUpdateError(null);
+    try {
+      const update = await check();
+      if (update?.available) {
+        setUpdateVersion(update.version);
+        setUpdateStatus("downloading");
+        await update.download();
+        setUpdateObj(update);
+        setUpdateStatus("ready");
+      } else {
+        setUpdateStatus("up-to-date");
+      }
+    } catch (e) {
+      setUpdateError(String(e));
+      setUpdateStatus("error");
+    }
+  };
+
+  const installUpdate = async () => {
+    if (updateObj) {
+      await updateObj.install();
+      await relaunch();
+    }
+  };
 
   return (
     <div className="max-w-md mx-auto space-y-6">
@@ -59,6 +96,63 @@ export function About() {
             <span className="text-gray-300">Double-press to start, single press to stop</span>
           </div>
         </div>
+      </div>
+
+      <div className="bg-gray-800/50 rounded-lg p-4 space-y-3">
+        <h3 className="text-sm font-semibold text-gray-200">Updates</h3>
+
+        {updateStatus === "idle" && (
+          <button
+            onClick={checkForUpdates}
+            className="w-full px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+          >
+            Check for Updates
+          </button>
+        )}
+
+        {updateStatus === "checking" && (
+          <p className="text-sm text-gray-400 text-center">Checking for updates...</p>
+        )}
+
+        {updateStatus === "downloading" && (
+          <p className="text-sm text-blue-300 text-center">
+            Downloading v{updateVersion}...
+          </p>
+        )}
+
+        {updateStatus === "ready" && (
+          <div className="space-y-2">
+            <p className="text-sm text-green-300 text-center">
+              Update v{updateVersion} is ready!
+            </p>
+            <button
+              onClick={installUpdate}
+              className="w-full px-4 py-2 rounded-lg text-sm font-medium bg-green-600 hover:bg-green-500 text-white transition-colors"
+            >
+              Restart to Apply
+            </button>
+          </div>
+        )}
+
+        {updateStatus === "up-to-date" && (
+          <p className="text-sm text-green-400 text-center">
+            You're on the latest version!
+          </p>
+        )}
+
+        {updateStatus === "error" && (
+          <div className="space-y-2">
+            <p className="text-sm text-red-400 text-center">
+              {updateError || "Failed to check for updates"}
+            </p>
+            <button
+              onClick={checkForUpdates}
+              className="w-full px-4 py-2 rounded-lg text-sm font-medium bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
+            >
+              Try Again
+            </button>
+          </div>
+        )}
       </div>
 
       <p className="text-xs text-gray-600 text-center">

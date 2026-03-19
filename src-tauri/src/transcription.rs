@@ -97,6 +97,70 @@ pub fn save_global_dictionary(
     Ok(())
 }
 
+/// Merge an industry pack into an existing dictionary (deduplicates).
+pub fn merge_pack_into_dictionary(dict: &mut GlobalDictionary, pack: &IndustryPack) {
+    // Merge vocabulary (add new, deduplicate case-insensitive)
+    for word in &pack.vocabulary {
+        if !dict.vocabulary.iter().any(|w| w.eq_ignore_ascii_case(word)) {
+            dict.vocabulary.push(word.clone());
+        }
+    }
+    // Merge replacements (add new, skip duplicates by find key)
+    for rule in &pack.replacements {
+        if !dict
+            .replacements
+            .iter()
+            .any(|r| r.find.eq_ignore_ascii_case(&rule.find))
+        {
+            dict.replacements.push(rule.clone());
+        }
+    }
+}
+
+/// Auto-apply all industry packs on first install (when dictionary is empty).
+pub fn auto_apply_all_packs(app_handle: &AppHandle, dict: &mut GlobalDictionary) {
+    if !dict.vocabulary.is_empty() || !dict.replacements.is_empty() {
+        return; // Not first install, dictionary already has content
+    }
+
+    eprintln!("[app] First install detected: auto-applying all industry packs...");
+
+    let packs = match list_industry_packs(app_handle) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[app] Failed to list industry packs: {}", e);
+            return;
+        }
+    };
+
+    for pack_info in &packs {
+        match load_industry_pack(app_handle, &pack_info.id) {
+            Ok(pack) => {
+                eprintln!(
+                    "[app] Applying pack '{}': {} vocab, {} replacements",
+                    pack_info.name, pack_info.vocabulary_count, pack_info.replacement_count
+                );
+                merge_pack_into_dictionary(dict, &pack);
+            }
+            Err(e) => {
+                eprintln!("[app] Failed to load pack '{}': {}", pack_info.id, e);
+            }
+        }
+    }
+
+    // Save the merged dictionary
+    if let Err(e) = save_global_dictionary(app_handle, dict) {
+        eprintln!("[app] Failed to save auto-applied dictionary: {}", e);
+    } else {
+        eprintln!(
+            "[app] Auto-applied {} packs: {} vocab terms, {} replacement rules",
+            packs.len(),
+            dict.vocabulary.len(),
+            dict.replacements.len()
+        );
+    }
+}
+
 /// List available industry packs from the sidecar/industry_packs directory.
 pub fn list_industry_packs(app_handle: &AppHandle) -> Result<Vec<IndustryPackInfo>, String> {
     let packs_dir = get_industry_packs_dir(app_handle)?;

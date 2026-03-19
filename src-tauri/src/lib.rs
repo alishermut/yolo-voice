@@ -79,6 +79,8 @@ pub fn run() {
             commands::save_global_dictionary_cmd,
             commands::get_industry_packs,
             commands::apply_industry_pack,
+            commands::preview_sound,
+            commands::get_available_sounds,
         ])
         .setup(|app| {
             // Load persisted config
@@ -86,8 +88,9 @@ pub fn run() {
             let config_state = app.state::<ConfigState>();
             *config_state.0.lock().unwrap() = saved_config.clone();
 
-            // Load global dictionary
-            let saved_dict = transcription::load_global_dictionary(&app.handle());
+            // Load global dictionary (auto-apply all industry packs on first install)
+            let mut saved_dict = transcription::load_global_dictionary(&app.handle());
+            transcription::auto_apply_all_packs(&app.handle(), &mut saved_dict);
             let dict_state = app.state::<GlobalDictionaryState>();
             *dict_state.0.lock().unwrap() = saved_dict;
 
@@ -237,7 +240,7 @@ pub fn run() {
                             Ok(stream) => {
                                 *guard = Some(stream);
                                 emit_all(&app_handle, "recording-state", "recording");
-                                text_insert::play_start_sound();
+                                text_insert::play_start_sound(&config.start_sound);
                             }
                             Err(e) => {
                                 eprintln!("Failed to start recording: {}", e);
@@ -246,7 +249,7 @@ pub fn run() {
                     }
                     "stop" => {
                         // Play stop sound immediately for instant feedback
-                        text_insert::play_done_sound();
+                        text_insert::play_done_sound(&config.stop_sound);
 
                         let recording_state = app_handle.state::<RecordingState>();
                         let mut guard = recording_state.0.lock().unwrap();
@@ -285,6 +288,7 @@ pub fn run() {
                                     let pp_base_url = config.llm_base_url.clone();
                                     let cloud_provider = config.cloud_stt_provider.clone();
                                     let cloud_api_key = config.cloud_stt_api_key.clone();
+                                    let stop_sound = config.stop_sound.clone();
                                     let global_dict = app_handle.state::<GlobalDictionaryState>().0.lock().unwrap().clone();
 
                                     std::thread::spawn(move || {
@@ -394,7 +398,7 @@ pub fn run() {
                                                         emit_all(&app, "transcription-error", e);
                                                     }
                                                 }
-                                                text_insert::play_done_sound();
+                                                text_insert::play_done_sound(&stop_sound);
                                                 emit_all(&app, "recording-state", "done");
                                             }
                                             Err(e) => {
