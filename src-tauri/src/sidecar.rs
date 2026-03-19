@@ -126,188 +126,105 @@ pub fn is_sidecar_setup(app_handle: &AppHandle) -> Result<bool, String> {
     if cfg!(debug_assertions) {
         return Ok(true); // Dev mode always has Python available
     }
+    // In production the Python env is bundled with the installer and copied
+    // on first launch by ensure_bundled_env_copied(), so it's always ready.
     let sidecar_dir = get_sidecar_dir(app_handle)?;
     let python = sidecar_dir.join("python/python.exe");
     Ok(python.exists())
 }
 
-/// Download and set up the embedded Python environment for production.
-pub fn setup_sidecar_python(app_handle: &AppHandle) -> Result<(), String> {
+/// Copy the bundled Python environment from the resource directory to the
+/// writable AppData directory. This replaces the old download-from-internet
+/// approach. The copy is skipped if the bundle version marker already matches
+/// the current app version.
+pub fn ensure_bundled_env_copied(app_handle: &AppHandle) -> Result<(), String> {
     let sidecar_dir = get_sidecar_dir(app_handle)?;
     let python_dir = sidecar_dir.join("python");
+    let version_file = sidecar_dir.join(".bundle_version");
+    let current_version = env!("CARGO_PKG_VERSION");
 
+    // Check if we already copied this version
     if python_dir.join("python.exe").exists() {
-        eprintln!("[sidecar] Python already set up at {}", python_dir.display());
-        return Ok(());
+        if let Ok(stored_version) = std::fs::read_to_string(&version_file) {
+            if stored_version.trim() == current_version {
+                eprintln!("[sidecar] Bundled env already up-to-date (v{})", current_version);
+                return Ok(());
+            }
+            eprintln!(
+                "[sidecar] Bundle version mismatch ({} vs {}), re-copying...",
+                stored_version.trim(),
+                current_version
+            );
+        }
     }
 
+    let resource_dir = app_handle
+        .path()
+        .resource_dir()
+        .map_err(|e| e.to_string())?;
+    let bundled_python = resource_dir.join("python-env");
+
+    if !bundled_python.join("python.exe").exists() {
+        return Err(format!(
+            "Bundled Python environment not found at {}. The installer may be corrupted.",
+            bundled_python.display()
+        ));
+    }
+
+    eprintln!(
+        "[sidecar] Copying bundled Python env to {}...",
+        python_dir.display()
+    );
+
+    // Remove old env if it exists (fresh copy for new version)
+    if python_dir.exists() {
+        let _ = std::fs::remove_dir_all(&python_dir);
+    }
     std::fs::create_dir_all(&python_dir).map_err(|e| e.to_string())?;
 
-    let _ = app_handle.emit("sidecar-setup-progress", serde_json::json!({
-        "step": "downloading_python",
-        "message": "Downloading Python runtime...",
-        "percent": 0
-    }));
+    // Recursive copy
+    copy_dir_all(&bundled_python, &python_dir)
+        .map_err(|e| format!("Failed to copy Python environment: {}", e))?;
 
-    // Download Python 3.12 embeddable zip
-    let python_url = "https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip";
-    let zip_path = sidecar_dir.join("python-embed.zip");
-
-    download_file(python_url, &zip_path).map_err(|e| format!("Failed to download Python: {}", e))?;
-
-    let _ = app_handle.emit("sidecar-setup-progress", serde_json::json!({
-        "step": "extracting_python",
-        "message": "Extracting Python...",
-        "percent": 25
-    }));
-
-    // Extract the zip
-    extract_zip(&zip_path, &python_dir)?;
-    let _ = std::fs::remove_file(&zip_path);
-
-    // Enable pip: uncomment "import site" in python312._pth
-    let pth_path = python_dir.join("python312._pth");
-    if pth_path.exists() {
-        let content = std::fs::read_to_string(&pth_path).map_err(|e| e.to_string())?;
-        let new_content = content.replace("#import site", "import site");
-        std::fs::write(&pth_path, new_content).map_err(|e| e.to_string())?;
-    }
-
-    let _ = app_handle.emit("sidecar-setup-progress", serde_json::json!({
-        "step": "installing_pip",
-        "message": "Installing pip...",
-        "percent": 40
-    }));
-
-    // Download and run get-pip.py
-    let get_pip_path = sidecar_dir.join("get-pip.py");
-    download_file("https://bootstrap.pypa.io/get-pip.py", &get_pip_path)
-        .map_err(|e| format!("Failed to download get-pip.py: {}", e))?;
-
-    let python_exe = python_dir.join("python.exe");
-    let pip_output = Command::new(&python_exe)
-        .arg(&get_pip_path)
-        .creation_flags(0x08000000)
-        .output()
-        .map_err(|e| format!("Failed to run get-pip.py: {}", e))?;
-
-    if !pip_output.status.success() {
-        let stderr = String::from_utf8_lossy(&pip_output.stderr);
-        return Err(format!("get-pip.py failed: {}", stderr));
-    }
-
-    let _ = std::fs::remove_file(&get_pip_path);
-
-    let _ = app_handle.emit("sidecar-setup-progress", serde_json::json!({
-        "step": "installing_deps",
-        "message": "Installing dependencies (this may take a few minutes)...",
-        "percent": 60
-    }));
-
-    // Find requirements.txt from bundled resources or sidecar dir
-    let requirements_path = if cfg!(debug_assertions) {
-        let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-        if cwd.join("sidecar/requirements.txt").exists() {
-            cwd.join("sidecar/requirements.txt")
-        } else {
-            cwd.join("../sidecar/requirements.txt")
-        }
-    } else {
-        let resource_dir = app_handle.path().resource_dir().map_err(|e| e.to_string())?;
-        resource_dir.join("requirements.txt")
-    };
-
-    // Install requirements using pip
-    let pip_install_output = Command::new(&python_exe)
-        .args(["-m", "pip", "install", "-r"])
-        .arg(&requirements_path)
-        .creation_flags(0x08000000)
-        .output()
-        .map_err(|e| format!("Failed to run pip install: {}", e))?;
-
-    if !pip_install_output.status.success() {
-        let stderr = String::from_utf8_lossy(&pip_install_output.stderr);
-        return Err(format!("pip install failed: {}", stderr));
-    }
-
-    let _ = app_handle.emit("sidecar-setup-progress", serde_json::json!({
-        "step": "downloading_model",
-        "message": "Downloading speech model (~39 MB)...",
-        "percent": 85
-    }));
-
-    // Auto-download the default tiny model so it's ready on first use
+    // Also copy the bundled tiny model if it's not already in AppData
     let models_dir = get_models_dir(app_handle)?;
-    let model_dir = models_dir.join("faster-whisper-tiny");
-    let model_dir_hf = models_dir.join("models--Systran--faster-whisper-tiny");
-    if !model_dir.exists() && !model_dir_hf.exists() {
-        // Spawn sidecar temporarily to download the model
-        let mut temp_sidecar = spawn_sidecar(app_handle)?;
-        let _ = crate::transcription::download_model(
-            &mut temp_sidecar,
-            "tiny",
-            &models_dir.to_string_lossy(),
-            app_handle,
-        );
-        // Sidecar will be dropped here (graceful shutdown)
+    let bundled_model = resource_dir.join("models").join("faster-whisper-tiny");
+    let target_model = models_dir.join("faster-whisper-tiny");
+
+    if bundled_model.exists() && !target_model.exists() {
+        eprintln!("[sidecar] Copying bundled tiny model...");
+        std::fs::create_dir_all(&target_model).map_err(|e| e.to_string())?;
+        copy_dir_all(&bundled_model, &target_model)
+            .map_err(|e| format!("Failed to copy bundled model: {}", e))?;
     }
 
-    let _ = app_handle.emit("sidecar-setup-progress", serde_json::json!({
-        "step": "done",
-        "message": "Setup complete!",
-        "percent": 100
-    }));
+    // Write version marker
+    std::fs::write(&version_file, current_version).map_err(|e| e.to_string())?;
 
-    eprintln!("[sidecar] Python environment setup complete at {}", python_dir.display());
+    eprintln!("[sidecar] Bundled environment copied successfully (v{})", current_version);
     Ok(())
 }
 
-/// Download a file from a URL to a local path.
-fn download_file(url: &str, dest: &std::path::Path) -> Result<(), String> {
-    let output = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            &format!(
-                "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '{}' -OutFile '{}'",
-                url,
-                dest.to_string_lossy()
-            ),
-        ])
-        .creation_flags(0x08000000)
-        .output()
-        .map_err(|e| format!("Failed to run PowerShell download: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Download failed: {}", stderr));
-    }
-
-    Ok(())
-}
-
-/// Extract a zip file to a destination directory.
-fn extract_zip(zip_path: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
-    let file = std::fs::File::open(zip_path).map_err(|e| e.to_string())?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
-        let out_path = dest.join(entry.mangled_name());
-
-        if entry.is_dir() {
-            std::fs::create_dir_all(&out_path).map_err(|e| e.to_string())?;
+/// Recursively copy a directory and all its contents.
+fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<(), std::io::Error> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let dest_path = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_all(&entry.path(), &dest_path)?;
         } else {
-            if let Some(parent) = out_path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            }
-            let mut out_file = std::fs::File::create(&out_path).map_err(|e| e.to_string())?;
-            std::io::copy(&mut entry, &mut out_file).map_err(|e| e.to_string())?;
+            std::fs::copy(entry.path(), &dest_path)?;
         }
     }
-
     Ok(())
+}
+
+/// Legacy setup function — now just ensures the bundled env is copied.
+/// Kept for backwards compatibility with the setup_sidecar_cmd command.
+pub fn setup_sidecar_python(app_handle: &AppHandle) -> Result<(), String> {
+    ensure_bundled_env_copied(app_handle)
 }
 
 /// Resolve the Python executable and script path for the sidecar.
@@ -349,14 +266,16 @@ fn resolve_sidecar_paths(app_handle: &AppHandle) -> Result<(String, PathBuf), St
 
         Ok((python, script_path))
     } else {
-        // Production: scripts bundled as resources (at root of resource dir), Python in app data
+        // Production: scripts bundled as resources, Python copied from bundle to app data
+        // Ensure the bundled environment has been copied to the writable AppData dir
+        ensure_bundled_env_copied(app_handle)?;
+
         let resource_dir = app_handle
             .path()
             .resource_dir()
             .map_err(|e| e.to_string())?;
         let script_path = resource_dir.join("transcribe.py");
 
-        // Python environment lives in app_data_dir (downloaded during setup)
         let sidecar_dir = get_sidecar_dir(app_handle)?;
         let python = sidecar_dir
             .join("python/python.exe")
@@ -364,7 +283,7 @@ fn resolve_sidecar_paths(app_handle: &AppHandle) -> Result<(String, PathBuf), St
             .to_string();
 
         if !std::path::Path::new(&python).exists() {
-            return Err("Python environment not set up. Please run Setup in the Settings page.".to_string());
+            return Err("Python environment not found. Please reinstall the application.".to_string());
         }
 
         Ok((python, script_path))

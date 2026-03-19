@@ -170,6 +170,14 @@ pub fn run() {
                 eprintln!("[app] Migrated whisper_model from '{}' to 'tiny'", saved_config.whisper_model);
             }
 
+            // Ensure bundled Python environment is copied to AppData (fast local copy, no network)
+            if !cfg!(debug_assertions) {
+                let setup_handle = app.handle().clone();
+                if let Err(e) = sidecar::ensure_bundled_env_copied(&setup_handle) {
+                    eprintln!("[app] Failed to copy bundled Python env: {}", e);
+                }
+            }
+
             // Spawn sidecar in the background (non-blocking)
             let sidecar_handle = app.handle().clone();
             let sidecar_config = app.state::<ConfigState>().0.lock().unwrap().clone();

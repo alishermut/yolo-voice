@@ -100,7 +100,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
                   </span>
                   <p className="text-xs text-gray-500 mt-1">
                     Uses faster-whisper locally. Private, no internet needed.
-                    You'll download a model in Settings.
+                    Everything is included — works out of the box.
                   </p>
                 </div>
               </label>

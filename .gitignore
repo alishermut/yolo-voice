@@ -31,5 +31,9 @@ src-tauri/target
 *.key
 *.key.pub
 
+# Bundled Python environment (built by scripts/prepare-sidecar.ps1)
+sidecar/python-env/
+sidecar/models/
+
 # Claude
 .claude
