@@ -1,6 +1,6 @@
 [package]
 name = "yolo-voice"
-version = "0.1.0"
+version = "0.2.0"
 description = "Windows offline voice dictation app"
 authors = ["Alish"]
 edition = "2021"
@@ -29,6 +29,8 @@ arboard = "3"
 tauri-plugin-updater = "2.10.0"
 tauri-plugin-process = "2.3.1"
 regex = "1"
+base64 = "0.22"
+zip = "2"
 
 [dependencies.windows]
 version = "0.58"

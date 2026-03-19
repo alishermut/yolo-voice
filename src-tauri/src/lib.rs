@@ -73,6 +73,8 @@ pub fn run() {
             commands::get_app_info,
             commands::quit_app,
             commands::get_pill_state,
+            commands::get_sidecar_setup_status,
+            commands::setup_sidecar_cmd,
             commands::get_global_dictionary,
             commands::save_global_dictionary_cmd,
             commands::get_industry_packs,
@@ -159,25 +161,39 @@ pub fn run() {
             // Start global hotkey listener
             hotkey::start_hotkey_listener(app.handle().clone());
 
+            // Force whisper_model to "tiny" — we no longer support model selection
+            if saved_config.whisper_model != "tiny" {
+                let config_state = app.state::<ConfigState>();
+                let mut guard = config_state.0.lock().unwrap();
+                guard.whisper_model = "tiny".to_string();
+                let _ = config::save_config(&app.handle(), &guard);
+                eprintln!("[app] Migrated whisper_model from '{}' to 'tiny'", saved_config.whisper_model);
+            }
+
             // Spawn sidecar in the background (non-blocking)
             let sidecar_handle = app.handle().clone();
-            let sidecar_config = saved_config.clone();
+            let sidecar_config = app.state::<ConfigState>().0.lock().unwrap().clone();
             std::thread::spawn(move || {
+                // Clean up any old models (keep only tiny)
+                let _ = sidecar::cleanup_models(&sidecar_handle, "tiny");
+
                 match sidecar::spawn_sidecar(&sidecar_handle) {
                     Ok(mut sc) => {
-                        // Try to load the configured model
+                        // Always load tiny model
                         let models_dir = sidecar::get_models_dir(&sidecar_handle)
                             .unwrap_or_default();
-                        let _ = transcription::load_model(
+                        match transcription::load_model(
                             &mut sc,
-                            &sidecar_config.whisper_model,
+                            "tiny",
                             &sidecar_config.device,
                             &sidecar_config.compute_type,
                             &models_dir.to_string_lossy(),
-                        );
+                        ) {
+                            Ok(()) => eprintln!("[app] Sidecar started and tiny model loaded"),
+                            Err(e) => eprintln!("[app] Sidecar started but tiny model failed to load: {}", e),
+                        }
                         let state = sidecar_handle.state::<SidecarState>();
                         *state.0.lock().unwrap() = Some(sc);
-                        eprintln!("[app] Sidecar started and model load attempted");
                     }
                     Err(e) => {
                         eprintln!("[app] Failed to start sidecar (will retry on first transcription): {}", e);
@@ -227,9 +243,21 @@ pub fn run() {
                         let recording_state = app_handle.state::<RecordingState>();
                         let mut guard = recording_state.0.lock().unwrap();
                         if let Some(stream) = guard.take() {
-                            match recorder::stop_and_save(stream) {
-                                Ok(path) => {
-                                    eprintln!("Recording saved to: {:?}", path);
+                            // Determine if we need a WAV file (cloud) or in-memory bytes (local)
+                            let transcription_mode = config.transcription_mode.clone();
+                            let use_cloud = transcription_mode == "cloud";
+
+                            // For cloud: write WAV to disk (needed for upload)
+                            // For local: get WAV bytes in memory (skip disk I/O)
+                            let audio_result: Result<(Option<String>, Option<Vec<u8>>), String> = if use_cloud {
+                                recorder::stop_and_save(stream).map(|path| (Some(path.to_string_lossy().to_string()), None))
+                            } else {
+                                recorder::stop_and_get_wav_bytes(stream).map(|bytes| (None, Some(bytes)))
+                            };
+
+                            match audio_result {
+                                Ok((wav_path, wav_bytes)) => {
+                                    eprintln!("Recording captured (in-memory: {})", wav_bytes.is_some());
                                     emit_all(&app_handle, "recording-state", "transcribing");
 
                                     let hwnd = *app_handle
@@ -240,7 +268,6 @@ pub fn run() {
 
                                     // Transcribe in a background thread
                                     let app = app_handle.clone();
-                                    let wav_path = path.to_string_lossy().to_string();
                                     let language = config.language.clone();
                                     let pp_enabled = config.post_processing_enabled;
                                     let pp_profile_id = config.active_profile_id.clone();
@@ -248,7 +275,6 @@ pub fn run() {
                                     let pp_model = config.llm_model.clone();
                                     let pp_api_key = config.llm_api_key.clone();
                                     let pp_base_url = config.llm_base_url.clone();
-                                    let transcription_mode = config.transcription_mode.clone();
                                     let cloud_provider = config.cloud_stt_provider.clone();
                                     let cloud_api_key = config.cloud_stt_api_key.clone();
                                     let global_dict = app_handle.state::<GlobalDictionaryState>().0.lock().unwrap().clone();
@@ -274,7 +300,6 @@ pub fn run() {
 
                                         // Build initial_prompt from global vocabulary + profile dictionary
                                         let vocab_words = global_dict.vocabulary.clone();
-                                        // Profile dictionary words will be added below if post-processing is enabled
                                         let initial_prompt = if vocab_words.is_empty() {
                                             None
                                         } else {
@@ -282,10 +307,14 @@ pub fn run() {
                                         };
 
                                         // Choose transcription method
-                                        let transcribe_result = if transcription_mode == "cloud" {
-                                            transcription::cloud_transcribe(sc, &wav_path, &cloud_provider, &cloud_api_key, &language)
+                                        let transcribe_result = if let Some(ref wav_path) = wav_path {
+                                            // Cloud mode: use WAV file path
+                                            transcription::cloud_transcribe(sc, wav_path, &cloud_provider, &cloud_api_key, &language)
+                                        } else if let Some(ref bytes) = wav_bytes {
+                                            // Local mode: use in-memory audio bytes
+                                            transcription::transcribe_audio(sc, bytes, &language, initial_prompt.as_deref())
                                         } else {
-                                            transcription::transcribe_wav(sc, &wav_path, &language, initial_prompt.as_deref())
+                                            Err("No audio data available".to_string())
                                         };
 
                                         match transcribe_result {

@@ -312,6 +312,24 @@ pub fn quit_app(app_handle: tauri::AppHandle) {
 }
 
 // ---------------------------------------------------------------------------
+// Sidecar setup commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn get_sidecar_setup_status(
+    app_handle: tauri::AppHandle,
+) -> Result<bool, String> {
+    sidecar::is_sidecar_setup(&app_handle)
+}
+
+#[tauri::command]
+pub fn setup_sidecar_cmd(
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    sidecar::setup_sidecar_python(&app_handle)
+}
+
+// ---------------------------------------------------------------------------
 // Phase 7: Global Dictionary & Industry Packs
 // ---------------------------------------------------------------------------
 
@@ -336,8 +354,10 @@ pub fn save_global_dictionary_cmd(
 }
 
 #[tauri::command]
-pub fn get_industry_packs() -> Result<Vec<IndustryPackInfo>, String> {
-    transcription::list_industry_packs()
+pub fn get_industry_packs(
+    app_handle: tauri::AppHandle,
+) -> Result<Vec<IndustryPackInfo>, String> {
+    transcription::list_industry_packs(&app_handle)
 }
 
 #[tauri::command]
@@ -347,7 +367,7 @@ pub fn apply_industry_pack(
     dict_state: State<'_, GlobalDictionaryState>,
     config_state: State<'_, ConfigState>,
 ) -> Result<GlobalDictionary, String> {
-    let pack = transcription::load_industry_pack(&pack_id)?;
+    let pack = transcription::load_industry_pack(&app_handle, &pack_id)?;
 
     let mut guard = dict_state.0.lock().map_err(|e| e.to_string())?;
 

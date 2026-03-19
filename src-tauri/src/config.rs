@@ -56,7 +56,7 @@ pub struct AppConfig {
 
 fn default_industry_pack() -> String { "general".to_string() }
 
-fn default_whisper_model() -> String { "base".to_string() }
+fn default_whisper_model() -> String { "tiny".to_string() }
 fn default_device() -> String { "auto".to_string() }
 fn default_compute_type() -> String { "float16".to_string() }
 fn default_language() -> String { "en".to_string() }

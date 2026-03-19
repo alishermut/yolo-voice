@@ -146,3 +146,50 @@ pub fn stop_and_save(recording: RecordingStream) -> Result<PathBuf, String> {
 
     Ok(path)
 }
+
+/// Stop recording and return WAV bytes in memory (no disk I/O).
+pub fn stop_and_get_wav_bytes(recording: RecordingStream) -> Result<Vec<u8>, String> {
+    // Signal stop
+    recording.stop_flag.store(true, Ordering::Relaxed);
+
+    let samples = recording
+        .samples
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
+
+    // Build WAV in memory manually (WAV format is simple for PCM float32)
+    let num_channels = recording.channels as u32;
+    let sample_rate = recording.sample_rate;
+    let bits_per_sample: u32 = 32;
+    let byte_rate = sample_rate * num_channels * bits_per_sample / 8;
+    let block_align = (num_channels * bits_per_sample / 8) as u16;
+    let data_size = (samples.len() * 4) as u32;
+    let file_size = 36 + data_size; // 36 = header size minus 8 bytes for RIFF chunk header
+
+    let mut buf: Vec<u8> = Vec::with_capacity(44 + samples.len() * 4);
+
+    // RIFF header
+    buf.extend_from_slice(b"RIFF");
+    buf.extend_from_slice(&file_size.to_le_bytes());
+    buf.extend_from_slice(b"WAVE");
+
+    // fmt sub-chunk
+    buf.extend_from_slice(b"fmt ");
+    buf.extend_from_slice(&16u32.to_le_bytes()); // sub-chunk size
+    buf.extend_from_slice(&3u16.to_le_bytes()); // audio format: 3 = IEEE float
+    buf.extend_from_slice(&(num_channels as u16).to_le_bytes());
+    buf.extend_from_slice(&sample_rate.to_le_bytes());
+    buf.extend_from_slice(&byte_rate.to_le_bytes());
+    buf.extend_from_slice(&block_align.to_le_bytes());
+    buf.extend_from_slice(&(bits_per_sample as u16).to_le_bytes());
+
+    // data sub-chunk
+    buf.extend_from_slice(b"data");
+    buf.extend_from_slice(&data_size.to_le_bytes());
+    for sample in &samples {
+        buf.extend_from_slice(&sample.to_le_bytes());
+    }
+
+    Ok(buf)
+}

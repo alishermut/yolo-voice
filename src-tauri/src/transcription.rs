@@ -98,8 +98,8 @@ pub fn save_global_dictionary(
 }
 
 /// List available industry packs from the sidecar/industry_packs directory.
-pub fn list_industry_packs() -> Result<Vec<IndustryPackInfo>, String> {
-    let packs_dir = get_industry_packs_dir()?;
+pub fn list_industry_packs(app_handle: &AppHandle) -> Result<Vec<IndustryPackInfo>, String> {
+    let packs_dir = get_industry_packs_dir(app_handle)?;
     let mut packs = Vec::new();
 
     if !packs_dir.exists() {
@@ -130,16 +130,15 @@ pub fn list_industry_packs() -> Result<Vec<IndustryPackInfo>, String> {
 }
 
 /// Load a specific industry pack by id.
-pub fn load_industry_pack(id: &str) -> Result<IndustryPack, String> {
-    let packs_dir = get_industry_packs_dir()?;
+pub fn load_industry_pack(app_handle: &AppHandle, id: &str) -> Result<IndustryPack, String> {
+    let packs_dir = get_industry_packs_dir(app_handle)?;
     let path = packs_dir.join(format!("{}.json", id));
     let contents = std::fs::read_to_string(&path)
         .map_err(|e| format!("Pack '{}' not found: {}", id, e))?;
     serde_json::from_str(&contents).map_err(|e| e.to_string())
 }
 
-fn get_industry_packs_dir() -> Result<std::path::PathBuf, String> {
-    // Dev mode: relative to project root
+fn get_industry_packs_dir(app_handle: &AppHandle) -> Result<std::path::PathBuf, String> {
     if cfg!(debug_assertions) {
         let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
         let dir = if cwd.join("sidecar/industry_packs").exists() {
@@ -151,8 +150,11 @@ fn get_industry_packs_dir() -> Result<std::path::PathBuf, String> {
         };
         Ok(dir)
     } else {
-        // Production: bundled as resource
-        Err("Industry packs not available in production yet".to_string())
+        let resource_dir = app_handle
+            .path()
+            .resource_dir()
+            .map_err(|e| e.to_string())?;
+        Ok(resource_dir.join("industry_packs"))
     }
 }
 
@@ -162,7 +164,8 @@ pub struct ModelInfo {
     pub size_mb: u64,
 }
 
-/// Transcribe a WAV file and return the text.
+/// Transcribe a WAV file and return the text (used by frontend invoke path).
+#[allow(dead_code)]
 pub fn transcribe_wav(
     sidecar: &mut SidecarProcess,
     wav_path: &str,
@@ -172,6 +175,35 @@ pub fn transcribe_wav(
     let mut cmd = json!({
         "cmd": "transcribe",
         "wav_path": wav_path,
+        "language": language,
+    });
+    if let Some(prompt) = initial_prompt {
+        cmd["initial_prompt"] = serde_json::Value::String(prompt.to_string());
+    }
+    let response = sidecar.send_command(cmd)?;
+
+    let text = response
+        .get("text")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    Ok(text)
+}
+
+/// Transcribe WAV audio bytes in memory (no disk I/O).
+pub fn transcribe_audio(
+    sidecar: &mut SidecarProcess,
+    wav_bytes: &[u8],
+    language: &str,
+    initial_prompt: Option<&str>,
+) -> Result<String, String> {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(wav_bytes);
+
+    let mut cmd = json!({
+        "cmd": "transcribe_audio",
+        "audio_data": b64,
         "language": language,
     });
     if let Some(prompt) = initial_prompt {

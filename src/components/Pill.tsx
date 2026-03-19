@@ -40,8 +40,26 @@ function Waveform({ level, barCount = 9 }: { level: number; barCount?: number })
 export function Pill() {
   const [state, setState] = useState<PillState>("idle");
   const [level, setLevel] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
   const doneTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevState = useRef<string>("idle");
+  const transcribeStart = useRef<number | null>(null);
+
+  // Elapsed timer for transcribing state
+  useEffect(() => {
+    if (state === "transcribing") {
+      if (transcribeStart.current === null) {
+        transcribeStart.current = Date.now();
+      }
+      const timer = setInterval(() => {
+        setElapsed(Math.floor((Date.now() - (transcribeStart.current ?? Date.now())) / 1000));
+      }, 200);
+      return () => clearInterval(timer);
+    } else {
+      transcribeStart.current = null;
+      setElapsed(0);
+    }
+  }, [state]);
 
   useEffect(() => {
     const interval = setInterval(async () => {
@@ -152,7 +170,7 @@ export function Pill() {
               }}
             />
             <span style={{ color: "rgba(147, 197, 253, 0.8)", fontSize: "10px", fontWeight: 500 }}>
-              Processing...
+              {elapsed > 0 ? `${elapsed}s` : "Processing..."}
             </span>
           </>
         )}

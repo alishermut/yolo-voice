@@ -80,7 +80,7 @@ def handle_ping(_req: dict) -> None:
 def handle_load_model(req: dict) -> None:
     global _model, _model_name
 
-    model_size = req.get("model", "base")
+    model_size = req.get("model", "tiny")
     device = req.get("device", "auto")
     compute_type = req.get("compute_type", "float16")
     models_dir = req.get("models_dir")
@@ -151,7 +151,7 @@ def handle_transcribe(req: dict) -> None:
 
         transcribe_kwargs = {
             "vad_filter": True,
-            "vad_parameters": {"min_silence_duration_ms": 500},
+            "vad_parameters": {"min_silence_duration_ms": 300},
         }
         if language and language != "auto":
             transcribe_kwargs["language"] = language
@@ -182,6 +182,93 @@ def handle_transcribe(req: dict) -> None:
     except Exception as e:
         log(f"Transcription error: {e}")
         respond({"status": "error", "cmd": "transcribe", "message": str(e)})
+
+
+def handle_transcribe_audio(req: dict) -> None:
+    """Transcribe from base64-encoded WAV bytes (no disk I/O)."""
+    global _model
+
+    if _model is None:
+        respond({
+            "status": "error",
+            "cmd": "transcribe_audio",
+            "message": "No model loaded. Download and load a model first.",
+        })
+        return
+
+    import base64
+    import io
+    import numpy as np
+    import soundfile as sf
+
+    audio_data = req.get("audio_data", "")
+    language = req.get("language", "en")
+    initial_prompt = req.get("initial_prompt", None)
+
+    if not audio_data:
+        respond({
+            "status": "error",
+            "cmd": "transcribe_audio",
+            "message": "No audio_data provided",
+        })
+        return
+
+    try:
+        start_time = time.time()
+
+        # Decode base64 WAV bytes and read as numpy array
+        wav_bytes = base64.b64decode(audio_data)
+        audio_buf = io.BytesIO(wav_bytes)
+        audio_array, sample_rate = sf.read(audio_buf, dtype="float32")
+
+        log(f"Audio: shape={audio_array.shape}, sample_rate={sample_rate}, dtype={audio_array.dtype}")
+
+        # Convert stereo to mono if needed
+        if audio_array.ndim > 1:
+            audio_array = audio_array.mean(axis=1)
+            log(f"Converted to mono: shape={audio_array.shape}")
+
+        # Resample to 16kHz if needed (faster-whisper expects 16kHz when given numpy array)
+        if sample_rate != 16000:
+            import math
+            ratio = 16000 / sample_rate
+            new_length = int(math.ceil(len(audio_array) * ratio))
+            indices = np.arange(new_length) / ratio
+            indices = np.clip(indices.astype(np.int64), 0, len(audio_array) - 1)
+            audio_array = audio_array[indices]
+            log(f"Resampled from {sample_rate}Hz to 16000Hz: {new_length} samples")
+
+        transcribe_kwargs = {
+            "vad_filter": True,
+            "vad_parameters": {"min_silence_duration_ms": 300},
+        }
+        if language and language != "auto":
+            transcribe_kwargs["language"] = language
+        if initial_prompt:
+            transcribe_kwargs["initial_prompt"] = initial_prompt[:800]
+            log(f"Using initial_prompt ({len(initial_prompt)} chars)")
+
+        segments, info = _model.transcribe(audio_array, **transcribe_kwargs)
+
+        text_parts = []
+        for segment in segments:
+            text_parts.append(segment.text.strip())
+
+        full_text = " ".join(text_parts).strip()
+        processing_time = time.time() - start_time
+
+        log(f"Transcribed (in-memory) {info.duration:.1f}s audio in {processing_time:.1f}s: '{full_text[:80]}...'")
+        respond({
+            "status": "ok",
+            "cmd": "transcribe_audio",
+            "text": full_text,
+            "language": info.language,
+            "duration": round(info.duration, 2),
+            "processing_time": round(processing_time, 2),
+        })
+    except Exception as e:
+        log(f"Transcription error (in-memory): {e}")
+        respond({"status": "error", "cmd": "transcribe_audio", "message": str(e)})
 
 
 def handle_list_models(req: dict) -> None:
@@ -551,7 +638,7 @@ def _cloud_groq(wav_path: str, api_key: str, language: str) -> str:
 
     with open(wav_path, "rb") as f:
         files = {"file": ("recording.wav", f, "audio/wav")}
-        data = {"model": "whisper-large-v3-turbo", "response_format": "json"}
+        data = {"model": "whisper-large-v3", "response_format": "json"}
         if language and language != "auto":
             data["language"] = language
 
@@ -593,6 +680,7 @@ HANDLERS = {
     "ping": handle_ping,
     "load_model": handle_load_model,
     "transcribe": handle_transcribe,
+    "transcribe_audio": handle_transcribe_audio,
     "list_models": handle_list_models,
     "download_model": handle_download_model,
     "list_profiles": handle_list_profiles,
