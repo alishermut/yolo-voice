@@ -57,7 +57,13 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: 'YOLO Voice v__VERSION__'
-          releaseBody: 'See the assets to download and install this version.'
+          releaseBody: |
+            Patch release focused on production packaging reliability.
+
+            Highlights:
+            - fix offline transcription in installed builds by resolving bundled sidecar resources from the packaged `sidecar` directory
+            - fix bundled industry pack lookup in installed builds
+            - harden updater asset publishing so `latest.json`, `.nsis.zip`, and `.nsis.zip.sig` are always uploaded
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
@@ -70,11 +76,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
-          $bundleDir = "src-tauri/target/release/bundle/nsis"
+          $bundleDir = Resolve-Path "src-tauri/target/release/bundle/nsis"
+
+          Write-Host "Bundle directory: $bundleDir"
+          Write-Host "Bundle directory contents:"
+          Get-ChildItem -Path $bundleDir -Recurse | Select-Object FullName | Format-Table -HideTableHeaders
 
           # Find the .nsis.zip and its .sig
-          $nsisZip = Get-ChildItem "$bundleDir/*.nsis.zip" | Select-Object -First 1
-          $nsisSig = Get-ChildItem "$bundleDir/*.nsis.zip.sig" | Select-Object -First 1
+          $nsisZip = Get-ChildItem -Path $bundleDir -Filter *.nsis.zip -File -Recurse | Select-Object -First 1
+          $nsisSig = Get-ChildItem -Path $bundleDir -Filter *.nsis.zip.sig -File -Recurse | Select-Object -First 1
 
           if (!$nsisZip -or !$nsisSig) {
             Write-Host "::warning::Could not find NSIS zip or signature files. Updater JSON not uploaded."
@@ -106,8 +116,8 @@ jobs:
           Write-Host $json
 
           # Upload the .nsis.zip (updater download) and .nsis.zip.sig to the release
-          gh release upload $tag $nsisZip.FullName --clobber
-          gh release upload $tag $nsisSig.FullName --clobber
+          gh release upload $tag "$($nsisZip.FullName)" --clobber
+          gh release upload $tag "$($nsisSig.FullName)" --clobber
 
           # Upload latest.json to the release
           gh release upload $tag latest.json --clobber

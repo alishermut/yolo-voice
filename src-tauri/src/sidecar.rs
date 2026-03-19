@@ -8,6 +8,20 @@ use std::time::Duration;
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
+fn bundled_sidecar_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let resource_dir = app_handle
+        .path()
+        .resource_dir()
+        .map_err(|e| e.to_string())?;
+
+    let nested_sidecar = resource_dir.join("sidecar");
+    if nested_sidecar.exists() {
+        return Ok(nested_sidecar);
+    }
+
+    Ok(resource_dir)
+}
+
 pub struct SidecarProcess {
     child: Child,
     stdin: BufWriter<std::process::ChildStdin>,
@@ -36,8 +50,11 @@ impl SidecarProcess {
     /// Send a JSON command and read a single JSON response.
     pub fn send_command(&mut self, cmd: Value) -> Result<Value, String> {
         let line = serde_json::to_string(&cmd).map_err(|e| e.to_string())?;
-        writeln!(self.stdin, "{}", line).map_err(|e| format!("Failed to write to sidecar stdin: {}", e))?;
-        self.stdin.flush().map_err(|e| format!("Failed to flush sidecar stdin: {}", e))?;
+        writeln!(self.stdin, "{}", line)
+            .map_err(|e| format!("Failed to write to sidecar stdin: {}", e))?;
+        self.stdin
+            .flush()
+            .map_err(|e| format!("Failed to flush sidecar stdin: {}", e))?;
 
         let mut response_line = String::new();
         self.stdout
@@ -48,8 +65,8 @@ impl SidecarProcess {
             return Err("Sidecar process exited unexpectedly".to_string());
         }
 
-        let response: Value =
-            serde_json::from_str(response_line.trim()).map_err(|e| format!("Invalid JSON from sidecar: {}", e))?;
+        let response: Value = serde_json::from_str(response_line.trim())
+            .map_err(|e| format!("Invalid JSON from sidecar: {}", e))?;
 
         if response.get("status").and_then(|s| s.as_str()) == Some("error") {
             let msg = response
@@ -70,8 +87,11 @@ impl SidecarProcess {
         mut progress_cb: impl FnMut(Value),
     ) -> Result<Value, String> {
         let line = serde_json::to_string(&cmd).map_err(|e| e.to_string())?;
-        writeln!(self.stdin, "{}", line).map_err(|e| format!("Failed to write to sidecar stdin: {}", e))?;
-        self.stdin.flush().map_err(|e| format!("Failed to flush sidecar stdin: {}", e))?;
+        writeln!(self.stdin, "{}", line)
+            .map_err(|e| format!("Failed to write to sidecar stdin: {}", e))?;
+        self.stdin
+            .flush()
+            .map_err(|e| format!("Failed to flush sidecar stdin: {}", e))?;
 
         loop {
             let mut response_line = String::new();
@@ -147,7 +167,10 @@ pub fn ensure_bundled_env_copied(app_handle: &AppHandle) -> Result<(), String> {
     if python_dir.join("python.exe").exists() {
         if let Ok(stored_version) = std::fs::read_to_string(&version_file) {
             if stored_version.trim() == current_version {
-                eprintln!("[sidecar] Bundled env already up-to-date (v{})", current_version);
+                eprintln!(
+                    "[sidecar] Bundled env already up-to-date (v{})",
+                    current_version
+                );
                 return Ok(());
             }
             eprintln!(
@@ -158,11 +181,8 @@ pub fn ensure_bundled_env_copied(app_handle: &AppHandle) -> Result<(), String> {
         }
     }
 
-    let resource_dir = app_handle
-        .path()
-        .resource_dir()
-        .map_err(|e| e.to_string())?;
-    let bundled_python = resource_dir.join("python-env");
+    let bundled_sidecar_dir = bundled_sidecar_dir(app_handle)?;
+    let bundled_python = bundled_sidecar_dir.join("python-env");
 
     if !bundled_python.join("python.exe").exists() {
         return Err(format!(
@@ -188,7 +208,9 @@ pub fn ensure_bundled_env_copied(app_handle: &AppHandle) -> Result<(), String> {
 
     // Also copy the bundled tiny model if it's not already in AppData
     let models_dir = get_models_dir(app_handle)?;
-    let bundled_model = resource_dir.join("models").join("faster-whisper-tiny");
+    let bundled_model = bundled_sidecar_dir
+        .join("models")
+        .join("faster-whisper-tiny");
     let target_model = models_dir.join("faster-whisper-tiny");
 
     if bundled_model.exists() && !target_model.exists() {
@@ -201,7 +223,10 @@ pub fn ensure_bundled_env_copied(app_handle: &AppHandle) -> Result<(), String> {
     // Write version marker
     std::fs::write(&version_file, current_version).map_err(|e| e.to_string())?;
 
-    eprintln!("[sidecar] Bundled environment copied successfully (v{})", current_version);
+    eprintln!(
+        "[sidecar] Bundled environment copied successfully (v{})",
+        current_version
+    );
     Ok(())
 }
 
@@ -246,7 +271,10 @@ fn resolve_sidecar_paths(app_handle: &AppHandle) -> Result<(String, PathBuf), St
 
         let script_path = sidecar_dir.join("transcribe.py");
         if !script_path.exists() {
-            return Err(format!("Sidecar script not found: {}", script_path.display()));
+            return Err(format!(
+                "Sidecar script not found: {}",
+                script_path.display()
+            ));
         }
 
         // Look for Python in order of preference:
@@ -254,7 +282,8 @@ fn resolve_sidecar_paths(app_handle: &AppHandle) -> Result<(String, PathBuf), St
         // 2. Python 3.12 (has CUDA support for faster-whisper)
         // 3. System python
         let venv_python = sidecar_dir.join(".venv/Scripts/python.exe");
-        let python312 = PathBuf::from(r"C:\Users\Alish\AppData\Local\Programs\Python\Python312\python.exe");
+        let python312 =
+            PathBuf::from(r"C:\Users\Alish\AppData\Local\Programs\Python\Python312\python.exe");
         let python = if venv_python.exists() {
             venv_python.to_string_lossy().to_string()
         } else if python312.exists() {
@@ -270,11 +299,8 @@ fn resolve_sidecar_paths(app_handle: &AppHandle) -> Result<(String, PathBuf), St
         // Ensure the bundled environment has been copied to the writable AppData dir
         ensure_bundled_env_copied(app_handle)?;
 
-        let resource_dir = app_handle
-            .path()
-            .resource_dir()
-            .map_err(|e| e.to_string())?;
-        let script_path = resource_dir.join("transcribe.py");
+        let bundled_sidecar_dir = bundled_sidecar_dir(app_handle)?;
+        let script_path = bundled_sidecar_dir.join("transcribe.py");
 
         let sidecar_dir = get_sidecar_dir(app_handle)?;
         let python = sidecar_dir
@@ -283,7 +309,16 @@ fn resolve_sidecar_paths(app_handle: &AppHandle) -> Result<(String, PathBuf), St
             .to_string();
 
         if !std::path::Path::new(&python).exists() {
-            return Err("Python environment not found. Please reinstall the application.".to_string());
+            return Err(
+                "Python environment not found. Please reinstall the application.".to_string(),
+            );
+        }
+
+        if !script_path.exists() {
+            return Err(format!(
+                "Bundled sidecar script not found at {}. The installer may be corrupted.",
+                script_path.display()
+            ));
         }
 
         Ok((python, script_path))
@@ -294,11 +329,7 @@ fn resolve_sidecar_paths(app_handle: &AppHandle) -> Result<(String, PathBuf), St
 pub fn spawn_sidecar(app_handle: &AppHandle) -> Result<SidecarProcess, String> {
     let (python, script_path) = resolve_sidecar_paths(app_handle)?;
 
-    eprintln!(
-        "[sidecar] Spawning: {} {}",
-        python,
-        script_path.display()
-    );
+    eprintln!("[sidecar] Spawning: {} {}", python, script_path.display());
 
     let mut child = Command::new(&python)
         .arg(&script_path)
@@ -308,7 +339,14 @@ pub fn spawn_sidecar(app_handle: &AppHandle) -> Result<SidecarProcess, String> {
         // Prevent a console window from flashing on Windows
         .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .spawn()
-        .map_err(|e| format!("Failed to spawn sidecar ({} {}): {}", python, script_path.display(), e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to spawn sidecar ({} {}): {}",
+                python,
+                script_path.display(),
+                e
+            )
+        })?;
 
     let stdin = child
         .stdin
@@ -340,12 +378,18 @@ pub fn spawn_sidecar(app_handle: &AppHandle) -> Result<SidecarProcess, String> {
         .map_err(|e| format!("Invalid ready JSON from sidecar: {}", e))?;
 
     if ready.get("cmd").and_then(|c| c.as_str()) != Some("ready") {
-        return Err(format!("Unexpected first message from sidecar: {}", ready_line.trim()));
+        return Err(format!(
+            "Unexpected first message from sidecar: {}",
+            ready_line.trim()
+        ));
     }
 
     eprintln!(
         "[sidecar] Ready. GPU available: {}",
-        ready.get("gpu_available").and_then(|g| g.as_bool()).unwrap_or(false)
+        ready
+            .get("gpu_available")
+            .and_then(|g| g.as_bool())
+            .unwrap_or(false)
     );
 
     Ok(sidecar)
@@ -390,10 +434,7 @@ pub fn cleanup_models(app_handle: &AppHandle, keep_model: &str) -> Result<(), St
 /// Ensure the sidecar is running, spawning it if needed.
 /// If the sidecar was restarted, also reloads the whisper model so local
 /// transcription continues to work.
-pub fn ensure_running(
-    app_handle: &AppHandle,
-    state: &SidecarState,
-) -> Result<(), String> {
+pub fn ensure_running(app_handle: &AppHandle, state: &SidecarState) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
 
     let needs_restart = match guard.as_mut() {
@@ -420,7 +461,10 @@ pub fn ensure_running(
             &config.compute_type,
             &models_dir.to_string_lossy(),
         ) {
-            eprintln!("[sidecar] Warning: failed to reload model after restart: {}", e);
+            eprintln!(
+                "[sidecar] Warning: failed to reload model after restart: {}",
+                e
+            );
         }
 
         *guard = Some(sidecar);

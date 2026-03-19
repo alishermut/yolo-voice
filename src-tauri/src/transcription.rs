@@ -197,8 +197,8 @@ pub fn list_industry_packs(app_handle: &AppHandle) -> Result<Vec<IndustryPackInf
 pub fn load_industry_pack(app_handle: &AppHandle, id: &str) -> Result<IndustryPack, String> {
     let packs_dir = get_industry_packs_dir(app_handle)?;
     let path = packs_dir.join(format!("{}.json", id));
-    let contents = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Pack '{}' not found: {}", id, e))?;
+    let contents =
+        std::fs::read_to_string(&path).map_err(|e| format!("Pack '{}' not found: {}", id, e))?;
     serde_json::from_str(&contents).map_err(|e| e.to_string())
 }
 
@@ -218,7 +218,12 @@ fn get_industry_packs_dir(app_handle: &AppHandle) -> Result<std::path::PathBuf, 
             .path()
             .resource_dir()
             .map_err(|e| e.to_string())?;
-        Ok(resource_dir.join("industry_packs"))
+        let nested_dir = resource_dir.join("sidecar").join("industry_packs");
+        if nested_dir.exists() {
+            Ok(nested_dir)
+        } else {
+            Ok(resource_dir.join("industry_packs"))
+        }
     }
 }
 
