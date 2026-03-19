@@ -48,6 +48,7 @@ jobs:
           }
 
       - name: Build and release Tauri app
+        id: tauri
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -60,3 +61,55 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
+
+      # tauri-action often fails to upload latest.json ("Signature not found").
+      # This step manually builds and uploads it from the build artifacts.
+      - name: Generate and upload updater JSON
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $bundleDir = "src-tauri/target/release/bundle/nsis"
+
+          # Find the .nsis.zip and its .sig
+          $nsisZip = Get-ChildItem "$bundleDir/*.nsis.zip" | Select-Object -First 1
+          $nsisSig = Get-ChildItem "$bundleDir/*.nsis.zip.sig" | Select-Object -First 1
+
+          if (!$nsisZip -or !$nsisSig) {
+            Write-Host "::warning::Could not find NSIS zip or signature files. Updater JSON not uploaded."
+            exit 0
+          }
+
+          $signature = Get-Content $nsisSig.FullName -Raw
+          $tag = "v$version"
+          $repo = "${{ github.repository }}"
+          $zipName = $nsisZip.Name
+          $url = "https://github.com/$repo/releases/download/$tag/$zipName"
+          $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+          # Build latest.json
+          $json = @{
+            version = $version
+            notes = "YOLO Voice v$version"
+            pub_date = $pubDate
+            platforms = @{
+              "windows-x86_64" = @{
+                signature = $signature.Trim()
+                url = $url
+              }
+            }
+          } | ConvertTo-Json -Depth 4
+
+          $json | Out-File -FilePath "latest.json" -Encoding utf8
+          Write-Host "Generated latest.json:"
+          Write-Host $json
+
+          # Upload the .nsis.zip (updater download) and .nsis.zip.sig to the release
+          gh release upload $tag $nsisZip.FullName --clobber
+          gh release upload $tag $nsisSig.FullName --clobber
+
+          # Upload latest.json to the release
+          gh release upload $tag latest.json --clobber
+
+          Write-Host "Uploaded latest.json, $zipName, and signature to release $tag"

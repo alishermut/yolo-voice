@@ -105,10 +105,25 @@ def handle_load_model(req: dict) -> None:
             "device": device,
             "compute_type": compute_type,
         }
-        if models_dir:
-            kwargs["download_root"] = models_dir
 
-        _model = WhisperModel(model_size, **kwargs)
+        # Try to use the direct model path first (bundled with installer).
+        # This avoids HuggingFace cache lookup which uses a different directory
+        # naming scheme (models--Systran--faster-whisper-tiny) than our bundle
+        # (faster-whisper-tiny).
+        model_id = model_size  # default: just the size name e.g. "tiny"
+        if models_dir:
+            direct_path = os.path.join(models_dir, f"faster-whisper-{model_size}")
+            if os.path.isdir(direct_path) and any(
+                f.endswith(".bin") for f in os.listdir(direct_path)
+            ):
+                model_id = direct_path
+                log(f"Using bundled model at: {direct_path}")
+            else:
+                # Fallback: let faster-whisper search via download_root
+                kwargs["download_root"] = models_dir
+                log(f"Bundled model not found at {direct_path}, using download_root fallback")
+
+        _model = WhisperModel(model_id, **kwargs)
         _model_name = model_size
         log(f"Model '{model_size}' loaded successfully")
         respond({

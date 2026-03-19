@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { check } from "@tauri-apps/plugin-updater";
@@ -8,32 +8,75 @@ import { About } from "./pages/About";
 import { Onboarding } from "./pages/Onboarding";
 
 type Page = "settings" | "about";
+type UpdateStatus = "idle" | "checking" | "downloading" | "ready" | "up-to-date" | "error";
+
+/** Spinning loader icon */
+function Spinner({ className = "" }: { className?: string }) {
+  return (
+    <svg
+      className={`animate-spin h-3.5 w-3.5 ${className}`}
+      viewBox="0 0 24 24"
+      fill="none"
+    >
+      <circle
+        className="opacity-25"
+        cx="12" cy="12" r="10"
+        stroke="currentColor" strokeWidth="4"
+      />
+      <path
+        className="opacity-75"
+        fill="currentColor"
+        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+      />
+    </svg>
+  );
+}
 
 function App() {
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
   const [page, setPage] = useState<Page>("settings");
-  const [updateReady, setUpdateReady] = useState<string | null>(null);
+
+  // Update state
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [updateObj, setUpdateObj] = useState<Awaited<ReturnType<typeof check>> | null>(null);
+
+  const checkForUpdates = useCallback(async () => {
+    setUpdateStatus("checking");
+    try {
+      const update = await check();
+      if (update?.available) {
+        setUpdateVersion(update.version);
+        setUpdateStatus("downloading");
+        await update.download();
+        setUpdateObj(update);
+        setUpdateStatus("ready");
+      } else {
+        setUpdateStatus("up-to-date");
+        // Reset back to idle after 5 seconds
+        setTimeout(() => setUpdateStatus("idle"), 5000);
+      }
+    } catch {
+      setUpdateStatus("error");
+      setTimeout(() => setUpdateStatus("idle"), 5000);
+    }
+  }, []);
+
+  const installUpdate = useCallback(async () => {
+    if (updateObj) {
+      await updateObj.install();
+      await relaunch();
+    }
+  }, [updateObj]);
 
   useEffect(() => {
     invoke<{ onboarding_completed: boolean }>("get_config")
       .then((config) => setOnboarded(config.onboarding_completed))
-      .catch(() => setOnboarded(true)); // On error, skip onboarding
+      .catch(() => setOnboarded(true));
 
-    // Check for updates and silently download in background
-    (async () => {
-      try {
-        const update = await check();
-        if (update?.available) {
-          await update.download();
-          setUpdateObj(update);
-          setUpdateReady(update.version);
-        }
-      } catch {
-        // Silently fail if update check/download fails
-      }
-    })();
-  }, []);
+    // Auto-check for updates on startup
+    checkForUpdates();
+  }, [checkForUpdates]);
 
   // Loading state
   if (onboarded === null) {
@@ -49,12 +92,88 @@ function App() {
     return <Onboarding onComplete={() => setOnboarded(true)} />;
   }
 
+  // Derive update button appearance
+  const updateButton = (() => {
+    switch (updateStatus) {
+      case "idle":
+        return {
+          label: "Check for updates",
+          icon: null,
+          className: "text-gray-500 hover:text-gray-300 hover:bg-gray-800",
+          onClick: checkForUpdates,
+          disabled: false,
+        };
+      case "checking":
+        return {
+          label: "Checking...",
+          icon: <Spinner className="text-blue-400" />,
+          className: "text-blue-400 bg-blue-900/20",
+          onClick: undefined,
+          disabled: true,
+        };
+      case "downloading":
+        return {
+          label: "Downloading update...",
+          icon: <Spinner className="text-blue-400" />,
+          className: "text-blue-400 bg-blue-900/20",
+          onClick: undefined,
+          disabled: true,
+        };
+      case "ready":
+        return {
+          label: `Restart to update (v${updateVersion})`,
+          icon: (
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
+            </span>
+          ),
+          className: "text-green-300 bg-green-900/30 hover:bg-green-900/50 border border-green-700/50",
+          onClick: installUpdate,
+          disabled: false,
+        };
+      case "up-to-date":
+        return {
+          label: "Up to date",
+          icon: (
+            <svg className="h-3.5 w-3.5 text-green-400" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+            </svg>
+          ),
+          className: "text-green-400",
+          onClick: undefined,
+          disabled: true,
+        };
+      case "error":
+        return {
+          label: "Update check failed",
+          icon: null,
+          className: "text-red-400/70",
+          onClick: undefined,
+          disabled: true,
+        };
+    }
+  })();
+
   // Main app
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
       {/* Navigation */}
       <div className="flex items-center justify-between border-b border-gray-800 px-6 py-3">
-        <h1 className="text-xl font-bold">YOLO Voice</h1>
+        <div className="flex items-center gap-4">
+          <h1 className="text-xl font-bold">YOLO Voice</h1>
+
+          {/* Update button — always visible in nav bar */}
+          <button
+            onClick={updateButton.onClick}
+            disabled={updateButton.disabled}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-all ${updateButton.className} ${updateButton.disabled ? "cursor-default" : "cursor-pointer"}`}
+          >
+            {updateButton.icon}
+            {updateButton.label}
+          </button>
+        </div>
+
         <div className="flex items-center gap-3">
           <nav className="flex gap-1">
             <button
@@ -97,26 +216,6 @@ function App() {
           </button>
         </div>
       </div>
-
-      {/* Update banner — shown after silent background download completes */}
-      {updateReady && (
-        <div className="mx-6 mt-4 flex items-center justify-between rounded-lg bg-green-900/40 border border-green-700/50 px-4 py-2.5">
-          <span className="text-sm text-green-200">
-            Update v{updateReady} is ready. Restart to apply.
-          </span>
-          <button
-            onClick={async () => {
-              if (updateObj) {
-                await updateObj.install();
-                await relaunch();
-              }
-            }}
-            className="px-3 py-1 rounded-md text-sm font-medium bg-green-600 hover:bg-green-500 text-white transition-colors"
-          >
-            Restart now
-          </button>
-        </div>
-      )}
 
       {/* Page content */}
       <div className="p-6">
