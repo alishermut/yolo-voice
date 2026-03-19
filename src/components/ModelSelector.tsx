@@ -21,6 +21,23 @@ export function ModelSelector({
   useEffect(() => {
     checkGpu();
     checkSidecar();
+
+    // Poll sidecar status until it's running (it spawns in background thread)
+    const interval = setInterval(async () => {
+      try {
+        const status = await invoke<string>("get_sidecar_status");
+        setSidecarStatus(status);
+        if (status === "running") {
+          clearInterval(interval);
+          // Re-check GPU once sidecar is ready
+          checkGpu();
+        }
+      } catch {
+        // ignore
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
   }, []);
 
   const checkGpu = async () => {
