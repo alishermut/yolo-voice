@@ -26,5 +26,10 @@ src-tauri/target
 *.sln
 *.sw?
 
+# Tauri signing keys (NEVER commit these)
+~/.tauri/
+*.key
+*.key.pub
+
 # Claude
 .claude
