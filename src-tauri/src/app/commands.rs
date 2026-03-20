@@ -1,43 +1,24 @@
 use std::sync::Mutex;
 
-use tauri::State;
+use tauri::{Manager, State};
 
-use crate::audio::{self, AudioStream, DeviceInfo};
-use crate::config::{self, AppConfig, ConfigState};
-use crate::recorder::{self, RecordingState};
-use crate::sidecar::{self, SidecarState};
-use crate::startup;
-use crate::transcription::{
-    self, GlobalDictionary, GlobalDictionaryState, IndustryPackInfo, ModelInfo, Profile,
+use crate::features::capture::recorder::{self, RecordingState};
+use crate::features::output;
+use crate::features::settings::{self, AppConfig, ConfigState};
+use crate::features::speech;
+use crate::features::speech::vocabulary::{
+    GlobalDictionary, GlobalDictionaryState, IndustryPackInfo,
 };
+use crate::infra::platform::{self, AudioStream, DeviceInfo};
+use crate::infra::sidecar::{self, SidecarState};
 
 pub struct AudioState(pub Mutex<Option<AudioStream>>);
 
-/// Shared state for the pill UI to poll
-pub struct PillUiState {
-    pub recording_state: Mutex<String>,
-    pub audio_level: Mutex<f32>,
-}
-
-impl Default for PillUiState {
-    fn default() -> Self {
-        Self {
-            recording_state: Mutex::new("idle".to_string()),
-            audio_level: Mutex::new(0.0),
-        }
-    }
-}
-
-#[tauri::command]
-pub fn get_pill_state(state: State<'_, PillUiState>) -> Result<(String, f32), String> {
-    let rs = state.recording_state.lock().map_err(|e| e.to_string())?;
-    let level = state.audio_level.lock().map_err(|e| e.to_string())?;
-    Ok((rs.clone(), *level))
-}
+// ---- Audio Devices ----
 
 #[tauri::command]
 pub fn list_devices() -> Vec<DeviceInfo> {
-    audio::list_input_devices()
+    platform::list_input_devices()
 }
 
 #[tauri::command]
@@ -47,9 +28,8 @@ pub fn start_test(
     state: State<'_, AudioState>,
 ) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    // Stop any existing stream first
     *guard = None;
-    let stream = audio::start_level_monitor(device_index, app_handle)?;
+    let stream = platform::start_level_monitor(device_index, app_handle)?;
     *guard = Some(stream);
     Ok(())
 }
@@ -60,6 +40,8 @@ pub fn stop_test(state: State<'_, AudioState>) -> Result<(), String> {
     *guard = None;
     Ok(())
 }
+
+// ---- Config ----
 
 #[tauri::command]
 pub fn get_config(state: State<'_, ConfigState>) -> Result<AppConfig, String> {
@@ -73,11 +55,13 @@ pub fn save_config_cmd(
     app_handle: tauri::AppHandle,
     state: State<'_, ConfigState>,
 ) -> Result<(), String> {
-    config::save_config(&app_handle, &new_config)?;
+    settings::save_config(&app_handle, &new_config)?;
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     *guard = new_config;
     Ok(())
 }
+
+// ---- Recording ----
 
 #[tauri::command]
 pub fn start_recording(
@@ -86,7 +70,6 @@ pub fn start_recording(
     state: State<'_, RecordingState>,
 ) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    // Stop any existing recording first
     *guard = None;
     let stream = recorder::start_recording(device_index, app_handle)?;
     *guard = Some(stream);
@@ -103,20 +86,37 @@ pub fn stop_recording(state: State<'_, RecordingState>) -> Result<String, String
     Ok(path.to_string_lossy().to_string())
 }
 
-// ---------------------------------------------------------------------------
-// Phase 3: Transcription commands
-// ---------------------------------------------------------------------------
+// ---- Transcription / Models ----
+
+fn ensure_sidecar_running(
+    app_handle: &tauri::AppHandle,
+    state: &SidecarState,
+) -> Result<(), String> {
+    let config = app_handle
+        .state::<ConfigState>()
+        .0
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
+    sidecar::ensure_running(
+        app_handle,
+        state,
+        &config.whisper_model,
+        &config.device,
+        &config.compute_type,
+    )
+}
 
 #[tauri::command]
 pub fn get_models(
     app_handle: tauri::AppHandle,
     state: State<'_, SidecarState>,
-) -> Result<Vec<ModelInfo>, String> {
-    sidecar::ensure_running(&app_handle, &state)?;
+) -> Result<Vec<speech::ModelInfo>, String> {
+    ensure_sidecar_running(&app_handle, &state)?;
     let models_dir = sidecar::get_models_dir(&app_handle)?;
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     let sc = guard.as_mut().ok_or("Sidecar not running")?;
-    transcription::list_downloaded_models(sc, &models_dir.to_string_lossy())
+    speech::list_downloaded_models(sc, &models_dir.to_string_lossy())
 }
 
 #[tauri::command]
@@ -125,11 +125,11 @@ pub fn download_model_cmd(
     app_handle: tauri::AppHandle,
     state: State<'_, SidecarState>,
 ) -> Result<(), String> {
-    sidecar::ensure_running(&app_handle, &state)?;
+    ensure_sidecar_running(&app_handle, &state)?;
     let models_dir = sidecar::get_models_dir(&app_handle)?;
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     let sc = guard.as_mut().ok_or("Sidecar not running")?;
-    transcription::download_model(sc, &model, &models_dir.to_string_lossy(), &app_handle)
+    speech::download_model(sc, &model, &models_dir.to_string_lossy(), &app_handle)
 }
 
 #[tauri::command]
@@ -141,14 +141,13 @@ pub fn set_whisper_model(
     sidecar_state: State<'_, SidecarState>,
     config_state: State<'_, ConfigState>,
 ) -> Result<(), String> {
-    sidecar::ensure_running(&app_handle, &sidecar_state)?;
+    ensure_sidecar_running(&app_handle, &sidecar_state)?;
     let models_dir = sidecar::get_models_dir(&app_handle)?;
 
-    // Load model in sidecar
     {
         let mut guard = sidecar_state.0.lock().map_err(|e| e.to_string())?;
         let sc = guard.as_mut().ok_or("Sidecar not running")?;
-        transcription::load_model(
+        speech::load_model(
             sc,
             &model,
             &device,
@@ -157,12 +156,11 @@ pub fn set_whisper_model(
         )?;
     }
 
-    // Persist to config
     let mut config_guard = config_state.0.lock().map_err(|e| e.to_string())?;
     config_guard.whisper_model = model;
     config_guard.device = device;
     config_guard.compute_type = compute_type;
-    config::save_config(&app_handle, &config_guard)?;
+    settings::save_config(&app_handle, &config_guard)?;
 
     Ok(())
 }
@@ -172,16 +170,14 @@ pub fn get_gpu_available(
     app_handle: tauri::AppHandle,
     state: State<'_, SidecarState>,
 ) -> Result<bool, String> {
-    sidecar::ensure_running(&app_handle, &state)?;
+    ensure_sidecar_running(&app_handle, &state)?;
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     let sc = guard.as_mut().ok_or("Sidecar not running")?;
-    transcription::get_gpu_available(sc)
+    speech::get_gpu_available(sc)
 }
 
 #[tauri::command]
-pub fn get_sidecar_status(
-    state: State<'_, SidecarState>,
-) -> Result<String, String> {
+pub fn get_sidecar_status(state: State<'_, SidecarState>) -> Result<String, String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     match guard.as_mut() {
         Some(s) => {
@@ -195,33 +191,31 @@ pub fn get_sidecar_status(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Phase 5: Profile & post-processing commands
-// ---------------------------------------------------------------------------
+// ---- Profiles ----
 
 #[tauri::command]
 pub fn get_profiles(
     app_handle: tauri::AppHandle,
     state: State<'_, SidecarState>,
-) -> Result<Vec<Profile>, String> {
-    sidecar::ensure_running(&app_handle, &state)?;
-    let profiles_dir = transcription::get_profiles_dir(&app_handle)?;
+) -> Result<Vec<speech::Profile>, String> {
+    ensure_sidecar_running(&app_handle, &state)?;
+    let profiles_dir = speech::get_profiles_dir(&app_handle)?;
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     let sc = guard.as_mut().ok_or("Sidecar not running")?;
-    transcription::list_profiles(sc, &profiles_dir.to_string_lossy())
+    speech::list_profiles(sc, &profiles_dir.to_string_lossy())
 }
 
 #[tauri::command]
 pub fn save_profile_cmd(
-    profile: Profile,
+    profile: speech::Profile,
     app_handle: tauri::AppHandle,
     state: State<'_, SidecarState>,
 ) -> Result<(), String> {
-    sidecar::ensure_running(&app_handle, &state)?;
-    let profiles_dir = transcription::get_profiles_dir(&app_handle)?;
+    ensure_sidecar_running(&app_handle, &state)?;
+    let profiles_dir = speech::get_profiles_dir(&app_handle)?;
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     let sc = guard.as_mut().ok_or("Sidecar not running")?;
-    transcription::save_profile(sc, &profiles_dir.to_string_lossy(), &profile)
+    speech::save_profile(sc, &profiles_dir.to_string_lossy(), &profile)
 }
 
 #[tauri::command]
@@ -230,11 +224,11 @@ pub fn delete_profile_cmd(
     app_handle: tauri::AppHandle,
     state: State<'_, SidecarState>,
 ) -> Result<(), String> {
-    sidecar::ensure_running(&app_handle, &state)?;
-    let profiles_dir = transcription::get_profiles_dir(&app_handle)?;
+    ensure_sidecar_running(&app_handle, &state)?;
+    let profiles_dir = speech::get_profiles_dir(&app_handle)?;
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     let sc = guard.as_mut().ok_or("Sidecar not running")?;
-    transcription::delete_profile(sc, &profiles_dir.to_string_lossy(), &id)
+    speech::delete_profile(sc, &profiles_dir.to_string_lossy(), &id)
 }
 
 #[tauri::command]
@@ -246,12 +240,11 @@ pub fn test_llm_connection(
     app_handle: tauri::AppHandle,
     state: State<'_, SidecarState>,
 ) -> Result<String, String> {
-    sidecar::ensure_running(&app_handle, &state)?;
+    ensure_sidecar_running(&app_handle, &state)?;
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     let sc = guard.as_mut().ok_or("Sidecar not running")?;
 
-    // Use a simple test profile
-    let test_profile = Profile {
+    let test_profile = speech::Profile {
         id: "_test".to_string(),
         name: "Test".to_string(),
         builtin: false,
@@ -260,7 +253,7 @@ pub fn test_llm_connection(
         tone: "neutral".to_string(),
     };
 
-    transcription::post_process_text(
+    speech::post_process_text(
         sc,
         "this is a test to check if the connection works",
         &test_profile,
@@ -271,9 +264,7 @@ pub fn test_llm_connection(
     )
 }
 
-// ---------------------------------------------------------------------------
-// Phase 6: Startup & app info commands
-// ---------------------------------------------------------------------------
+// ---- Startup & App Info ----
 
 #[tauri::command]
 pub fn set_launch_on_startup(
@@ -281,12 +272,11 @@ pub fn set_launch_on_startup(
     app_handle: tauri::AppHandle,
     config_state: State<'_, ConfigState>,
 ) -> Result<(), String> {
-    startup::set_launch_on_startup(enable)?;
+    settings::set_launch_on_startup(enable)?;
 
-    // Persist to config
     let mut guard = config_state.0.lock().map_err(|e| e.to_string())?;
     guard.launch_on_startup = enable;
-    config::save_config(&app_handle, &guard)?;
+    settings::save_config(&app_handle, &guard)?;
     Ok(())
 }
 
@@ -295,14 +285,20 @@ pub struct AppInfo {
     pub version: String,
     pub name: String,
     pub launch_on_startup: bool,
+    pub log_path: String,
 }
 
 #[tauri::command]
 pub fn get_app_info() -> AppInfo {
+    let log_path = dirs_next::data_dir()
+        .map(|d| d.join("com.alish.yolo-voice").join("yolo-voice.log"))
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
     AppInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         name: "YOLO Voice".to_string(),
-        launch_on_startup: startup::is_launch_on_startup(),
+        launch_on_startup: settings::is_launch_on_startup(),
+        log_path,
     }
 }
 
@@ -311,45 +307,35 @@ pub fn quit_app(app_handle: tauri::AppHandle) {
     app_handle.exit(0);
 }
 
-// ---------------------------------------------------------------------------
-// Sound commands
-// ---------------------------------------------------------------------------
+// ---- Sound ----
 
 #[tauri::command]
 pub fn preview_sound(sound_name: String) -> Result<(), String> {
-    crate::text_insert::play_sound(&sound_name);
+    output::play_sound(&sound_name);
     Ok(())
 }
 
 #[tauri::command]
 pub fn get_available_sounds() -> Vec<String> {
-    crate::text_insert::AVAILABLE_SOUNDS
+    output::AVAILABLE_SOUNDS
         .iter()
         .map(|s| s.to_string())
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// Sidecar setup commands
-// ---------------------------------------------------------------------------
+// ---- Sidecar Setup ----
 
 #[tauri::command]
-pub fn get_sidecar_setup_status(
-    app_handle: tauri::AppHandle,
-) -> Result<bool, String> {
+pub fn get_sidecar_setup_status(app_handle: tauri::AppHandle) -> Result<bool, String> {
     sidecar::is_sidecar_setup(&app_handle)
 }
 
 #[tauri::command]
-pub fn setup_sidecar_cmd(
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
+pub fn setup_sidecar_cmd(app_handle: tauri::AppHandle) -> Result<(), String> {
     sidecar::setup_sidecar_python(&app_handle)
 }
 
-// ---------------------------------------------------------------------------
-// Phase 7: Global Dictionary & Industry Packs
-// ---------------------------------------------------------------------------
+// ---- Global Dictionary & Industry Packs ----
 
 #[tauri::command]
 pub fn get_global_dictionary(
@@ -365,17 +351,16 @@ pub fn save_global_dictionary_cmd(
     app_handle: tauri::AppHandle,
     state: State<'_, GlobalDictionaryState>,
 ) -> Result<(), String> {
-    transcription::save_global_dictionary(&app_handle, &dictionary)?;
+    speech::vocabulary::save_global_dictionary(&app_handle, &dictionary)?;
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     *guard = dictionary;
+    speech::vocabulary::invalidate_regex_cache();
     Ok(())
 }
 
 #[tauri::command]
-pub fn get_industry_packs(
-    app_handle: tauri::AppHandle,
-) -> Result<Vec<IndustryPackInfo>, String> {
-    transcription::list_industry_packs(&app_handle)
+pub fn get_industry_packs(app_handle: tauri::AppHandle) -> Result<Vec<IndustryPackInfo>, String> {
+    speech::vocabulary::list_industry_packs(&app_handle)
 }
 
 #[tauri::command]
@@ -385,20 +370,18 @@ pub fn apply_industry_pack(
     dict_state: State<'_, GlobalDictionaryState>,
     config_state: State<'_, ConfigState>,
 ) -> Result<GlobalDictionary, String> {
-    let pack = transcription::load_industry_pack(&app_handle, &pack_id)?;
+    let pack = speech::vocabulary::load_industry_pack(&app_handle, &pack_id)?;
 
     let mut guard = dict_state.0.lock().map_err(|e| e.to_string())?;
 
-    // Use shared merge helper
-    transcription::merge_pack_into_dictionary(&mut guard, &pack);
+    speech::vocabulary::merge_pack_into_dictionary(&mut guard, &pack);
 
-    // Save to disk
-    transcription::save_global_dictionary(&app_handle, &guard)?;
+    speech::vocabulary::save_global_dictionary(&app_handle, &guard)?;
+    speech::vocabulary::invalidate_regex_cache();
 
-    // Update config with active pack
     let mut config_guard = config_state.0.lock().map_err(|e| e.to_string())?;
     config_guard.active_industry_pack = pack_id;
-    config::save_config(&app_handle, &config_guard)?;
+    settings::save_config(&app_handle, &config_guard)?;
 
     Ok(guard.clone())
 }

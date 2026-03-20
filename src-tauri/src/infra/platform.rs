@@ -6,15 +6,14 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Media::Audio::{
-    eCapture, IMMDeviceEnumerator, MMDeviceEnumerator,
-    DEVICE_STATE_ACTIVE,
+    eCapture, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
 };
+use windows::Win32::System::Com::STGM;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,
 };
-use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
-use windows::Win32::System::Com::STGM;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DeviceInfo {
@@ -23,12 +22,10 @@ pub struct DeviceInfo {
 }
 
 /// Get full device names from Windows Core Audio API (IMMDeviceEnumerator).
-/// Returns names like "Microphone (Realtek(R) Audio)", "Microphone (2- Trust GXT 232 Microphone)".
 fn get_windows_audio_device_names() -> Vec<String> {
     let mut names = Vec::new();
 
     unsafe {
-        // COM might already be initialized, ignore errors
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
 
         let enumerator: IMMDeviceEnumerator =
@@ -53,7 +50,7 @@ fn get_windows_audio_device_names() -> Vec<String> {
                 Err(_) => continue,
             };
 
-            let store = match device.OpenPropertyStore(STGM(0)) { // STGM_READ = 0
+            let store = match device.OpenPropertyStore(STGM(0)) {
                 Ok(s) => s,
                 Err(_) => continue,
             };
@@ -74,16 +71,18 @@ fn get_windows_audio_device_names() -> Vec<String> {
 }
 
 pub fn list_input_devices() -> Vec<DeviceInfo> {
-    // Get full friendly names from Windows API
     let win_names = get_windows_audio_device_names();
-    eprintln!("[audio] Windows API found {} capture devices:", win_names.len());
+    eprintln!(
+        "[audio] Windows API found {} capture devices:",
+        win_names.len()
+    );
     for (i, name) in win_names.iter().enumerate() {
         eprintln!("[audio]   Win[{}]: \"{}\"", i, name);
     }
 
-    // Get cpal devices — both lists use WASAPI so indices should match
     let host = cpal::default_host();
-    let result: Vec<DeviceInfo> = host.input_devices()
+    let result: Vec<DeviceInfo> = host
+        .input_devices()
         .map(|devices| {
             devices
                 .enumerate()
@@ -92,14 +91,16 @@ pub fn list_input_devices() -> Vec<DeviceInfo> {
                     let cpal_name = d.name().unwrap_or_else(|_| "Unknown".to_string());
                     eprintln!("[audio]   cpal[{}]: \"{}\"", i, cpal_name);
 
-                    // Use Windows name at same index if available (both lists are WASAPI-ordered)
                     let full_name = if i < win_names.len() {
                         win_names[i].clone()
                     } else {
                         cpal_name
                     };
 
-                    DeviceInfo { name: full_name, index: i }
+                    DeviceInfo {
+                        name: full_name,
+                        index: i,
+                    }
                 })
                 .collect()
         })
@@ -118,8 +119,6 @@ pub struct AudioStream {
     stop_flag: Arc<AtomicBool>,
 }
 
-// cpal::Stream is not Send by default on some platforms,
-// but on Windows WASAPI it is safe to move between threads.
 unsafe impl Send for AudioStream {}
 
 impl Drop for AudioStream {
@@ -139,9 +138,7 @@ pub fn start_level_monitor(
         .nth(device_index)
         .ok_or_else(|| "Device not found".to_string())?;
 
-    let config = device
-        .default_input_config()
-        .map_err(|e| e.to_string())?;
+    let config = device.default_input_config().map_err(|e| e.to_string())?;
 
     let sample_format = config.sample_format();
     let stream_config: cpal::StreamConfig = config.into();
@@ -184,7 +181,6 @@ pub fn start_level_monitor(
 
     stream.play().map_err(|e| e.to_string())?;
 
-    // Polling thread: emits audio-level events at ~30fps
     let rms_reader = rms.clone();
     std::thread::spawn(move || {
         while !stop_reader.load(Ordering::Relaxed) {

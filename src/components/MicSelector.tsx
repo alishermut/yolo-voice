@@ -1,11 +1,7 @@
 import { useState, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { WaveformDisplay } from "./WaveformDisplay";
-
-interface DeviceInfo {
-  name: string;
-  index: number;
-}
+import type { DeviceInfo } from "../shared/types";
+import { listDevices, startTest, stopTest } from "../shared/platform";
 
 interface MicSelectorProps {
   deviceIndex?: number;
@@ -19,7 +15,7 @@ export function MicSelector({ deviceIndex, onDeviceChange }: MicSelectorProps) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    invoke<DeviceInfo[]>("list_devices")
+    listDevices()
       .then((devs) => {
         setDevices(devs);
         if (deviceIndex !== undefined) {
@@ -35,10 +31,10 @@ export function MicSelector({ deviceIndex, onDeviceChange }: MicSelectorProps) {
     setError(null);
     try {
       if (testing) {
-        await invoke("stop_test");
+        await stopTest();
         setTesting(false);
       } else {
-        await invoke("start_test", { deviceIndex: selected });
+        await startTest(selected);
         setTesting(true);
       }
     } catch (e) {
@@ -52,7 +48,7 @@ export function MicSelector({ deviceIndex, onDeviceChange }: MicSelectorProps) {
     onDeviceChange?.(index);
     if (testing) {
       try {
-        await invoke("stop_test");
+        await stopTest();
         setTesting(false);
       } catch (e) {
         setError(String(e));
@@ -66,11 +62,20 @@ export function MicSelector({ deviceIndex, onDeviceChange }: MicSelectorProps) {
     );
   }
 
+  const savedDevice = devices.find((d) => d.index === deviceIndex);
+
   return (
     <div>
       {error && (
         <div className="mb-3 px-3 py-2 bg-red-900/50 border border-red-700 rounded-lg text-red-300 text-sm">
           {error}
+        </div>
+      )}
+
+      {savedDevice && (
+        <div className="mb-2 flex items-center gap-2 text-xs text-gray-400">
+          <span className="inline-block w-2 h-2 rounded-full bg-green-500" />
+          Active: <span className="text-gray-300 font-medium">{savedDevice.name}</span>
         </div>
       )}
 
@@ -82,7 +87,7 @@ export function MicSelector({ deviceIndex, onDeviceChange }: MicSelectorProps) {
         >
           {devices.map((d) => (
             <option key={d.index} value={d.index}>
-              {d.name}
+              {d.name}{d.index === deviceIndex ? " (active)" : ""}
             </option>
           ))}
         </select>

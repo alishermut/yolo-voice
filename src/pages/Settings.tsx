@@ -1,5 +1,4 @@
 import { useState, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { MicSelector } from "../components/MicSelector";
 import { KeybindingInput } from "../components/KeybindingInput";
 import { ModelSelector } from "../components/ModelSelector";
@@ -7,36 +6,16 @@ import { ProfileEditor } from "../components/ProfileEditor";
 import { LLMSettings } from "../components/LLMSettings";
 import { ReplacementRules } from "../components/ReplacementRules";
 import { IndustryPackSelector } from "../components/IndustryPackSelector";
-
-interface AppConfig {
-  hotkey: string;
-  record_mode: "hold" | "toggle";
-  device_index: number;
-  whisper_model: string;
-  device: string;
-  compute_type: string;
-  language: string;
-  post_processing_enabled: boolean;
-  active_profile_id: string;
-  llm_provider: string;
-  llm_model: string;
-  llm_api_key: string;
-  llm_base_url: string;
-  transcription_mode: string;
-  cloud_stt_provider: string;
-  cloud_stt_api_key: string;
-  onboarding_completed: boolean;
-  launch_on_startup: boolean;
-  start_minimized: boolean;
-  active_industry_pack: string;
-  start_sound: string;
-  stop_sound: string;
-}
-
-interface GlobalDictionary {
-  vocabulary: string[];
-  replacements: { find: string; replace: string }[];
-}
+import type { AppConfig, GlobalDictionary } from "../shared/types";
+import {
+  getConfig,
+  saveConfig,
+  getGlobalDictionary,
+  saveGlobalDictionary,
+  getAvailableSounds,
+  previewSound,
+  setLaunchOnStartup,
+} from "../shared/platform";
 
 export function Settings() {
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -49,7 +28,7 @@ export function Settings() {
   const [availableSounds, setAvailableSounds] = useState<string[]>([]);
 
   const loadDict = () => {
-    invoke<GlobalDictionary>("get_global_dictionary")
+    getGlobalDictionary()
       .then((d) => {
         setGlobalDict(d);
         setVocabInput(d.vocabulary.join(", "));
@@ -58,10 +37,10 @@ export function Settings() {
   };
 
   useEffect(() => {
-    invoke<AppConfig>("get_config")
+    getConfig()
       .then(setConfig)
       .catch((e) => setError(String(e)));
-    invoke<string[]>("get_available_sounds")
+    getAvailableSounds()
       .then(setAvailableSounds)
       .catch(() => {});
     loadDict();
@@ -69,7 +48,7 @@ export function Settings() {
 
   const saveDict = async (dict: GlobalDictionary) => {
     try {
-      await invoke("save_global_dictionary_cmd", { dictionary: dict });
+      await saveGlobalDictionary(dict);
       setGlobalDict(dict);
     } catch (e) {
       setError(String(e));
@@ -80,7 +59,7 @@ export function Settings() {
     if (!config) return;
     const newConfig = { ...config, ...updates };
     try {
-      await invoke("save_config_cmd", { newConfig });
+      await saveConfig(newConfig);
       setConfig(newConfig);
       setError(null);
     } catch (e) {
@@ -290,9 +269,7 @@ export function Settings() {
             </select>
             <button
               onClick={() =>
-                invoke("preview_sound", {
-                  soundName: config?.start_sound ?? "chime",
-                })
+                previewSound(config?.start_sound ?? "chime")
               }
               className="p-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors"
               title="Preview sound"
@@ -315,9 +292,7 @@ export function Settings() {
             </select>
             <button
               onClick={() =>
-                invoke("preview_sound", {
-                  soundName: config?.stop_sound ?? "ding",
-                })
+                previewSound(config?.stop_sound ?? "ding")
               }
               className="p-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-300 hover:border-blue-500 hover:text-blue-300 transition-colors"
               title="Preview sound"
@@ -341,7 +316,7 @@ export function Settings() {
               activePack={config?.active_industry_pack ?? "general"}
               onApply={() => {
                 loadDict();
-                invoke<AppConfig>("get_config").then(setConfig).catch(() => {});
+                getConfig().then(setConfig).catch(() => {});
               }}
             />
           </div>
@@ -453,7 +428,7 @@ export function Settings() {
               onChange={async (e) => {
                 const enable = e.target.checked;
                 try {
-                  await invoke("set_launch_on_startup", { enable });
+                  await setLaunchOnStartup(enable);
                   setConfig((prev) =>
                     prev ? { ...prev, launch_on_startup: enable } : prev,
                   );

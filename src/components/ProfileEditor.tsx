@@ -1,14 +1,6 @@
 import { useState, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
-
-interface Profile {
-  id: string;
-  name: string;
-  builtin: boolean;
-  system_prompt: string;
-  dictionary: string[];
-  tone: string;
-}
+import type { Profile } from "../shared/types";
+import { getProfiles, saveProfile, deleteProfile } from "../shared/platform";
 
 interface ProfileEditorProps {
   activeProfileId: string;
@@ -30,7 +22,7 @@ export function ProfileEditor({
 
   const loadProfiles = async () => {
     try {
-      const result = await invoke<Profile[]>("get_profiles");
+      const result = await getProfiles();
       setProfiles(result);
     } catch (e) {
       setError(String(e));
@@ -41,7 +33,7 @@ export function ProfileEditor({
     if (!editingProfile) return;
     setError(null);
     try {
-      await invoke("save_profile_cmd", { profile: editingProfile });
+      await saveProfile(editingProfile);
       await loadProfiles();
       setEditingProfile(null);
     } catch (e) {
@@ -52,7 +44,7 @@ export function ProfileEditor({
   const handleDelete = async (id: string) => {
     setError(null);
     try {
-      await invoke("delete_profile_cmd", { id });
+      await deleteProfile(id);
       await loadProfiles();
       if (activeProfileId === id) {
         onProfileChange("general");

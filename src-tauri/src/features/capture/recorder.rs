@@ -4,8 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use tauri::{AppHandle, Emitter, Manager};
-use crate::commands::PillUiState;
+use tauri::AppHandle;
 
 pub struct RecordingStream {
     _stream: cpal::Stream,
@@ -68,7 +67,8 @@ pub fn start_recording(
         cpal::SampleFormat::I16 => device.build_input_stream(
             &stream_config,
             move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                let floats: Vec<f32> = data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
+                let floats: Vec<f32> =
+                    data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
                 if let Ok(mut buf) = samples_writer.lock() {
                     buf.extend_from_slice(&floats);
                 }
@@ -85,24 +85,26 @@ pub fn start_recording(
 
     stream.play().map_err(|e| e.to_string())?;
 
-    // Polling thread: emits recording-level events at ~30fps + updates shared state
+    // Emits recording-level events at ~30fps for the pill UI
     let rms_reader = rms.clone();
     std::thread::spawn(move || {
+        let mut smoothed: f32 = 0.0;
         let mut frame_count = 0u32;
         while !stop_reader.load(Ordering::Relaxed) {
             let raw_rms = f32::from_bits(rms_reader.load(Ordering::Relaxed));
-            // Normalize: raw RMS is typically 0.0001-0.1 for speech.
-            // Convert to 0-100 scale with aggressive amplification.
-            let normalized = (raw_rms * 1500.0).min(100.0);
-            let _ = app_handle.emit("recording-level", normalized);
-            // Update shared PillUiState for polling
-            if let Ok(mut lv) = app_handle.state::<PillUiState>().audio_level.lock() {
-                *lv = normalized;
-            }
-            // Log every ~1 second so we can debug
+            // Noise gate: ignore ambient mic noise below threshold
+            let gated = if raw_rms < 0.005 { 0.0 } else { raw_rms };
+            // Fast attack (0.5), faster decay (0.35) so bars drop when speech stops
+            let alpha = if gated > smoothed { 0.5 } else { 0.35 };
+            smoothed = smoothed + alpha * (gated - smoothed);
+            let normalized = (smoothed * 1100.0).min(100.0);
+            crate::app::events::emit_all(&app_handle, "recording-level", normalized);
             frame_count += 1;
             if frame_count % 30 == 0 {
-                eprintln!("[recorder] raw_rms={:.5} normalized={:.1}", raw_rms, normalized);
+                eprintln!(
+                    "[recorder] raw_rms={:.5} smoothed={:.5} normalized={:.1}",
+                    raw_rms, smoothed, normalized
+                );
             }
             std::thread::sleep(Duration::from_millis(33));
         }
@@ -118,7 +120,6 @@ pub fn start_recording(
 }
 
 pub fn stop_and_save(recording: RecordingStream) -> Result<PathBuf, String> {
-    // Signal stop
     recording.stop_flag.store(true, Ordering::Relaxed);
 
     let samples = recording
@@ -149,7 +150,6 @@ pub fn stop_and_save(recording: RecordingStream) -> Result<PathBuf, String> {
 
 /// Stop recording and return WAV bytes in memory (no disk I/O).
 pub fn stop_and_get_wav_bytes(recording: RecordingStream) -> Result<Vec<u8>, String> {
-    // Signal stop
     recording.stop_flag.store(true, Ordering::Relaxed);
 
     let samples = recording
@@ -158,14 +158,13 @@ pub fn stop_and_get_wav_bytes(recording: RecordingStream) -> Result<Vec<u8>, Str
         .map_err(|e| e.to_string())?
         .clone();
 
-    // Build WAV in memory manually (WAV format is simple for PCM float32)
     let num_channels = recording.channels as u32;
     let sample_rate = recording.sample_rate;
     let bits_per_sample: u32 = 32;
     let byte_rate = sample_rate * num_channels * bits_per_sample / 8;
     let block_align = (num_channels * bits_per_sample / 8) as u16;
     let data_size = (samples.len() * 4) as u32;
-    let file_size = 36 + data_size; // 36 = header size minus 8 bytes for RIFF chunk header
+    let file_size = 36 + data_size;
 
     let mut buf: Vec<u8> = Vec::with_capacity(44 + samples.len() * 4);
 
@@ -176,8 +175,8 @@ pub fn stop_and_get_wav_bytes(recording: RecordingStream) -> Result<Vec<u8>, Str
 
     // fmt sub-chunk
     buf.extend_from_slice(b"fmt ");
-    buf.extend_from_slice(&16u32.to_le_bytes()); // sub-chunk size
-    buf.extend_from_slice(&3u16.to_le_bytes()); // audio format: 3 = IEEE float
+    buf.extend_from_slice(&16u32.to_le_bytes());
+    buf.extend_from_slice(&3u16.to_le_bytes()); // IEEE float
     buf.extend_from_slice(&(num_channels as u16).to_le_bytes());
     buf.extend_from_slice(&sample_rate.to_le_bytes());
     buf.extend_from_slice(&byte_rate.to_le_bytes());

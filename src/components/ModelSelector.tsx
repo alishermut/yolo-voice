@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { getGpuAvailable, getSidecarStatus, setWhisperModel, onSidecarStatus } from "../shared/platform";
 
 interface ModelSelectorProps {
   whisperModel: string;
@@ -22,27 +22,22 @@ export function ModelSelector({
     checkGpu();
     checkSidecar();
 
-    // Poll sidecar status until it's running (it spawns in background thread)
-    const interval = setInterval(async () => {
-      try {
-        const status = await invoke<string>("get_sidecar_status");
-        setSidecarStatus(status);
-        if (status === "running") {
-          clearInterval(interval);
-          // Re-check GPU once sidecar is ready
-          checkGpu();
-        }
-      } catch {
-        // ignore
+    // Listen for sidecar status changes instead of polling
+    const unlisten = onSidecarStatus((status) => {
+      setSidecarStatus(status);
+      if (status === "running") {
+        checkGpu();
       }
-    }, 2000);
+    });
 
-    return () => clearInterval(interval);
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, []);
 
   const checkGpu = async () => {
     try {
-      const available = await invoke<boolean>("get_gpu_available");
+      const available = await getGpuAvailable();
       setGpuAvailable(available);
     } catch {
       setGpuAvailable(false);
@@ -51,7 +46,7 @@ export function ModelSelector({
 
   const checkSidecar = async () => {
     try {
-      const status = await invoke<string>("get_sidecar_status");
+      const status = await getSidecarStatus();
       setSidecarStatus(status);
     } catch {
       setSidecarStatus("error");
@@ -62,11 +57,7 @@ export function ModelSelector({
     const newComputeType = newDevice === "cpu" ? "int8" : "float16";
     setError(null);
     try {
-      await invoke("set_whisper_model", {
-        model: whisperModel,
-        device: newDevice,
-        computeType: newComputeType,
-      });
+      await setWhisperModel(whisperModel, newDevice, newComputeType);
     } catch (e) {
       setError(String(e));
     }

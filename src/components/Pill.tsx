@@ -1,23 +1,26 @@
 import { useState, useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
-
-type PillState = "idle" | "recording" | "transcribing" | "done";
+import type { PillState } from "../shared/types";
+import { onRecordingState, onRecordingLevel } from "../shared/platform";
 
 function Waveform({ level, barCount = 9 }: { level: number; barCount?: number }) {
-  const [bars, setBars] = useState<number[]>(Array(barCount).fill(15));
+  const [bars, setBars] = useState<number[]>(Array(barCount).fill(8));
+  const levelRef = useRef(level);
+  levelRef.current = level;
 
   useEffect(() => {
     const interval = setInterval(() => {
+      const l = levelRef.current;
       setBars(prev =>
         prev.map(() => {
-          const base = Math.max(level * 0.9, 12);
-          const variation = (Math.random() - 0.5) * level * 0.5;
-          return Math.max(12, Math.min(100, base + variation));
+          if (l < 2) return 8;
+          const base = l * 0.9;
+          const variation = (Math.random() - 0.5) * l * 0.5;
+          return Math.max(8, Math.min(100, base + variation));
         })
       );
-    }, 60);
+    }, 80);
     return () => clearInterval(interval);
-  }, [level]);
+  }, []);
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: "2px", height: "22px" }}>
@@ -27,7 +30,7 @@ function Waveform({ level, barCount = 9 }: { level: number; barCount?: number })
           style={{
             width: "3px",
             borderRadius: "999px",
-            transition: "height 60ms ease",
+            transition: "height 80ms ease",
             height: `${h}%`,
             backgroundColor: `rgba(74, 222, 128, ${0.5 + h / 200})`,
           }}
@@ -42,7 +45,6 @@ export function Pill() {
   const [level, setLevel] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const doneTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const prevState = useRef<string>("idle");
   const transcribeStart = useRef<number | null>(null);
 
   // Elapsed timer for transcribing state
@@ -61,31 +63,30 @@ export function Pill() {
     }
   }, [state]);
 
+  // Event-driven: listen to recording-state and recording-level events
   useEffect(() => {
-    const interval = setInterval(async () => {
-      try {
-        const [recState, audioLevel] = await invoke<[string, number]>("get_pill_state");
-
-        if (recState === "done" && prevState.current !== "done") {
-          setState("done");
-          if (doneTimer.current) clearTimeout(doneTimer.current);
-          doneTimer.current = setTimeout(() => setState("idle"), 1200);
-        } else if (recState !== "done") {
-          setState(recState as PillState);
-          if (doneTimer.current) {
-            clearTimeout(doneTimer.current);
-            doneTimer.current = null;
-          }
+    const unlistenState = onRecordingState((newState) => {
+      if (newState === "done") {
+        setState("done");
+        if (doneTimer.current) clearTimeout(doneTimer.current);
+        doneTimer.current = setTimeout(() => setState("idle"), 1200);
+      } else {
+        setState(newState);
+        if (doneTimer.current) {
+          clearTimeout(doneTimer.current);
+          doneTimer.current = null;
         }
-
-        prevState.current = recState;
-        setLevel(audioLevel);
-      } catch {
-        // Ignore
       }
-    }, 80);
+    });
 
-    return () => clearInterval(interval);
+    const unlistenLevel = onRecordingLevel((audioLevel) => {
+      setLevel(audioLevel);
+    });
+
+    return () => {
+      unlistenState.then((fn) => fn());
+      unlistenLevel.then((fn) => fn());
+    };
   }, []);
 
   const isActive = state !== "idle";

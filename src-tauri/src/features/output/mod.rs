@@ -2,6 +2,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
+use windows::core::PCWSTR;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY};
 use windows::Win32::System::Threading::{
@@ -14,29 +15,36 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
 };
-use windows::core::PCWSTR;
 
 pub struct FocusedWindowState(pub Mutex<isize>);
 
-// Sound registry: all available notification sounds
-const SOUND_CHIME: &[u8] = include_bytes!("../sounds/chime.wav");
-const SOUND_POP: &[u8] = include_bytes!("../sounds/pop.wav");
-const SOUND_BELL: &[u8] = include_bytes!("../sounds/bell.wav");
-const SOUND_DING: &[u8] = include_bytes!("../sounds/ding.wav");
-const SOUND_CLICK: &[u8] = include_bytes!("../sounds/click.wav");
-const SOUND_WHOOSH: &[u8] = include_bytes!("../sounds/whoosh.wav");
-const SOUND_BUBBLE: &[u8] = include_bytes!("../sounds/bubble.wav");
-const SOUND_TAP: &[u8] = include_bytes!("../sounds/tap.wav");
-const SOUND_GENTLE: &[u8] = include_bytes!("../sounds/gentle.wav");
-const SOUND_BRIGHT: &[u8] = include_bytes!("../sounds/bright.wav");
-const SOUND_CLASSIC_START: &[u8] = include_bytes!("../sounds/classic_start.wav");
-const SOUND_CLASSIC_DONE: &[u8] = include_bytes!("../sounds/classic_done.wav");
+// Sound registry
+const SOUND_CHIME: &[u8] = include_bytes!("../../../sounds/chime.wav");
+const SOUND_POP: &[u8] = include_bytes!("../../../sounds/pop.wav");
+const SOUND_BELL: &[u8] = include_bytes!("../../../sounds/bell.wav");
+const SOUND_DING: &[u8] = include_bytes!("../../../sounds/ding.wav");
+const SOUND_CLICK: &[u8] = include_bytes!("../../../sounds/click.wav");
+const SOUND_WHOOSH: &[u8] = include_bytes!("../../../sounds/whoosh.wav");
+const SOUND_BUBBLE: &[u8] = include_bytes!("../../../sounds/bubble.wav");
+const SOUND_TAP: &[u8] = include_bytes!("../../../sounds/tap.wav");
+const SOUND_GENTLE: &[u8] = include_bytes!("../../../sounds/gentle.wav");
+const SOUND_BRIGHT: &[u8] = include_bytes!("../../../sounds/bright.wav");
+const SOUND_CLASSIC_START: &[u8] = include_bytes!("../../../sounds/classic_start.wav");
+const SOUND_CLASSIC_DONE: &[u8] = include_bytes!("../../../sounds/classic_done.wav");
 
-/// All available sound names for the frontend.
 pub const AVAILABLE_SOUNDS: &[&str] = &[
-    "chime", "pop", "bell", "ding", "click",
-    "whoosh", "bubble", "tap", "gentle", "bright",
-    "classic_start", "classic_done",
+    "chime",
+    "pop",
+    "bell",
+    "ding",
+    "click",
+    "whoosh",
+    "bubble",
+    "tap",
+    "gentle",
+    "bright",
+    "classic_start",
+    "classic_done",
 ];
 
 fn get_sound_bytes(name: &str) -> &'static [u8] {
@@ -53,7 +61,7 @@ fn get_sound_bytes(name: &str) -> &'static [u8] {
         "bright" => SOUND_BRIGHT,
         "classic_start" => SOUND_CLASSIC_START,
         "classic_done" => SOUND_CLASSIC_DONE,
-        _ => SOUND_CHIME, // fallback
+        _ => SOUND_CHIME,
     }
 }
 
@@ -96,7 +104,12 @@ fn get_window_exe_name(hwnd: isize) -> Option<String> {
 
         let mut buf = [0u16; 260];
         let mut len = buf.len() as u32;
-        let ok = QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &mut len);
+        let ok = QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            windows::core::PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        );
         let _ = windows::Win32::Foundation::CloseHandle(process);
 
         if ok.is_err() {
@@ -113,44 +126,34 @@ pub fn insert_text(text: &str, target_hwnd: isize) -> Result<(), String> {
         return Ok(());
     }
 
-    // Write to clipboard
-    let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("Clipboard error: {}", e))?;
+    let mut clipboard =
+        arboard::Clipboard::new().map_err(|e| format!("Clipboard error: {}", e))?;
     clipboard
         .set_text(text)
         .map_err(|e| format!("Failed to set clipboard text: {}", e))?;
 
-    // Restore focus to the target window
     unsafe {
         let hwnd = HWND(target_hwnd as *mut _);
         let _ = SetForegroundWindow(hwnd);
     }
     thread::sleep(Duration::from_millis(50));
 
-    // Determine paste keystroke
     let use_shift = is_terminal_window(target_hwnd);
-
-    // Build SendInput sequence
     send_paste_keystroke(use_shift)
 }
 
 fn send_paste_keystroke(with_shift: bool) -> Result<(), String> {
     let mut inputs: Vec<INPUT> = Vec::new();
 
-    // Key down: Ctrl
     inputs.push(make_key_input(VK_CONTROL, false));
-    // Key down: Shift (if terminal)
     if with_shift {
         inputs.push(make_key_input(VK_SHIFT, false));
     }
-    // Key down: V
     inputs.push(make_key_input(VK_V, false));
-    // Key up: V
     inputs.push(make_key_input(VK_V, true));
-    // Key up: Shift (if terminal)
     if with_shift {
         inputs.push(make_key_input(VK_SHIFT, true));
     }
-    // Key up: Ctrl
     inputs.push(make_key_input(VK_CONTROL, true));
 
     let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
@@ -186,14 +189,10 @@ fn make_key_input(vk: VIRTUAL_KEY, key_up: bool) -> INPUT {
 }
 
 pub fn play_sound(name: &str) {
-    let sound_data = get_sound_bytes(name);
-    // We need to copy the pointer since the data is 'static
-    let ptr = sound_data.as_ptr() as usize;
-    let len = sound_data.len();
+    // Sound data is &'static [u8] from include_bytes!, safe to send across threads.
+    let sound_data: &'static [u8] = get_sound_bytes(name);
     thread::spawn(move || {
-        // SAFETY: sound data is 'static, pointer is valid for program lifetime
-        let data = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
-        play_wav_from_memory(data);
+        play_wav_from_memory(sound_data);
     });
 }
 

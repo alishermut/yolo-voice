@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { MicSelector } from "../components/MicSelector";
+import { getConfig, saveConfig } from "../shared/platform";
 
 interface OnboardingProps {
   onComplete: () => void;
@@ -20,7 +20,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
     setSaving(true);
     try {
       // Get current config, update it, and save
-      const config = await invoke<Record<string, unknown>>("get_config");
+      const config = await getConfig();
       const newConfig = {
         ...config,
         device_index: deviceIndex,
@@ -29,7 +29,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
         cloud_stt_api_key: cloudApiKey,
         onboarding_completed: true,
       };
-      await invoke("save_config_cmd", { newConfig });
+      await saveConfig(newConfig);
       onComplete();
     } catch (e) {
       console.error("Onboarding save error:", e);

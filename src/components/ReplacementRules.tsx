@@ -1,9 +1,5 @@
 import { useState } from "react";
-
-interface ReplacementRule {
-  find: string;
-  replace: string;
-}
+import type { ReplacementRule } from "../shared/types";
 
 interface ReplacementRulesProps {
   rules: ReplacementRule[];

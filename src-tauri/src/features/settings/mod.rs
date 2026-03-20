@@ -5,6 +5,14 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+use windows::core::PCWSTR;
+use windows::Win32::System::Registry::{
+    RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
+    HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_SZ,
+};
+
+// ---- Config ----
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum RecordMode {
@@ -37,7 +45,6 @@ pub struct AppConfig {
     pub llm_api_key: String,
     #[serde(default = "default_llm_base_url")]
     pub llm_base_url: String,
-    // Phase 6: Cloud STT + startup
     #[serde(default = "default_transcription_mode")]
     pub transcription_mode: String,
     #[serde(default = "default_cloud_stt_provider")]
@@ -58,20 +65,45 @@ pub struct AppConfig {
     pub stop_sound: String,
 }
 
-fn default_industry_pack() -> String { "general".to_string() }
-
-fn default_whisper_model() -> String { "tiny".to_string() }
-fn default_device() -> String { "auto".to_string() }
-fn default_compute_type() -> String { "float16".to_string() }
-fn default_language() -> String { "en".to_string() }
-fn default_active_profile() -> String { "general".to_string() }
-fn default_llm_provider() -> String { "ollama".to_string() }
-fn default_llm_model() -> String { "llama3.1:8b".to_string() }
-fn default_llm_base_url() -> String { "http://localhost:11434".to_string() }
-fn default_transcription_mode() -> String { "offline".to_string() }
-fn default_cloud_stt_provider() -> String { "groq".to_string() }
-fn default_start_sound() -> String { "chime".to_string() }
-fn default_stop_sound() -> String { "ding".to_string() }
+fn default_industry_pack() -> String {
+    "general".to_string()
+}
+fn default_whisper_model() -> String {
+    "tiny".to_string()
+}
+fn default_device() -> String {
+    "auto".to_string()
+}
+fn default_compute_type() -> String {
+    "float16".to_string()
+}
+fn default_language() -> String {
+    "en".to_string()
+}
+fn default_active_profile() -> String {
+    "general".to_string()
+}
+fn default_llm_provider() -> String {
+    "ollama".to_string()
+}
+fn default_llm_model() -> String {
+    "llama3.1:8b".to_string()
+}
+fn default_llm_base_url() -> String {
+    "http://localhost:11434".to_string()
+}
+fn default_transcription_mode() -> String {
+    "offline".to_string()
+}
+fn default_cloud_stt_provider() -> String {
+    "groq".to_string()
+}
+fn default_start_sound() -> String {
+    "chime".to_string()
+}
+fn default_stop_sound() -> String {
+    "ding".to_string()
+}
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -134,4 +166,101 @@ pub fn save_config(app_handle: &AppHandle, config: &AppConfig) -> Result<(), Str
     let json = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
     fs::write(&path, json).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ---- Startup (Windows Registry) ----
+
+const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const VALUE_NAME: &str = "YOLOVoice";
+
+fn to_wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+pub fn set_launch_on_startup(enable: bool) -> Result<(), String> {
+    let exe_path =
+        std::env::current_exe().map_err(|e| format!("Failed to get exe path: {}", e))?;
+    let exe_str = exe_path.to_string_lossy().to_string();
+
+    unsafe {
+        let mut key = HKEY::default();
+        let subkey = to_wide(RUN_KEY);
+
+        let result = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(subkey.as_ptr()),
+            0,
+            KEY_SET_VALUE,
+            &mut key,
+        );
+
+        if result.is_err() {
+            return Err(format!("Failed to open registry key: {:?}", result));
+        }
+
+        let value_name = to_wide(VALUE_NAME);
+
+        if enable {
+            let value_data = to_wide(&format!("\"{}\"", exe_str));
+            let data_bytes = std::slice::from_raw_parts(
+                value_data.as_ptr() as *const u8,
+                value_data.len() * 2,
+            );
+
+            let result = RegSetValueExW(
+                key,
+                PCWSTR(value_name.as_ptr()),
+                0,
+                REG_SZ,
+                Some(data_bytes),
+            );
+
+            let _ = RegCloseKey(key);
+            if result.is_err() {
+                return Err(format!("Failed to set registry value: {:?}", result));
+            }
+        } else {
+            let result = RegDeleteValueW(key, PCWSTR(value_name.as_ptr()));
+            let _ = RegCloseKey(key);
+            if result.is_err() {
+                eprintln!("Registry delete (may not exist): {:?}", result);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub fn is_launch_on_startup() -> bool {
+    unsafe {
+        let mut key = HKEY::default();
+        let subkey = to_wide(RUN_KEY);
+
+        let result = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(subkey.as_ptr()),
+            0,
+            KEY_READ,
+            &mut key,
+        );
+
+        if result.is_err() {
+            return false;
+        }
+
+        let value_name = to_wide(VALUE_NAME);
+        let mut data_size: u32 = 0;
+
+        let result = RegQueryValueExW(
+            key,
+            PCWSTR(value_name.as_ptr()),
+            None,
+            None,
+            None,
+            Some(&mut data_size),
+        );
+
+        let _ = RegCloseKey(key);
+        result.is_ok() && data_size > 0
+    }
 }

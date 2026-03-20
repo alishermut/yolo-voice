@@ -1,14 +1,12 @@
-import { useState, useEffect, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useState, useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { check } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
 import { Settings } from "./pages/Settings";
 import { About } from "./pages/About";
 import { Onboarding } from "./pages/Onboarding";
+import { useUpdater } from "./hooks/useUpdater";
+import { getConfig, quitApp } from "./shared/platform";
 
 type Page = "settings" | "about";
-type UpdateStatus = "idle" | "checking" | "downloading" | "ready" | "up-to-date" | "error";
 
 /** Spinning loader icon */
 function Spinner({ className = "" }: { className?: string }) {
@@ -35,42 +33,10 @@ function Spinner({ className = "" }: { className?: string }) {
 function App() {
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
   const [page, setPage] = useState<Page>("settings");
-
-  // Update state
-  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
-  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
-  const [updateObj, setUpdateObj] = useState<Awaited<ReturnType<typeof check>> | null>(null);
-
-  const checkForUpdates = useCallback(async () => {
-    setUpdateStatus("checking");
-    try {
-      const update = await check();
-      if (update?.available) {
-        setUpdateVersion(update.version);
-        setUpdateStatus("downloading");
-        await update.download();
-        setUpdateObj(update);
-        setUpdateStatus("ready");
-      } else {
-        setUpdateStatus("up-to-date");
-        // Reset back to idle after 5 seconds
-        setTimeout(() => setUpdateStatus("idle"), 5000);
-      }
-    } catch {
-      setUpdateStatus("error");
-      setTimeout(() => setUpdateStatus("idle"), 5000);
-    }
-  }, []);
-
-  const installUpdate = useCallback(async () => {
-    if (updateObj) {
-      await updateObj.install();
-      await relaunch();
-    }
-  }, [updateObj]);
+  const { status: updateStatus, version: updateVersion, checkForUpdates, installUpdate } = useUpdater();
 
   useEffect(() => {
-    invoke<{ onboarding_completed: boolean }>("get_config")
+    getConfig()
       .then((config) => setOnboarded(config.onboarding_completed))
       .catch(() => setOnboarded(true));
 
@@ -208,7 +174,7 @@ function App() {
             Hide
           </button>
           <button
-            onClick={() => invoke("quit_app")}
+            onClick={() => quitApp()}
             className="px-3 py-1.5 rounded-lg text-sm font-medium text-red-400 hover:text-red-300 hover:bg-red-900/30 transition-colors"
             title="Quit YOLO Voice completely"
           >

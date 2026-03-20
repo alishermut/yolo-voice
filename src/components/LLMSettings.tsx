@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { testLlmConnection } from "../shared/platform";
 
 interface LLMSettingsProps {
   provider: string;
@@ -71,12 +71,7 @@ export function LLMSettings({
     setTesting(true);
     setTestResult(null);
     try {
-      const result = await invoke<string>("test_llm_connection", {
-        provider,
-        model,
-        apiKey,
-        baseUrl,
-      });
+      const result = await testLlmConnection(provider, model, apiKey, baseUrl);
       setTestResult({ ok: true, msg: `Response: "${result}"` });
     } catch (e) {
       setTestResult({ ok: false, msg: String(e) });

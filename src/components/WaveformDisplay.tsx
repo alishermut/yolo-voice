@@ -1,12 +1,12 @@
 import { useState, useEffect } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { onAudioLevel } from "../shared/platform";
 
 export function WaveformDisplay() {
   const [level, setLevel] = useState(0);
 
   useEffect(() => {
-    const unlisten = listen<number>("audio-level", (event) => {
-      const normalized = Math.min(event.payload * 200, 100);
+    const unlisten = onAudioLevel((rawLevel) => {
+      const normalized = Math.min(rawLevel * 200, 100);
       setLevel(normalized);
     });
     return () => {

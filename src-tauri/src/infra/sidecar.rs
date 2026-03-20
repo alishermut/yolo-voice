@@ -32,14 +32,12 @@ pub struct SidecarState(pub Mutex<Option<SidecarProcess>>);
 
 impl Drop for SidecarProcess {
     fn drop(&mut self) {
-        // Try graceful shutdown first
         let shutdown_cmd = serde_json::json!({"cmd": "shutdown"});
         if let Ok(line) = serde_json::to_string(&shutdown_cmd) {
             let _ = writeln!(self.stdin, "{}", line);
             let _ = self.stdin.flush();
         }
 
-        // Give it a moment then force kill
         std::thread::sleep(Duration::from_millis(500));
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -80,7 +78,6 @@ impl SidecarProcess {
     }
 
     /// Send a command that may produce progress lines before the final response.
-    /// Calls `progress_cb` for each progress line.
     pub fn send_command_with_progress(
         &mut self,
         cmd: Value,
@@ -130,7 +127,7 @@ impl SidecarProcess {
     }
 }
 
-/// Get the sidecar environment directory inside app data (for Python runtime).
+/// Get the sidecar environment directory inside app data.
 pub fn get_sidecar_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
     let dir = app_handle
         .path()
@@ -144,26 +141,20 @@ pub fn get_sidecar_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
 /// Check whether the Python sidecar environment is set up.
 pub fn is_sidecar_setup(app_handle: &AppHandle) -> Result<bool, String> {
     if cfg!(debug_assertions) {
-        return Ok(true); // Dev mode always has Python available
+        return Ok(true);
     }
-    // In production the Python env is bundled with the installer and copied
-    // on first launch by ensure_bundled_env_copied(), so it's always ready.
     let sidecar_dir = get_sidecar_dir(app_handle)?;
     let python = sidecar_dir.join("python/python.exe");
     Ok(python.exists())
 }
 
-/// Copy the bundled Python environment from the resource directory to the
-/// writable AppData directory. This replaces the old download-from-internet
-/// approach. The copy is skipped if the bundle version marker already matches
-/// the current app version.
+/// Copy the bundled Python environment from the resource directory to AppData.
 pub fn ensure_bundled_env_copied(app_handle: &AppHandle) -> Result<(), String> {
     let sidecar_dir = get_sidecar_dir(app_handle)?;
     let python_dir = sidecar_dir.join("python");
     let version_file = sidecar_dir.join(".bundle_version");
     let current_version = env!("CARGO_PKG_VERSION");
 
-    // Check if we already copied this version
     if python_dir.join("python.exe").exists() {
         if let Ok(stored_version) = std::fs::read_to_string(&version_file) {
             if stored_version.trim() == current_version {
@@ -196,17 +187,15 @@ pub fn ensure_bundled_env_copied(app_handle: &AppHandle) -> Result<(), String> {
         python_dir.display()
     );
 
-    // Remove old env if it exists (fresh copy for new version)
     if python_dir.exists() {
         let _ = std::fs::remove_dir_all(&python_dir);
     }
     std::fs::create_dir_all(&python_dir).map_err(|e| e.to_string())?;
 
-    // Recursive copy
     copy_dir_all(&bundled_python, &python_dir)
         .map_err(|e| format!("Failed to copy Python environment: {}", e))?;
 
-    // Also copy the bundled tiny model if it's not already in AppData
+    // Copy bundled tiny model if not already in AppData
     let models_dir = get_models_dir(app_handle)?;
     let bundled_model = bundled_sidecar_dir
         .join("models")
@@ -220,7 +209,6 @@ pub fn ensure_bundled_env_copied(app_handle: &AppHandle) -> Result<(), String> {
             .map_err(|e| format!("Failed to copy bundled model: {}", e))?;
     }
 
-    // Write version marker
     std::fs::write(&version_file, current_version).map_err(|e| e.to_string())?;
 
     eprintln!(
@@ -230,7 +218,6 @@ pub fn ensure_bundled_env_copied(app_handle: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Recursively copy a directory and all its contents.
 fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<(), std::io::Error> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -246,16 +233,13 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<(), std:
     Ok(())
 }
 
-/// Legacy setup function — now just ensures the bundled env is copied.
-/// Kept for backwards compatibility with the setup_sidecar_cmd command.
+/// Legacy setup function — kept for backwards compatibility.
 pub fn setup_sidecar_python(app_handle: &AppHandle) -> Result<(), String> {
     ensure_bundled_env_copied(app_handle)
 }
 
-/// Resolve the Python executable and script path for the sidecar.
 fn resolve_sidecar_paths(app_handle: &AppHandle) -> Result<(String, PathBuf), String> {
     if cfg!(debug_assertions) {
-        // Dev mode: resolve relative to project root
         let project_root = std::env::current_dir().map_err(|e| e.to_string())?;
 
         let sidecar_dir = if project_root.join("sidecar").exists() {
@@ -277,10 +261,6 @@ fn resolve_sidecar_paths(app_handle: &AppHandle) -> Result<(String, PathBuf), St
             ));
         }
 
-        // Look for Python in order of preference:
-        // 1. venv in sidecar dir
-        // 2. Python 3.12 (has CUDA support for faster-whisper)
-        // 3. System python
         let venv_python = sidecar_dir.join(".venv/Scripts/python.exe");
         let python312 =
             PathBuf::from(r"C:\Users\Alish\AppData\Local\Programs\Python\Python312\python.exe");
@@ -295,8 +275,6 @@ fn resolve_sidecar_paths(app_handle: &AppHandle) -> Result<(String, PathBuf), St
 
         Ok((python, script_path))
     } else {
-        // Production: scripts bundled as resources, Python copied from bundle to app data
-        // Ensure the bundled environment has been copied to the writable AppData dir
         ensure_bundled_env_copied(app_handle)?;
 
         let bundled_sidecar_dir = bundled_sidecar_dir(app_handle)?;
@@ -336,7 +314,6 @@ pub fn spawn_sidecar(app_handle: &AppHandle) -> Result<SidecarProcess, String> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
-        // Prevent a console window from flashing on Windows
         .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .spawn()
         .map_err(|e| {
@@ -410,9 +387,6 @@ pub fn get_models_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
 pub fn cleanup_models(app_handle: &AppHandle, keep_model: &str) -> Result<(), String> {
     let models_dir = get_models_dir(app_handle)?;
 
-    // Match both naming formats:
-    //   "faster-whisper-tiny" (direct download)
-    //   "models--Systran--faster-whisper-tiny" (HuggingFace cache)
     let is_keep = |name: &str| -> bool {
         name == format!("faster-whisper-{}", keep_model)
             || name == format!("models--Systran--faster-whisper-{}", keep_model)
@@ -421,7 +395,6 @@ pub fn cleanup_models(app_handle: &AppHandle, keep_model: &str) -> Result<(), St
     if let Ok(entries) = std::fs::read_dir(&models_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            // Only delete model directories (contain "whisper"), skip .locks etc.
             if entry.path().is_dir() && name.contains("whisper") && !is_keep(&name) {
                 eprintln!("[sidecar] Removing unused model: {}", name);
                 let _ = std::fs::remove_dir_all(entry.path());
@@ -432,9 +405,14 @@ pub fn cleanup_models(app_handle: &AppHandle, keep_model: &str) -> Result<(), St
 }
 
 /// Ensure the sidecar is running, spawning it if needed.
-/// If the sidecar was restarted, also reloads the whisper model so local
-/// transcription continues to work.
-pub fn ensure_running(app_handle: &AppHandle, state: &SidecarState) -> Result<(), String> {
+/// If restarted, reloads the whisper model so transcription continues to work.
+pub fn ensure_running(
+    app_handle: &AppHandle,
+    state: &SidecarState,
+    whisper_model: &str,
+    device: &str,
+    compute_type: &str,
+) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
 
     let needs_restart = match guard.as_mut() {
@@ -443,22 +421,16 @@ pub fn ensure_running(app_handle: &AppHandle, state: &SidecarState) -> Result<()
     };
 
     if needs_restart {
-        *guard = None; // Drop the old one
+        *guard = None;
         let mut sidecar = spawn_sidecar(app_handle)?;
 
         // Reload the whisper model so local transcription works after restart
-        let config = app_handle
-            .state::<crate::config::ConfigState>()
-            .0
-            .lock()
-            .map_err(|e| e.to_string())?
-            .clone();
         let models_dir = get_models_dir(app_handle).unwrap_or_default();
-        if let Err(e) = crate::transcription::load_model(
+        if let Err(e) = crate::features::speech::load_model(
             &mut sidecar,
-            &config.whisper_model,
-            &config.device,
-            &config.compute_type,
+            whisper_model,
+            device,
+            compute_type,
             &models_dir.to_string_lossy(),
         ) {
             eprintln!(

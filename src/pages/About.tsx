@@ -1,55 +1,15 @@
 import { useState, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { check } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
-
-interface AppInfo {
-  version: string;
-  name: string;
-  launch_on_startup: boolean;
-}
+import { useUpdater } from "../hooks/useUpdater";
+import { getAppInfo } from "../shared/platform";
+import type { AppInfo } from "../shared/types";
 
 export function About() {
   const [info, setInfo] = useState<AppInfo | null>(null);
-  const [updateStatus, setUpdateStatus] = useState<
-    "idle" | "checking" | "downloading" | "ready" | "up-to-date" | "error"
-  >("idle");
-  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
-  const [updateObj, setUpdateObj] = useState<Awaited<
-    ReturnType<typeof check>
-  > | null>(null);
-  const [updateError, setUpdateError] = useState<string | null>(null);
+  const { status: updateStatus, version: updateVersion, error: updateError, checkForUpdates, installUpdate } = useUpdater();
 
   useEffect(() => {
-    invoke<AppInfo>("get_app_info").then(setInfo).catch(console.error);
+    getAppInfo().then(setInfo).catch(console.error);
   }, []);
-
-  const checkForUpdates = async () => {
-    setUpdateStatus("checking");
-    setUpdateError(null);
-    try {
-      const update = await check();
-      if (update?.available) {
-        setUpdateVersion(update.version);
-        setUpdateStatus("downloading");
-        await update.download();
-        setUpdateObj(update);
-        setUpdateStatus("ready");
-      } else {
-        setUpdateStatus("up-to-date");
-      }
-    } catch (e) {
-      setUpdateError(String(e));
-      setUpdateStatus("error");
-    }
-  };
-
-  const installUpdate = async () => {
-    if (updateObj) {
-      await updateObj.install();
-      await relaunch();
-    }
-  };
 
   return (
     <div className="max-w-md mx-auto space-y-6">
@@ -154,6 +114,23 @@ export function About() {
           </div>
         )}
       </div>
+
+      {info?.log_path && (
+        <div className="bg-gray-800/50 rounded-lg p-4 space-y-2">
+          <h3 className="text-sm font-semibold text-gray-200">Diagnostics</h3>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-400 truncate flex-1" title={info.log_path}>
+              Log: {info.log_path}
+            </span>
+            <button
+              onClick={() => navigator.clipboard.writeText(info.log_path)}
+              className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors shrink-0"
+            >
+              Copy path
+            </button>
+          </div>
+        </div>
+      )}
 
       <p className="text-xs text-gray-600 text-center">
         Built by Alish. Privacy-first: audio is processed locally by default.

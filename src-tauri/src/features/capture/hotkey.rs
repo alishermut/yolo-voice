@@ -3,7 +3,7 @@ use std::time::Instant;
 use rdev::{listen, Event, EventType, Key};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::config::ConfigState;
+use crate::features::settings::ConfigState;
 
 fn parse_hotkey(hotkey_str: &str) -> Option<Key> {
     let primary = hotkey_str.split('+').last().unwrap_or(hotkey_str);
@@ -50,30 +50,11 @@ fn parse_hotkey(hotkey_str: &str) -> Option<Key> {
     }
 }
 
-/// Unified hotkey state machine.
-///
-/// Both hold and double-tap work simultaneously with one hotkey:
-///
-/// HOLD mode:
-///   Press → recording starts immediately
-///   Release after 500ms+ → stop recording (hold complete)
-///
-/// DOUBLE-TAP mode:
-///   Press → recording starts immediately
-///   Release before 500ms → was a tap, keep recording, wait for 2nd tap
-///   2nd press within 400ms → toggle confirmed, recording persists
-///   No 2nd press within 400ms → abort recording (was accidental tap)
-///   Press while toggle-recording → stop recording
 #[derive(Debug, PartialEq)]
 enum State {
-    /// No recording active
     Idle,
-    /// Key is held down, recording active. If held 500ms+ it's a hold.
     Pressed,
-    /// Key was released quickly (<500ms). Recording still active.
-    /// Waiting for second tap or timeout to abort.
     WaitingForDoubleTap,
-    /// Double-tap confirmed. Recording persists until next press.
     ToggleRecording,
 }
 
@@ -103,28 +84,23 @@ pub fn start_hotkey_listener(app_handle: AppHandle) {
                 EventType::KeyPress(key) if key == target_key => {
                     match state {
                         State::Idle => {
-                            // Start recording immediately
                             state = State::Pressed;
                             press_time = Some(Instant::now());
                             eprintln!("[hotkey] Press → start recording");
                             let _ = app.emit("hotkey-action", "start");
                         }
                         State::Pressed => {
-                            // Key repeat while held — ignore
+                            // Key repeat — ignore
                         }
                         State::WaitingForDoubleTap => {
-                            // Second tap! Check timing
                             let in_window = release_time
                                 .map(|t| t.elapsed().as_millis() < DOUBLE_TAP_WINDOW_MS)
                                 .unwrap_or(false);
 
                             if in_window {
-                                // Double-tap confirmed — recording continues in toggle mode
                                 state = State::ToggleRecording;
                                 eprintln!("[hotkey] Double-tap confirmed → toggle recording");
                             } else {
-                                // Too slow — this is a new press, start fresh
-                                // (recording was already stopped by timeout)
                                 state = State::Pressed;
                                 press_time = Some(Instant::now());
                                 eprintln!("[hotkey] New press → start recording");
@@ -132,7 +108,6 @@ pub fn start_hotkey_listener(app_handle: AppHandle) {
                             }
                         }
                         State::ToggleRecording => {
-                            // Press while toggle-recording → stop
                             state = State::Idle;
                             eprintln!("[hotkey] Toggle stop");
                             let _ = app.emit("hotkey-action", "stop");
@@ -142,35 +117,36 @@ pub fn start_hotkey_listener(app_handle: AppHandle) {
                 EventType::KeyRelease(key) if key == target_key => {
                     match state {
                         State::Pressed => {
-                            let held_ms = press_time
-                                .map(|t| t.elapsed().as_millis())
-                                .unwrap_or(0);
+                            let held_ms =
+                                press_time.map(|t| t.elapsed().as_millis()).unwrap_or(0);
 
                             if held_ms >= HOLD_THRESHOLD_MS {
-                                // Long hold — stop recording
                                 state = State::Idle;
                                 eprintln!("[hotkey] Hold release ({}ms) → stop", held_ms);
                                 let _ = app.emit("hotkey-action", "stop");
                             } else {
-                                // Quick tap — keep recording, wait for double-tap
                                 state = State::WaitingForDoubleTap;
                                 release_time = Some(Instant::now());
-                                eprintln!("[hotkey] Quick tap ({}ms) → waiting for double-tap", held_ms);
+                                eprintln!(
+                                    "[hotkey] Quick tap ({}ms) → waiting for double-tap",
+                                    held_ms
+                                );
 
-                                // Spawn a timeout thread to abort if no second tap
                                 let app_clone = app.clone();
                                 let release_instant = Instant::now();
                                 std::thread::spawn(move || {
                                     std::thread::sleep(std::time::Duration::from_millis(
                                         DOUBLE_TAP_WINDOW_MS as u64 + 50,
                                     ));
-                                    // If still waiting, abort
-                                    let _ = app_clone.emit("hotkey-check-timeout", release_instant.elapsed().as_millis());
+                                    let _ = app_clone.emit(
+                                        "hotkey-check-timeout",
+                                        release_instant.elapsed().as_millis(),
+                                    );
                                 });
                             }
                         }
                         State::ToggleRecording => {
-                            // Release during toggle — ignore (toggle stops on press, not release)
+                            // Release during toggle — ignore
                         }
                         _ => {}
                     }
@@ -179,11 +155,9 @@ pub fn start_hotkey_listener(app_handle: AppHandle) {
             }
 
             // Check timeout for WaitingForDoubleTap
-            // (We handle this inline since rdev callback fires on every event)
             if state == State::WaitingForDoubleTap {
                 if let Some(rt) = release_time {
                     if rt.elapsed().as_millis() > DOUBLE_TAP_WINDOW_MS {
-                        // Timeout — no second tap came, abort recording
                         state = State::Idle;
                         eprintln!("[hotkey] Double-tap timeout → abort recording");
                         let _ = app.emit("hotkey-action", "stop");

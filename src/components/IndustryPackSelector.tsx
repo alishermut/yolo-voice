@@ -1,13 +1,6 @@
 import { useState, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
-
-interface IndustryPackInfo {
-  id: string;
-  name: string;
-  description: string;
-  vocabulary_count: number;
-  replacement_count: number;
-}
+import type { IndustryPackInfo } from "../shared/types";
+import { getIndustryPacks, applyIndustryPack } from "../shared/platform";
 
 interface IndustryPackSelectorProps {
   activePack: string;
@@ -23,7 +16,7 @@ export function IndustryPackSelector({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    invoke<IndustryPackInfo[]>("get_industry_packs")
+    getIndustryPacks()
       .then(setPacks)
       .catch((e) => setError(String(e)));
   }, []);
@@ -32,7 +25,7 @@ export function IndustryPackSelector({
     setApplying(packId);
     setError(null);
     try {
-      await invoke("apply_industry_pack", { packId });
+      await applyIndustryPack(packId);
       onApply();
     } catch (e) {
       setError(String(e));
