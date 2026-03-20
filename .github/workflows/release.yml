@@ -69,18 +69,33 @@ jobs:
           Write-Host "Bundle directory contents:"
           Get-ChildItem -Path $bundleDir -Recurse | Select-Object FullName | Format-Table -HideTableHeaders
 
-          $installer = Get-ChildItem -Path $bundleDir -Filter *setup.exe -File -Recurse | Select-Object -First 1
+          $installer = Get-ChildItem -Path $bundleDir -Filter *setup.exe -File -Recurse | Where-Object { $_.Name -notmatch '\.sig$' } | Select-Object -First 1
+          $installerSig = Get-ChildItem -Path $bundleDir -Filter *setup.exe.sig -File -Recurse | Select-Object -First 1
+
+          # Also check for .nsis.zip (some Tauri versions produce this instead)
           $nsisZip = Get-ChildItem -Path $bundleDir -Filter *.nsis.zip -File -Recurse | Select-Object -First 1
           $nsisSig = Get-ChildItem -Path $bundleDir -Filter *.nsis.zip.sig -File -Recurse | Select-Object -First 1
 
-          if (!$installer -or !$nsisZip -or !$nsisSig) {
-            Write-Host "::error::Missing expected release artifacts."
+          if (!$installer) {
+            Write-Host "::error::Missing installer exe."
             exit 1
           }
 
-          $signature = Get-Content $nsisSig.FullName -Raw
-          $zipName = $nsisZip.Name
-          $url = "https://github.com/$repo/releases/download/$tag/$zipName"
+          # Use .nsis.zip if available, otherwise use .exe for updater
+          if ($nsisZip -and $nsisSig) {
+            $updaterFile = $nsisZip
+            $sigFile = $nsisSig
+          } elseif ($installerSig) {
+            $updaterFile = $installer
+            $sigFile = $installerSig
+          } else {
+            Write-Host "::error::Missing signature file for updater."
+            exit 1
+          }
+
+          $signature = Get-Content $sigFile.FullName -Raw
+          $updaterName = $updaterFile.Name
+          $url = "https://github.com/$repo/releases/download/$tag/$updaterName"
           $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
           # Build latest.json
@@ -105,6 +120,12 @@ jobs:
             $releaseNotesPath = "release-notes.md"
           }
 
-          gh release create $tag "$($installer.FullName)" "$($nsisZip.FullName)" "$($nsisSig.FullName)" latest.json --title "YOLO Voice v$version" --notes-file "$releaseNotesPath"
+          # Upload all available artifacts
+          $assets = @($installer.FullName, "latest.json")
+          if ($installerSig) { $assets += $installerSig.FullName }
+          if ($nsisZip) { $assets += $nsisZip.FullName }
+          if ($nsisSig) { $assets += $nsisSig.FullName }
 
-          Write-Host "Published release $tag with installer, updater zip, signature, and latest.json"
+          gh release create $tag @assets --title "YOLO Voice v$version" --notes-file "$releaseNotesPath"
+
+          Write-Host "Published release $tag with artifacts: $($assets -join ', ')"
