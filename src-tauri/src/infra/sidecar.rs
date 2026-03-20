@@ -14,9 +14,28 @@ fn bundled_sidecar_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
         .resource_dir()
         .map_err(|e| e.to_string())?;
 
+    eprintln!("[sidecar] resource_dir = {}", resource_dir.display());
+
+    // Check for nested sidecar dir (Tauri bundles resources here)
     let nested_sidecar = resource_dir.join("sidecar");
     if nested_sidecar.exists() {
+        eprintln!("[sidecar] Found nested sidecar dir: {}", nested_sidecar.display());
         return Ok(nested_sidecar);
+    }
+
+    // Check for _up_/sidecar (updater extracts here)
+    let up_sidecar = resource_dir.join("_up_/sidecar");
+    if up_sidecar.exists() {
+        eprintln!("[sidecar] Found updater sidecar dir: {}", up_sidecar.display());
+        return Ok(up_sidecar);
+    }
+
+    // List directory contents for debugging
+    if let Ok(entries) = std::fs::read_dir(&resource_dir) {
+        eprintln!("[sidecar] Contents of resource_dir:");
+        for entry in entries.flatten() {
+            eprintln!("[sidecar]   {}", entry.file_name().to_string_lossy());
+        }
     }
 
     Ok(resource_dir)
