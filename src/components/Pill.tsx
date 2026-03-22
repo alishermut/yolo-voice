@@ -63,7 +63,7 @@ export function Pill() {
     }
   }, [state]);
 
-  // Event-driven: listen to recording-state and recording-level events
+  // Event listeners
   useEffect(() => {
     const unlistenState = onRecordingState((newState) => {
       if (newState === "done") {

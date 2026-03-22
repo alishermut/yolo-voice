@@ -9,10 +9,11 @@ import type {
   AppInfo,
   DeviceInfo,
   GlobalDictionary,
+  GpuInfo,
   IndustryPackInfo,
-  ModelInfo,
   PillState,
   Profile,
+  SegmentTranscribed,
 } from "./types";
 
 // ---- Config ----
@@ -49,31 +50,24 @@ export function stopRecording(): Promise<string> {
   return invoke<string>("stop_recording");
 }
 
-// ---- Models ----
+// ---- Model / Inference ----
 
-export function getModels(): Promise<ModelInfo[]> {
-  return invoke<ModelInfo[]>("get_models");
-}
-
-export function downloadModel(model: string): Promise<void> {
-  return invoke("download_model_cmd", { model });
-}
-
-export function setWhisperModel(
-  model: string,
-  device: string,
-  computeType: string,
-): Promise<void> {
-  return invoke("set_whisper_model", { model, device, computeType });
+export function downloadModel(): Promise<void> {
+  return invoke("download_model_cmd");
 }
 
 export function getGpuAvailable(): Promise<boolean> {
   return invoke<boolean>("get_gpu_available");
 }
 
-export function getSidecarStatus(): Promise<string> {
-  return invoke<string>("get_sidecar_status");
+export function getGpuInfo(): Promise<GpuInfo> {
+  return invoke<GpuInfo>("get_gpu_info");
 }
+
+export function getModelStatus(): Promise<string> {
+  return invoke<string>("get_model_status");
+}
+
 
 // ---- Profiles ----
 
@@ -115,16 +109,6 @@ export function getAppInfo(): Promise<AppInfo> {
 
 export function quitApp(): Promise<void> {
   return invoke("quit_app");
-}
-
-// ---- Sidecar Setup ----
-
-export function getSidecarSetupStatus(): Promise<boolean> {
-  return invoke<boolean>("get_sidecar_setup_status");
-}
-
-export function setupSidecar(): Promise<void> {
-  return invoke("setup_sidecar_cmd");
 }
 
 // ---- Sounds ----
@@ -186,10 +170,34 @@ export function onAudioLevel(
   });
 }
 
-export function onSidecarStatus(
+export function onModelStatus(
   handler: (status: string) => void,
 ): Promise<UnlistenFn> {
-  return listen<string>("sidecar-status", (event) => {
+  return listen<string>("model-status", (event) => {
     handler(event.payload);
+  });
+}
+
+export function onGpuFallback(
+  handler: (info: string) => void,
+): Promise<UnlistenFn> {
+  return listen<string>("gpu-fallback", (event) => {
+    handler(event.payload);
+  });
+}
+
+export function onSegmentTranscribed(
+  handler: (data: SegmentTranscribed) => void,
+): Promise<UnlistenFn> {
+  return getCurrentWebviewWindow().listen<SegmentTranscribed>("segment-transcribed", (event) => {
+    handler(event.payload);
+  });
+}
+
+export function onModelDownloadProgress(
+  handler: (progress: { status: string; percent: number; downloaded_mb: number; total_mb: number }) => void,
+): Promise<UnlistenFn> {
+  return listen("model-download-progress", (event) => {
+    handler(event.payload as { status: string; percent: number; downloaded_mb: number; total_mb: number });
   });
 }

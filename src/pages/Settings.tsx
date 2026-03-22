@@ -150,7 +150,7 @@ export function Settings() {
             />
             <div>
               <span className="text-sm font-medium text-gray-200">Offline</span>
-              <p className="text-xs text-gray-500">Local faster-whisper</p>
+              <p className="text-xs text-gray-500">Local Parakeet TDT</p>
             </div>
           </label>
           <label
@@ -176,23 +176,27 @@ export function Settings() {
 
         {/* Offline settings */}
         {config?.transcription_mode !== "cloud" && config && (
-          <ModelSelector
-            whisperModel={config.whisper_model}
-            device={config.device}
-            computeType={config.compute_type}
-            onModelChange={(model, device, computeType) =>
-              setConfig((prev) =>
-                prev
-                  ? {
-                      ...prev,
-                      whisper_model: model,
-                      device,
-                      compute_type: computeType,
-                    }
-                  : prev,
-              )
-            }
-          />
+          <div className="space-y-4">
+            <ModelSelector />
+
+            {/* Text cleanup toggle */}
+            <label className="flex items-center justify-between cursor-pointer">
+              <div>
+                <span className="text-sm text-gray-300">Text cleanup</span>
+                <p className="text-xs text-gray-500">
+                  Remove filler words (um, uh), fix stutters, and normalize punctuation
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                checked={config.text_cleanup_enabled}
+                onChange={(e) =>
+                  updateConfig({ text_cleanup_enabled: e.target.checked })
+                }
+                className="accent-blue-500 w-4 h-4 ml-3"
+              />
+            </label>
+          </div>
         )}
 
         {/* Cloud settings */}

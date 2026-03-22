@@ -6,11 +6,11 @@ use crate::features::capture::recorder::{self, RecordingState};
 use crate::features::output;
 use crate::features::settings::{self, AppConfig, ConfigState};
 use crate::features::speech;
+use crate::features::speech::inference::InferenceState;
 use crate::features::speech::vocabulary::{
     GlobalDictionary, GlobalDictionaryState, IndustryPackInfo,
 };
 use crate::infra::platform::{self, AudioStream, DeviceInfo};
-use crate::infra::sidecar::{self, SidecarState};
 
 pub struct AudioState(pub Mutex<Option<AudioStream>>);
 
@@ -71,7 +71,7 @@ pub fn start_recording(
 ) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     *guard = None;
-    let stream = recorder::start_recording(device_index, app_handle)?;
+    let stream = recorder::start_recording(device_index, app_handle, None)?;
     *guard = Some(stream);
     Ok(())
 }
@@ -86,108 +86,85 @@ pub fn stop_recording(state: State<'_, RecordingState>) -> Result<String, String
     Ok(path.to_string_lossy().to_string())
 }
 
-// ---- Transcription / Models ----
-
-fn ensure_sidecar_running(
-    app_handle: &tauri::AppHandle,
-    state: &SidecarState,
-) -> Result<(), String> {
-    let config = app_handle
-        .state::<ConfigState>()
-        .0
-        .lock()
-        .map_err(|e| e.to_string())?
-        .clone();
-    sidecar::ensure_running(
-        app_handle,
-        state,
-        &config.whisper_model,
-        &config.device,
-        &config.compute_type,
-    )
-}
-
-#[tauri::command]
-pub fn get_models(
-    app_handle: tauri::AppHandle,
-    state: State<'_, SidecarState>,
-) -> Result<Vec<speech::ModelInfo>, String> {
-    ensure_sidecar_running(&app_handle, &state)?;
-    let models_dir = sidecar::get_models_dir(&app_handle)?;
-    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    let sc = guard.as_mut().ok_or("Sidecar not running")?;
-    speech::list_downloaded_models(sc, &models_dir.to_string_lossy())
-}
+// ---- Model / Inference ----
 
 #[tauri::command]
 pub fn download_model_cmd(
-    model: String,
     app_handle: tauri::AppHandle,
-    state: State<'_, SidecarState>,
 ) -> Result<(), String> {
-    ensure_sidecar_running(&app_handle, &state)?;
-    let models_dir = sidecar::get_models_dir(&app_handle)?;
-    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    let sc = guard.as_mut().ok_or("Sidecar not running")?;
-    speech::download_model(sc, &model, &models_dir.to_string_lossy(), &app_handle)
-}
+    let models_dir = crate::infra::model::get_models_dir(&app_handle)?;
+    crate::infra::model::download_model(&models_dir, &app_handle)?;
 
-#[tauri::command]
-pub fn set_whisper_model(
-    model: String,
-    device: String,
-    compute_type: String,
-    app_handle: tauri::AppHandle,
-    sidecar_state: State<'_, SidecarState>,
-    config_state: State<'_, ConfigState>,
-) -> Result<(), String> {
-    ensure_sidecar_running(&app_handle, &sidecar_state)?;
-    let models_dir = sidecar::get_models_dir(&app_handle)?;
+    // After download, initialize the inference engine
+    let session = speech::inference::InferenceSession::new(&models_dir)
+        .map_err(|e| format!("Model downloaded but failed to initialize: {}", e))?;
 
-    {
-        let mut guard = sidecar_state.0.lock().map_err(|e| e.to_string())?;
-        let sc = guard.as_mut().ok_or("Sidecar not running")?;
-        speech::load_model(
-            sc,
-            &model,
-            &device,
-            &compute_type,
-            &models_dir.to_string_lossy(),
-        )?;
+    let gpu = session.is_gpu();
+    let state = app_handle.state::<InferenceState>();
+    *state.0.lock().map_err(|e| e.to_string())? = Some(session);
+
+    let _ = tauri::Emitter::emit(&app_handle, "model-status", "ready");
+
+    // Notify frontend if GPU was unavailable and we fell back to CPU
+    if !gpu {
+        let _ = tauri::Emitter::emit(&app_handle, "gpu-fallback", "CPU (GPU not available)");
     }
-
-    let mut config_guard = config_state.0.lock().map_err(|e| e.to_string())?;
-    config_guard.whisper_model = model;
-    config_guard.device = device;
-    config_guard.compute_type = compute_type;
-    settings::save_config(&app_handle, &config_guard)?;
 
     Ok(())
 }
 
 #[tauri::command]
 pub fn get_gpu_available(
-    app_handle: tauri::AppHandle,
-    state: State<'_, SidecarState>,
+    state: State<'_, InferenceState>,
 ) -> Result<bool, String> {
-    ensure_sidecar_running(&app_handle, &state)?;
-    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    let sc = guard.as_mut().ok_or("Sidecar not running")?;
-    speech::get_gpu_available(sc)
+    Ok(speech::get_gpu_available(&state))
+}
+
+#[derive(serde::Serialize)]
+pub struct GpuInfo {
+    pub available: bool,
+    pub execution_provider: String,
 }
 
 #[tauri::command]
-pub fn get_sidecar_status(state: State<'_, SidecarState>) -> Result<String, String> {
-    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    match guard.as_mut() {
-        Some(s) => {
-            if s.is_alive() {
-                Ok("running".to_string())
+pub fn get_gpu_info(state: State<'_, InferenceState>) -> Result<GpuInfo, String> {
+    let guard = state.0.lock().map_err(|e| e.to_string())?;
+    match guard.as_ref() {
+        Some(session) => Ok(GpuInfo {
+            available: session.is_gpu(),
+            execution_provider: if session.is_gpu() {
+                "DirectML".to_string()
             } else {
-                Ok("stopped".to_string())
+                "CPU".to_string()
+            },
+        }),
+        None => Ok(GpuInfo {
+            available: false,
+            execution_provider: "Not loaded".to_string(),
+        }),
+    }
+}
+
+#[tauri::command]
+pub fn get_model_status(
+    state: State<'_, InferenceState>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let guard = state.0.lock().map_err(|e| e.to_string())?;
+    match guard.as_ref() {
+        Some(_) => Ok("ready".to_string()),
+        None => {
+            match crate::infra::model::get_models_dir(&app_handle) {
+                Ok(models_dir) => {
+                    if crate::infra::model::is_model_downloaded(&models_dir) {
+                        Ok("error".to_string())
+                    } else {
+                        Ok("not-downloaded".to_string())
+                    }
+                }
+                Err(_) => Ok("not-downloaded".to_string()),
             }
         }
-        None => Ok("stopped".to_string()),
     }
 }
 
@@ -196,39 +173,27 @@ pub fn get_sidecar_status(state: State<'_, SidecarState>) -> Result<String, Stri
 #[tauri::command]
 pub fn get_profiles(
     app_handle: tauri::AppHandle,
-    state: State<'_, SidecarState>,
 ) -> Result<Vec<speech::Profile>, String> {
-    ensure_sidecar_running(&app_handle, &state)?;
     let profiles_dir = speech::get_profiles_dir(&app_handle)?;
-    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    let sc = guard.as_mut().ok_or("Sidecar not running")?;
-    speech::list_profiles(sc, &profiles_dir.to_string_lossy())
+    speech::list_profiles(&profiles_dir)
 }
 
 #[tauri::command]
 pub fn save_profile_cmd(
     profile: speech::Profile,
     app_handle: tauri::AppHandle,
-    state: State<'_, SidecarState>,
 ) -> Result<(), String> {
-    ensure_sidecar_running(&app_handle, &state)?;
     let profiles_dir = speech::get_profiles_dir(&app_handle)?;
-    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    let sc = guard.as_mut().ok_or("Sidecar not running")?;
-    speech::save_profile(sc, &profiles_dir.to_string_lossy(), &profile)
+    speech::save_profile(&profiles_dir, &profile)
 }
 
 #[tauri::command]
 pub fn delete_profile_cmd(
     id: String,
     app_handle: tauri::AppHandle,
-    state: State<'_, SidecarState>,
 ) -> Result<(), String> {
-    ensure_sidecar_running(&app_handle, &state)?;
     let profiles_dir = speech::get_profiles_dir(&app_handle)?;
-    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    let sc = guard.as_mut().ok_or("Sidecar not running")?;
-    speech::delete_profile(sc, &profiles_dir.to_string_lossy(), &id)
+    speech::delete_profile(&profiles_dir, &id)
 }
 
 #[tauri::command]
@@ -237,13 +202,7 @@ pub fn test_llm_connection(
     model: String,
     api_key: String,
     base_url: String,
-    app_handle: tauri::AppHandle,
-    state: State<'_, SidecarState>,
 ) -> Result<String, String> {
-    ensure_sidecar_running(&app_handle, &state)?;
-    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    let sc = guard.as_mut().ok_or("Sidecar not running")?;
-
     let test_profile = speech::Profile {
         id: "_test".to_string(),
         name: "Test".to_string(),
@@ -254,7 +213,6 @@ pub fn test_llm_connection(
     };
 
     speech::post_process_text(
-        sc,
         "this is a test to check if the connection works",
         &test_profile,
         &provider,
@@ -323,18 +281,6 @@ pub fn get_available_sounds() -> Vec<String> {
         .collect()
 }
 
-// ---- Sidecar Setup ----
-
-#[tauri::command]
-pub fn get_sidecar_setup_status(app_handle: tauri::AppHandle) -> Result<bool, String> {
-    sidecar::is_sidecar_setup(&app_handle)
-}
-
-#[tauri::command]
-pub fn setup_sidecar_cmd(app_handle: tauri::AppHandle) -> Result<(), String> {
-    sidecar::setup_sidecar_python(&app_handle)
-}
-
 // ---- Global Dictionary & Industry Packs ----
 
 #[tauri::command]
@@ -385,3 +331,4 @@ pub fn apply_industry_pack(
 
     Ok(guard.clone())
 }
+

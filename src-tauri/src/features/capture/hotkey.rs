@@ -86,7 +86,6 @@ pub fn start_hotkey_listener(app_handle: AppHandle) {
                         State::Idle => {
                             state = State::Pressed;
                             press_time = Some(Instant::now());
-                            eprintln!("[hotkey] Press → start recording");
                             let _ = app.emit("hotkey-action", "start");
                         }
                         State::Pressed => {
@@ -99,17 +98,14 @@ pub fn start_hotkey_listener(app_handle: AppHandle) {
 
                             if in_window {
                                 state = State::ToggleRecording;
-                                eprintln!("[hotkey] Double-tap confirmed → toggle recording");
                             } else {
                                 state = State::Pressed;
                                 press_time = Some(Instant::now());
-                                eprintln!("[hotkey] New press → start recording");
                                 let _ = app.emit("hotkey-action", "start");
                             }
                         }
                         State::ToggleRecording => {
                             state = State::Idle;
-                            eprintln!("[hotkey] Toggle stop");
                             let _ = app.emit("hotkey-action", "stop");
                         }
                     }
@@ -122,15 +118,10 @@ pub fn start_hotkey_listener(app_handle: AppHandle) {
 
                             if held_ms >= HOLD_THRESHOLD_MS {
                                 state = State::Idle;
-                                eprintln!("[hotkey] Hold release ({}ms) → stop", held_ms);
                                 let _ = app.emit("hotkey-action", "stop");
                             } else {
                                 state = State::WaitingForDoubleTap;
                                 release_time = Some(Instant::now());
-                                eprintln!(
-                                    "[hotkey] Quick tap ({}ms) → waiting for double-tap",
-                                    held_ms
-                                );
 
                                 let app_clone = app.clone();
                                 let release_instant = Instant::now();
@@ -159,7 +150,6 @@ pub fn start_hotkey_listener(app_handle: AppHandle) {
                 if let Some(rt) = release_time {
                     if rt.elapsed().as_millis() > DOUBLE_TAP_WINDOW_MS {
                         state = State::Idle;
-                        eprintln!("[hotkey] Double-tap timeout → abort recording");
                         let _ = app.emit("hotkey-action", "stop");
                     }
                 }

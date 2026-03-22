@@ -25,10 +25,13 @@ pub struct AppConfig {
     pub hotkey: String,
     pub record_mode: RecordMode,
     pub device_index: usize,
+    /// DEPRECATED: Legacy field from Python sidecar era. Kept for config.json backward compatibility.
     #[serde(default = "default_whisper_model")]
     pub whisper_model: String,
+    /// DEPRECATED: Legacy field from Python sidecar era. Kept for config.json backward compatibility.
     #[serde(default = "default_device")]
     pub device: String,
+    /// DEPRECATED: Legacy field from Python sidecar era. Kept for config.json backward compatibility.
     #[serde(default = "default_compute_type")]
     pub compute_type: String,
     #[serde(default = "default_language")]
@@ -63,6 +66,18 @@ pub struct AppConfig {
     pub start_sound: String,
     #[serde(default = "default_stop_sound")]
     pub stop_sound: String,
+    #[serde(default = "default_vad_silence_threshold")]
+    pub vad_silence_threshold_ms: u32,
+    #[serde(default = "default_text_cleanup")]
+    pub text_cleanup_enabled: bool,
+}
+
+fn default_text_cleanup() -> bool {
+    true
+}
+
+fn default_vad_silence_threshold() -> u32 {
+    500
 }
 
 fn default_industry_pack() -> String {
@@ -130,6 +145,8 @@ impl Default for AppConfig {
             active_industry_pack: default_industry_pack(),
             start_sound: default_start_sound(),
             stop_sound: default_stop_sound(),
+            vad_silence_threshold_ms: default_vad_silence_threshold(),
+            text_cleanup_enabled: default_text_cleanup(),
         }
     }
 }
@@ -222,9 +239,8 @@ pub fn set_launch_on_startup(enable: bool) -> Result<(), String> {
         } else {
             let result = RegDeleteValueW(key, PCWSTR(value_name.as_ptr()));
             let _ = RegCloseKey(key);
-            if result.is_err() {
-                eprintln!("Registry delete (may not exist): {:?}", result);
-            }
+            // Ignore error — key may not exist
+            let _ = result;
         }
     }
 

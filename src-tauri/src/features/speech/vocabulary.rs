@@ -132,8 +132,6 @@ pub fn auto_apply_all_packs(app_handle: &AppHandle, dict: &mut GlobalDictionary)
         return;
     }
 
-    eprintln!("[app] First install detected: auto-applying all industry packs...");
-
     let packs = match list_industry_packs(app_handle) {
         Ok(p) => p,
         Err(e) => {
@@ -145,10 +143,6 @@ pub fn auto_apply_all_packs(app_handle: &AppHandle, dict: &mut GlobalDictionary)
     for pack_info in &packs {
         match load_industry_pack(app_handle, &pack_info.id) {
             Ok(pack) => {
-                eprintln!(
-                    "[app] Applying pack '{}': {} vocab, {} replacements",
-                    pack_info.name, pack_info.vocabulary_count, pack_info.replacement_count
-                );
                 merge_pack_into_dictionary(dict, &pack);
             }
             Err(e) => {
@@ -159,13 +153,6 @@ pub fn auto_apply_all_packs(app_handle: &AppHandle, dict: &mut GlobalDictionary)
 
     if let Err(e) = save_global_dictionary(app_handle, dict) {
         eprintln!("[app] Failed to save auto-applied dictionary: {}", e);
-    } else {
-        eprintln!(
-            "[app] Auto-applied {} packs: {} vocab terms, {} replacement rules",
-            packs.len(),
-            dict.vocabulary.len(),
-            dict.replacements.len()
-        );
     }
 }
 
@@ -213,24 +200,34 @@ pub fn load_industry_pack(app_handle: &AppHandle, id: &str) -> Result<IndustryPa
 fn get_industry_packs_dir(app_handle: &AppHandle) -> Result<std::path::PathBuf, String> {
     if cfg!(debug_assertions) {
         let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-        let dir = if cwd.join("sidecar/industry_packs").exists() {
-            cwd.join("sidecar/industry_packs")
-        } else if cwd.join("../sidecar/industry_packs").exists() {
-            cwd.join("../sidecar/industry_packs")
-        } else {
-            return Err("Industry packs directory not found".to_string());
-        };
-        Ok(dir)
+        // Check new location first, then legacy sidecar locations
+        let candidates = [
+            cwd.join("resources/industry_packs"),
+            cwd.join("../resources/industry_packs"),
+            cwd.join("sidecar/industry_packs"),
+            cwd.join("../sidecar/industry_packs"),
+        ];
+        for dir in &candidates {
+            if dir.exists() {
+                return Ok(dir.clone());
+            }
+        }
+        Err("Industry packs directory not found".to_string())
     } else {
         let resource_dir = app_handle
             .path()
             .resource_dir()
             .map_err(|e| e.to_string())?;
-        let nested_dir = resource_dir.join("sidecar").join("industry_packs");
-        if nested_dir.exists() {
-            Ok(nested_dir)
-        } else {
-            Ok(resource_dir.join("industry_packs"))
+        let candidates = [
+            resource_dir.join("industry_packs"),
+            resource_dir.join("resources").join("industry_packs"),
+            resource_dir.join("sidecar").join("industry_packs"),
+        ];
+        for dir in &candidates {
+            if dir.exists() {
+                return Ok(dir.clone());
+            }
         }
+        Ok(resource_dir.join("industry_packs"))
     }
 }

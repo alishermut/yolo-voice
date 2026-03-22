@@ -24,6 +24,19 @@ export interface AppConfig {
   active_industry_pack: string;
   start_sound: string;
   stop_sound: string;
+  vad_silence_threshold_ms: number;
+  text_cleanup_enabled: boolean;
+}
+
+export interface GpuInfo {
+  available: boolean;
+  execution_provider: string;
+}
+
+export interface SegmentTranscribed {
+  index: number;
+  text: string;
+  full_text: string;
 }
 
 export interface ReplacementRule {

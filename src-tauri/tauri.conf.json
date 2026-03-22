@@ -49,12 +49,9 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "../sidecar/transcribe.py",
-      "../sidecar/requirements.txt",
-      "../sidecar/default_profiles.json",
-      "../sidecar/industry_packs/*",
-      "../sidecar/python-env/**/*",
-      "../sidecar/models/**/*"
+      "resources/default_profiles.json",
+      "resources/industry_packs/*",
+      "resources/silero_vad_v5.onnx"
     ],
     "windows": {
       "nsis": {

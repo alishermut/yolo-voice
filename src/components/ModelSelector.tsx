@@ -1,37 +1,43 @@
 import { useState, useEffect } from "react";
-import { getGpuAvailable, getSidecarStatus, setWhisperModel, onSidecarStatus } from "../shared/platform";
+import {
+  getGpuAvailable,
+  getModelStatus,
+  onModelStatus,
+  downloadModel,
+  onModelDownloadProgress,
+} from "../shared/platform";
 
-interface ModelSelectorProps {
-  whisperModel: string;
-  device: string;
-  computeType: string;
-  onModelChange: (model: string, device: string, computeType: string) => void;
-}
-
-export function ModelSelector({
-  whisperModel,
-  device,
-  computeType: _computeType,
-  onModelChange,
-}: ModelSelectorProps) {
+export function ModelSelector() {
   const [gpuAvailable, setGpuAvailable] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [sidecarStatus, setSidecarStatus] = useState<string>("unknown");
+  const [modelStatus, setModelStatus] = useState<string>("unknown");
+  const [downloading, setDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [downloadStatusText, setDownloadStatusText] = useState("");
 
   useEffect(() => {
     checkGpu();
-    checkSidecar();
+    checkModelStatus();
 
-    // Listen for sidecar status changes instead of polling
-    const unlisten = onSidecarStatus((status) => {
-      setSidecarStatus(status);
-      if (status === "running") {
+    const unlisten = onModelStatus((status) => {
+      setModelStatus(status);
+      if (status === "ready") {
         checkGpu();
+        setDownloading(false);
+      }
+    });
+
+    const unlistenProgress = onModelDownloadProgress((progress) => {
+      setDownloadProgress(progress.percent);
+      if (progress.status === "downloading") {
+        setDownloadStatusText(
+          `${progress.downloaded_mb} / ${progress.total_mb} MB`
+        );
       }
     });
 
     return () => {
       unlisten.then((fn) => fn());
+      unlistenProgress.then((fn) => fn());
     };
   }, []);
 
@@ -44,66 +50,106 @@ export function ModelSelector({
     }
   };
 
-  const checkSidecar = async () => {
+  const checkModelStatus = async () => {
     try {
-      const status = await getSidecarStatus();
-      setSidecarStatus(status);
+      const status = await getModelStatus();
+      setModelStatus(status);
     } catch {
-      setSidecarStatus("error");
+      setModelStatus("error");
     }
   };
 
-  const handleDeviceChange = async (newDevice: string) => {
-    const newComputeType = newDevice === "cpu" ? "int8" : "float16";
-    setError(null);
+  const handleDownload = async () => {
+    setDownloading(true);
+    setDownloadProgress(0);
+    setDownloadStatusText("Starting...");
     try {
-      await setWhisperModel(whisperModel, newDevice, newComputeType);
-    } catch (e) {
-      setError(String(e));
+      await downloadModel();
+    } catch {
+      setDownloading(false);
+      setModelStatus("error");
     }
-    onModelChange(whisperModel, newDevice, newComputeType);
   };
+
+  const statusColor =
+    modelStatus === "ready"
+      ? "bg-green-500"
+      : modelStatus === "loading"
+        ? "bg-yellow-500"
+        : modelStatus === "not-downloaded"
+          ? "bg-gray-500"
+          : "bg-red-500";
+
+  const statusText =
+    modelStatus === "ready"
+      ? "Ready"
+      : modelStatus === "loading"
+        ? "Loading..."
+        : modelStatus === "not-downloaded"
+          ? "Model not downloaded"
+          : modelStatus === "error"
+            ? "Error"
+            : "Not ready";
 
   return (
-    <div className="space-y-4">
-      {error && (
-        <div className="px-3 py-2 bg-red-900/50 border border-red-700 rounded-lg text-red-300 text-sm">
-          {error}
-        </div>
-      )}
-
+    <div className="space-y-2">
       {/* Engine status */}
       <div className="flex items-center gap-2 text-xs text-gray-500">
-        <div
-          className={`w-2 h-2 rounded-full ${
-            sidecarStatus === "running" ? "bg-green-500" : "bg-red-500"
-          }`}
-        />
-        Transcription engine: {sidecarStatus}
-        {!gpuAvailable && sidecarStatus === "running" && (
-          <span className="text-yellow-500">(CPU only)</span>
+        <div className={`w-2 h-2 rounded-full ${statusColor}`} />
+        Transcription engine: {statusText}
+        {modelStatus === "ready" && (
+          <span className={gpuAvailable ? "text-green-500" : "text-yellow-500"}>
+            ({gpuAvailable ? "GPU accelerated" : "CPU"})
+          </span>
         )}
       </div>
 
-      {/* Device toggle - only show if GPU is available */}
-      {gpuAvailable && (
-        <div className="flex items-center gap-3">
-          <span className="text-sm text-gray-400 w-20">Device</span>
-          <div className="flex gap-2">
-            {["auto", "cuda", "cpu"].map((d) => (
-              <button
-                key={d}
-                onClick={() => handleDeviceChange(d)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                  device === d
-                    ? "bg-blue-600/20 border-blue-500 text-blue-300"
-                    : "bg-gray-800 border-gray-700 text-gray-300 hover:border-gray-500"
-                }`}
-              >
-                {d === "auto" ? "Auto" : d === "cuda" ? "GPU (CUDA)" : "CPU"}
-              </button>
-            ))}
+      {/* CPU fallback notice */}
+      {modelStatus === "ready" && !gpuAvailable && (
+        <div className="text-xs text-yellow-500/80 bg-yellow-900/20 border border-yellow-800/30 rounded-lg px-3 py-2">
+          GPU acceleration unavailable — using CPU, which may be slower.
+          Ensure your GPU drivers are up to date.
+        </div>
+      )}
+
+      {/* Download progress */}
+      {downloading && (
+        <div className="space-y-1">
+          <div className="w-full bg-gray-800 rounded-full h-2 overflow-hidden">
+            <div
+              className="bg-blue-600 h-full rounded-full transition-all duration-300"
+              style={{ width: `${downloadProgress}%` }}
+            />
           </div>
+          <p className="text-xs text-gray-500 text-center">
+            {downloadStatusText}
+          </p>
+        </div>
+      )}
+
+      {/* Error: re-download action */}
+      {modelStatus === "error" && !downloading && (
+        <div className="text-xs text-red-400/80 bg-red-900/20 border border-red-800/30 rounded-lg px-3 py-2 flex items-center justify-between">
+          <span>Engine failed to initialize.</span>
+          <button
+            onClick={handleDownload}
+            className="text-red-300 underline hover:text-red-200 ml-2"
+          >
+            Re-download model
+          </button>
+        </div>
+      )}
+
+      {/* Not downloaded: download action */}
+      {modelStatus === "not-downloaded" && !downloading && (
+        <div className="text-xs text-gray-400 bg-gray-800/50 border border-gray-700 rounded-lg px-3 py-2 flex items-center justify-between">
+          <span>Speech model not downloaded yet (~2.4 GB).</span>
+          <button
+            onClick={handleDownload}
+            className="text-blue-400 underline hover:text-blue-300 ml-2"
+          >
+            Download
+          </button>
         </div>
       )}
     </div>

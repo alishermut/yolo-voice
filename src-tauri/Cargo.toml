@@ -29,8 +29,12 @@ arboard = "3"
 tauri-plugin-updater = "2.10.0"
 tauri-plugin-process = "2.3.1"
 regex = "1"
-base64 = "0.22"
 dirs-next = "2"
+parakeet-rs = { version = "0.3", features = ["directml"] }
+reqwest = { version = "0.12", features = ["blocking", "json", "multipart"] }
+rubato = "0.16"
+ndarray = "0.17"
+ort = { version = "2.0.0-rc.12", default-features = false }
 windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
 
 [dependencies.windows]

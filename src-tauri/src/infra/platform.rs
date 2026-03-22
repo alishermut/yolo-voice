@@ -72,13 +72,6 @@ fn get_windows_audio_device_names() -> Vec<String> {
 
 pub fn list_input_devices() -> Vec<DeviceInfo> {
     let win_names = get_windows_audio_device_names();
-    eprintln!(
-        "[audio] Windows API found {} capture devices:",
-        win_names.len()
-    );
-    for (i, name) in win_names.iter().enumerate() {
-        eprintln!("[audio]   Win[{}]: \"{}\"", i, name);
-    }
 
     let host = cpal::default_host();
     let result: Vec<DeviceInfo> = host
@@ -89,7 +82,6 @@ pub fn list_input_devices() -> Vec<DeviceInfo> {
                 .map(|(i, d)| {
                     #[allow(deprecated)]
                     let cpal_name = d.name().unwrap_or_else(|_| "Unknown".to_string());
-                    eprintln!("[audio]   cpal[{}]: \"{}\"", i, cpal_name);
 
                     let full_name = if i < win_names.len() {
                         win_names[i].clone()
@@ -105,11 +97,6 @@ pub fn list_input_devices() -> Vec<DeviceInfo> {
                 .collect()
         })
         .unwrap_or_default();
-
-    eprintln!("[audio] Final device list:");
-    for dev in &result {
-        eprintln!("[audio]   [{}] \"{}\"", dev.index, dev.name);
-    }
 
     result
 }

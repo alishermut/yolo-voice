@@ -6,8 +6,8 @@ use app::commands::AudioState;
 use features::capture::recorder::RecordingState;
 use features::output::FocusedWindowState;
 use features::settings::ConfigState;
+use features::speech::inference::InferenceState;
 use features::speech::vocabulary::GlobalDictionaryState;
-use infra::sidecar::SidecarState;
 use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -25,7 +25,7 @@ pub fn run() {
         .manage(ConfigState(Mutex::new(features::settings::AppConfig::default())))
         .manage(RecordingState(Mutex::new(None)))
         .manage(FocusedWindowState(Mutex::new(0)))
-        .manage(SidecarState(Mutex::new(None)))
+        .manage(InferenceState(Mutex::new(None)))
         .manage(GlobalDictionaryState(Mutex::new(
             features::speech::vocabulary::GlobalDictionary::default(),
         )))
@@ -37,11 +37,10 @@ pub fn run() {
             app::commands::save_config_cmd,
             app::commands::start_recording,
             app::commands::stop_recording,
-            app::commands::get_models,
             app::commands::download_model_cmd,
-            app::commands::set_whisper_model,
             app::commands::get_gpu_available,
-            app::commands::get_sidecar_status,
+            app::commands::get_gpu_info,
+            app::commands::get_model_status,
             app::commands::get_profiles,
             app::commands::save_profile_cmd,
             app::commands::delete_profile_cmd,
@@ -49,8 +48,6 @@ pub fn run() {
             app::commands::set_launch_on_startup,
             app::commands::get_app_info,
             app::commands::quit_app,
-            app::commands::get_sidecar_setup_status,
-            app::commands::setup_sidecar_cmd,
             app::commands::get_global_dictionary,
             app::commands::save_global_dictionary_cmd,
             app::commands::get_industry_packs,
@@ -136,61 +133,50 @@ pub fn run() {
             // Start global hotkey listener
             features::capture::hotkey::start_hotkey_listener(app.handle().clone());
 
-            // Product policy: always use tiny model.
-            // Enforce at startup in case config was edited externally.
-            {
-                let config_state = app.state::<ConfigState>();
-                let mut guard = config_state.0.lock().unwrap();
-                if guard.whisper_model != "tiny" {
-                    guard.whisper_model = "tiny".to_string();
-                    let _ = features::settings::save_config(&app.handle(), &guard);
-                }
+            // Clean up old whisper models from previous versions
+            let _ = infra::model::cleanup_old_models(&app.handle());
+
+            // Ensure default profiles are seeded
+            if let Ok(profiles_dir) = features::speech::profiles::get_profiles_dir(&app.handle()) {
+                let _ = features::speech::profiles::ensure_profiles_dir(&profiles_dir, &app.handle());
             }
 
-            // Ensure bundled Python environment is copied to AppData
-            if !cfg!(debug_assertions) {
-                if let Err(e) = infra::sidecar::ensure_bundled_env_copied(&app.handle()) {
-                    eprintln!("[app] Failed to copy bundled Python env: {}", e);
-                }
-            }
-
-            // Spawn sidecar in the background
-            let sidecar_handle = app.handle().clone();
-            let sidecar_config = app.state::<ConfigState>().0.lock().unwrap().clone();
+            // Initialize inference engine in the background
+            let inference_handle = app.handle().clone();
             std::thread::spawn(move || {
-                let _ = infra::sidecar::cleanup_models(&sidecar_handle, "tiny");
+                let models_dir = match infra::model::get_models_dir(&inference_handle) {
+                    Ok(dir) => dir,
+                    Err(e) => {
+                        eprintln!("[app] Failed to get models dir: {}", e);
+                        let _ = inference_handle.emit("model-status", "error");
+                        return;
+                    }
+                };
 
-                match infra::sidecar::spawn_sidecar(&sidecar_handle) {
-                    Ok(mut sc) => {
-                        let models_dir = infra::sidecar::get_models_dir(&sidecar_handle)
-                            .unwrap_or_default();
-                        match features::speech::load_model(
-                            &mut sc,
-                            "tiny",
-                            &sidecar_config.device,
-                            &sidecar_config.compute_type,
-                            &models_dir.to_string_lossy(),
-                        ) {
-                            Ok(()) => {
-                                eprintln!("[app] Sidecar started and tiny model loaded")
-                            }
-                            Err(e) => eprintln!(
-                                "[app] Sidecar started but tiny model failed to load: {}",
-                                e
-                            ),
+                if !infra::model::is_model_downloaded(&models_dir) {
+                    eprintln!("[app] Model not downloaded yet");
+                    let _ = inference_handle.emit("model-status", "not-downloaded");
+                    return;
+                }
+
+                let _ = inference_handle.emit("model-status", "loading");
+
+                match features::speech::inference::InferenceSession::new(&models_dir) {
+                    Ok(session) => {
+                        let gpu = session.is_gpu();
+                        let state = inference_handle.state::<InferenceState>();
+                        *state.0.lock().unwrap() = Some(session);
+                        let _ = inference_handle.emit("model-status", "ready");
+                        if !gpu {
+                            let _ = inference_handle.emit("gpu-fallback", "CPU (GPU not available)");
                         }
-                        let state = sidecar_handle.state::<SidecarState>();
-                        *state.0.lock().unwrap() = Some(sc);
-                        let _ = sidecar_handle.emit("sidecar-status", "running");
                     }
                     Err(e) => {
-                        eprintln!(
-                            "[app] Failed to start sidecar (will retry on first transcription): {}",
-                            e
-                        );
-                        let _ = sidecar_handle.emit("sidecar-status", "stopped");
+                        eprintln!("[app] Failed to init inference engine: {}", e);
+                        let _ = inference_handle.emit("model-status", "error");
                     }
                 }
+
             });
 
             // Set up the hotkey-action event handler (record → transcribe → insert pipeline)
