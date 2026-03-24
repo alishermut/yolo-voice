@@ -6,7 +6,7 @@ use std::time::Duration;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use tauri::AppHandle;
 
-use crate::features::speech::accumulator::{SegmentAccumulator, SegmentSender};
+use crate::features::speech::accumulator::{FinalizedSegments, SegmentAccumulator, SegmentSender};
 use crate::features::speech::vad::VadProcessor;
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -221,8 +221,8 @@ pub fn stop_and_get_raw_samples(
     Ok((samples, recording.sample_rate, recording.channels))
 }
 
-/// Stop a VAD-enabled recording and return assembled text.
-pub fn stop_vad_recording(mut recording: RecordingStream) -> Result<String, String> {
+/// Stop a VAD-enabled recording and return assembled transcript context.
+pub fn stop_vad_recording(mut recording: RecordingStream) -> Result<FinalizedSegments, String> {
     recording.stop_flag.store(true, Ordering::Relaxed);
 
     // Give the VAD thread time to process remaining audio
@@ -233,8 +233,7 @@ pub fn stop_vad_recording(mut recording: RecordingStream) -> Result<String, Stri
         .take()
         .ok_or_else(|| "No VAD accumulator — not a VAD recording".to_string())?;
 
-    let full_text = accumulator.finalize();
-    Ok(full_text)
+    Ok(accumulator.finalize())
 }
 
 /// Check if this recording has VAD active.

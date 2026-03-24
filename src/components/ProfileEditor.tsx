@@ -62,7 +62,7 @@ export function ProfileEditor({
       builtin: false,
       system_prompt:
         "You are a transcription post-processor.\n\nRules:\n- Fix grammar and punctuation\n- Output ONLY the corrected text, nothing else",
-      dictionary: [],
+      terminology_hints: [],
       tone: "neutral",
     });
     setDictInput("");
@@ -70,7 +70,7 @@ export function ProfileEditor({
 
   const handleEdit = (profile: Profile) => {
     setEditingProfile({ ...profile });
-    setDictInput(profile.dictionary.join(", "));
+    setDictInput(profile.terminology_hints.join(", "));
   };
 
   const handleDictChange = (value: string) => {
@@ -80,7 +80,7 @@ export function ProfileEditor({
         .split(",")
         .map((w) => w.trim())
         .filter((w) => w.length > 0);
-      setEditingProfile({ ...editingProfile, dictionary: words });
+      setEditingProfile({ ...editingProfile, terminology_hints: words });
     }
   };
 
@@ -140,7 +140,7 @@ export function ProfileEditor({
 
           <div>
             <label className="text-xs text-gray-400 block mb-1">
-              Custom Dictionary (comma-separated terms to preserve)
+              Terminology Hints (comma-separated terms to preserve)
             </label>
             <input
               type="text"
@@ -150,9 +150,9 @@ export function ProfileEditor({
               placeholder="kubectl, React, PostgreSQL, ..."
               className="w-full bg-gray-800 border border-gray-700 text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
             />
-            {editingProfile.dictionary.length > 0 && (
+            {editingProfile.terminology_hints.length > 0 && (
               <div className="flex flex-wrap gap-1 mt-2">
-                {editingProfile.dictionary.map((word, i) => (
+                {editingProfile.terminology_hints.map((word, i) => (
                   <span
                     key={i}
                     className="px-2 py-0.5 bg-gray-700 text-gray-300 rounded text-xs"
@@ -228,10 +228,10 @@ export function ProfileEditor({
                 </span>
               )}
             </div>
-            {profile.dictionary.length > 0 && (
+            {profile.terminology_hints.length > 0 && (
               <p className="text-xs text-gray-500 mt-0.5">
-                Dictionary: {profile.dictionary.slice(0, 5).join(", ")}
-                {profile.dictionary.length > 5 && "..."}
+                Terminology hints: {profile.terminology_hints.slice(0, 5).join(", ")}
+                {profile.terminology_hints.length > 5 && "..."}
               </p>
             )}
           </div>

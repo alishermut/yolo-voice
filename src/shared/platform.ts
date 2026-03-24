@@ -8,12 +8,13 @@ import type {
   AppConfig,
   AppInfo,
   DeviceInfo,
-  GlobalDictionary,
   GpuInfo,
   IndustryPackInfo,
   PillState,
   Profile,
   SegmentTranscribed,
+  TranscriptDiagnosticsStatus,
+  UserDictionary,
 } from "./types";
 
 // ---- Config ----
@@ -121,16 +122,16 @@ export function getAvailableSounds(): Promise<string[]> {
   return invoke<string[]>("get_available_sounds");
 }
 
-// ---- Global Dictionary & Industry Packs ----
+// ---- User Dictionary & Industry Packs ----
 
-export function getGlobalDictionary(): Promise<GlobalDictionary> {
-  return invoke<GlobalDictionary>("get_global_dictionary");
+export function getUserDictionary(): Promise<UserDictionary> {
+  return invoke<UserDictionary>("get_user_dictionary");
 }
 
-export function saveGlobalDictionary(
-  dictionary: GlobalDictionary,
+export function saveUserDictionary(
+  dictionary: UserDictionary,
 ): Promise<void> {
-  return invoke("save_global_dictionary_cmd", { dictionary });
+  return invoke("save_user_dictionary_cmd", { dictionary });
 }
 
 export function getIndustryPacks(): Promise<IndustryPackInfo[]> {
@@ -139,8 +140,18 @@ export function getIndustryPacks(): Promise<IndustryPackInfo[]> {
 
 export function applyIndustryPack(
   packId: string,
-): Promise<GlobalDictionary> {
-  return invoke<GlobalDictionary>("apply_industry_pack", { packId });
+): Promise<void> {
+  return invoke("apply_industry_pack", { packId });
+}
+
+// ---- Transcript Diagnostics ----
+
+export function getTranscriptDiagnosticsStatus(): Promise<TranscriptDiagnosticsStatus> {
+  return invoke<TranscriptDiagnosticsStatus>("get_transcript_diagnostics_status");
+}
+
+export function clearTranscriptDiagnostics(): Promise<TranscriptDiagnosticsStatus> {
+  return invoke<TranscriptDiagnosticsStatus>("clear_transcript_diagnostics");
 }
 
 // ---- Event Listeners ----

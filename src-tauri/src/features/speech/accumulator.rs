@@ -1,6 +1,8 @@
-//! Segment accumulator — receives speech segments from the VAD processor,
-//! transcribes each one via parakeet-rs on a background thread, cleans up
-//! the text, and emits `segment-transcribed` events.
+//! Segment accumulator for the VAD path.
+//!
+//! Each segment is transcribed independently, lightly cleaned when enabled,
+//! and then joined into a progressive preview. Stronger cleanup happens only
+//! after final assembly in capture/mod.rs.
 
 use std::sync::mpsc;
 
@@ -12,8 +14,6 @@ use super::inference::InferenceState;
 use super::vad::SpeechSegment;
 use crate::app::events::emit_all;
 
-// ── Event payload ────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Serialize)]
 pub struct SegmentTranscribed {
     pub index: usize,
@@ -21,7 +21,11 @@ pub struct SegmentTranscribed {
     pub full_text: String,
 }
 
-// ── Segment sender ───────────────────────────────────────────────────────────
+#[derive(Debug, Clone, PartialEq)]
+pub struct FinalizedSegments {
+    pub raw_segments: Vec<String>,
+    pub joined_text: String,
+}
 
 #[derive(Clone)]
 pub struct SegmentSender {
@@ -34,11 +38,9 @@ impl SegmentSender {
     }
 }
 
-// ── Accumulator ──────────────────────────────────────────────────────────────
-
 enum AccMsg {
     Segment(SpeechSegment),
-    Flush(mpsc::Sender<String>),
+    Flush(mpsc::Sender<FinalizedSegments>),
 }
 
 pub struct SegmentAccumulator {
@@ -60,15 +62,17 @@ impl SegmentAccumulator {
         (Self { tx }, sender)
     }
 
-    pub fn finalize(self) -> String {
+    pub fn finalize(self) -> FinalizedSegments {
         let (reply_tx, reply_rx) = mpsc::channel();
         let _ = self.tx.send(AccMsg::Flush(reply_tx));
-        reply_rx.recv().unwrap_or_default()
+        reply_rx.recv().unwrap_or_else(|_| FinalizedSegments {
+            raw_segments: Vec::new(),
+            joined_text: String::new(),
+        })
     }
 
-    // ── Worker thread ────────────────────────────────────────────────────
-
-    fn worker(rx: mpsc::Receiver<AccMsg>, app: AppHandle, text_cleanup: bool) {
+    fn worker(rx: mpsc::Receiver<AccMsg>, app: AppHandle, text_cleanup_enabled: bool) {
+        let mut raw_segments: Vec<String> = Vec::new();
         let mut texts: Vec<String> = Vec::new();
 
         loop {
@@ -78,13 +82,13 @@ impl SegmentAccumulator {
                     let text = Self::transcribe_segment(&app, &segment);
 
                     match text {
-                        Ok(t) if !t.trim().is_empty() => {
-                            // Try local LLM cleanup first, fall back to regex
-                            let cleaned = Self::apply_cleanup(&t, text_cleanup);
+                        Ok(raw_text) if !raw_text.trim().is_empty() => {
+                            raw_segments.push(raw_text.trim().to_string());
+                            let cleaned = Self::clean_segment(&raw_text, text_cleanup_enabled);
 
                             if !cleaned.is_empty() {
                                 texts.push(cleaned);
-                                let full = cleanup::smart_join(&texts);
+                                let full = Self::assemble_preview(&texts, text_cleanup_enabled);
 
                                 emit_all(
                                     &app,
@@ -98,34 +102,36 @@ impl SegmentAccumulator {
                             }
                         }
                         Ok(_) => {}
-                        Err(e) => {
-                            eprintln!(
-                                "[accumulator] segment {} failed: {}, skipping",
-                                index, e
-                            );
+                        Err(err) => {
+                            eprintln!("[accumulator] segment {} failed: {}, skipping", index, err);
                         }
                     }
                 }
-
                 Ok(AccMsg::Flush(reply)) => {
-                    let full = cleanup::smart_join(&texts);
-                    let _ = reply.send(full);
+                    let _ = reply.send(FinalizedSegments {
+                        raw_segments,
+                        joined_text: Self::assemble_preview(&texts, text_cleanup_enabled),
+                    });
                     break;
                 }
-
-                Err(_) => {
-                    break;
-                }
+                Err(_) => break,
             }
         }
     }
 
-    /// Apply text cleanup: regex-based filler removal, or pass through.
-    fn apply_cleanup(raw_text: &str, regex_cleanup: bool) -> String {
-        if regex_cleanup {
-            cleanup::clean_text(raw_text)
+    fn clean_segment(raw_text: &str, text_cleanup_enabled: bool) -> String {
+        if text_cleanup_enabled {
+            cleanup::clean_segment_text(raw_text)
         } else {
             raw_text.trim().to_string()
+        }
+    }
+
+    fn assemble_preview(texts: &[String], text_cleanup_enabled: bool) -> String {
+        if text_cleanup_enabled {
+            cleanup::join_segments_heuristic(texts)
+        } else {
+            cleanup::join_segments_minimal(texts)
         }
     }
 

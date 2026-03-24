@@ -26,6 +26,8 @@ export interface AppConfig {
   stop_sound: string;
   vad_silence_threshold_ms: number;
   text_cleanup_enabled: boolean;
+  show_dictionary_migration_notice: boolean;
+  transcript_diagnostics_enabled: boolean;
 }
 
 export interface GpuInfo {
@@ -44,9 +46,10 @@ export interface ReplacementRule {
   replace: string;
 }
 
-export interface GlobalDictionary {
-  vocabulary: string[];
-  replacements: ReplacementRule[];
+export interface UserDictionary {
+  version: number;
+  user_vocabulary: string[];
+  user_normalization_rules: ReplacementRule[];
 }
 
 export interface DeviceInfo {
@@ -64,7 +67,7 @@ export interface Profile {
   name: string;
   builtin: boolean;
   system_prompt: string;
-  dictionary: string[];
+  terminology_hints: string[];
   tone: string;
 }
 
@@ -81,6 +84,13 @@ export interface AppInfo {
   name: string;
   launch_on_startup: boolean;
   log_path: string;
+}
+
+export interface TranscriptDiagnosticsStatus {
+  enabled: boolean;
+  sample_count: number;
+  max_samples: number;
+  db_path: string;
 }
 
 export type PillState = "idle" | "recording" | "transcribing" | "done";

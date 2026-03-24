@@ -70,6 +70,10 @@ pub struct AppConfig {
     pub vad_silence_threshold_ms: u32,
     #[serde(default = "default_text_cleanup")]
     pub text_cleanup_enabled: bool,
+    #[serde(default)]
+    pub show_dictionary_migration_notice: bool,
+    #[serde(default)]
+    pub transcript_diagnostics_enabled: bool,
 }
 
 fn default_text_cleanup() -> bool {
@@ -147,6 +151,8 @@ impl Default for AppConfig {
             stop_sound: default_stop_sound(),
             vad_silence_threshold_ms: default_vad_silence_threshold(),
             text_cleanup_enabled: default_text_cleanup(),
+            show_dictionary_migration_notice: false,
+            transcript_diagnostics_enabled: false,
         }
     }
 }

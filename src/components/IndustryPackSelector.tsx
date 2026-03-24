@@ -65,11 +65,11 @@ export function IndustryPackSelector({
                 </span>
                 {isActive && (
                   <span className="text-xs bg-blue-600/30 text-blue-300 px-2 py-0.5 rounded-full">
-                    Active
+                    Active Scope
                   </span>
                 )}
                 {applying === pack.id && (
-                  <span className="text-xs text-yellow-300">Applying...</span>
+                  <span className="text-xs text-yellow-300">Activating...</span>
                 )}
               </div>
               <p className="text-xs text-gray-500 mb-1">{pack.description}</p>

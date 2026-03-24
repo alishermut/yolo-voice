@@ -6,32 +6,41 @@ import { ProfileEditor } from "../components/ProfileEditor";
 import { LLMSettings } from "../components/LLMSettings";
 import { ReplacementRules } from "../components/ReplacementRules";
 import { IndustryPackSelector } from "../components/IndustryPackSelector";
-import type { AppConfig, GlobalDictionary } from "../shared/types";
+import type {
+  AppConfig,
+  TranscriptDiagnosticsStatus,
+  UserDictionary,
+} from "../shared/types";
 import {
+  clearTranscriptDiagnostics,
   getConfig,
-  saveConfig,
-  getGlobalDictionary,
-  saveGlobalDictionary,
   getAvailableSounds,
+  getTranscriptDiagnosticsStatus,
+  getUserDictionary,
   previewSound,
+  saveConfig,
+  saveUserDictionary,
   setLaunchOnStartup,
 } from "../shared/platform";
 
 export function Settings() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [globalDict, setGlobalDict] = useState<GlobalDictionary>({
-    vocabulary: [],
-    replacements: [],
+  const [userDict, setUserDict] = useState<UserDictionary>({
+    version: 2,
+    user_vocabulary: [],
+    user_normalization_rules: [],
   });
+  const [diagnosticsStatus, setDiagnosticsStatus] =
+    useState<TranscriptDiagnosticsStatus | null>(null);
   const [vocabInput, setVocabInput] = useState("");
   const [availableSounds, setAvailableSounds] = useState<string[]>([]);
 
   const loadDict = () => {
-    getGlobalDictionary()
+    getUserDictionary()
       .then((d) => {
-        setGlobalDict(d);
-        setVocabInput(d.vocabulary.join(", "));
+        setUserDict(d);
+        setVocabInput(d.user_vocabulary.join(", "));
       })
       .catch(() => {});
   };
@@ -43,13 +52,16 @@ export function Settings() {
     getAvailableSounds()
       .then(setAvailableSounds)
       .catch(() => {});
+    getTranscriptDiagnosticsStatus()
+      .then(setDiagnosticsStatus)
+      .catch(() => {});
     loadDict();
   }, []);
 
-  const saveDict = async (dict: GlobalDictionary) => {
+  const saveDict = async (dict: UserDictionary) => {
     try {
-      await saveGlobalDictionary(dict);
-      setGlobalDict(dict);
+      await saveUserDictionary(dict);
+      setUserDict(dict);
     } catch (e) {
       setError(String(e));
     }
@@ -61,6 +73,27 @@ export function Settings() {
     try {
       await saveConfig(newConfig);
       setConfig(newConfig);
+      if ("transcript_diagnostics_enabled" in updates) {
+        setDiagnosticsStatus((prev) =>
+          prev
+            ? { ...prev, enabled: newConfig.transcript_diagnostics_enabled }
+            : prev,
+        );
+      }
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const clearDiagnosticsData = async () => {
+    if (!window.confirm("Delete all locally stored transcript diagnostics samples?")) {
+      return;
+    }
+
+    try {
+      const status = await clearTranscriptDiagnostics();
+      setDiagnosticsStatus(status);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -72,6 +105,27 @@ export function Settings() {
       {error && (
         <div className="px-3 py-2 bg-red-900/50 border border-red-700 rounded-lg text-red-300 text-sm">
           {error}
+        </div>
+      )}
+
+      {config?.show_dictionary_migration_notice && (
+        <div className="px-4 py-3 bg-amber-950/50 border border-amber-700 rounded-lg text-amber-200 text-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="font-medium">Legacy dictionary reset</p>
+              <p className="text-xs text-amber-300/90 mt-1">
+                An older merged dictionary was backed up and reset so industry packs are scoped correctly now.
+                Your active pack setting was kept, but personal terms and rules need to be re-added if they lived only
+                in the old merged file.
+              </p>
+            </div>
+            <button
+              onClick={() => updateConfig({ show_dictionary_migration_notice: false })}
+              className="px-2 py-1 rounded bg-amber-800/60 hover:bg-amber-700/60 text-xs text-amber-100 transition-colors"
+            >
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 
@@ -184,7 +238,7 @@ export function Settings() {
               <div>
                 <span className="text-sm text-gray-300">Text cleanup</span>
                 <p className="text-xs text-gray-500">
-                  Remove filler words (um, uh), fix stutters, and normalize punctuation
+                  Remove hard fillers, fix restart stutters, and shape joined dictation into cleaner sentences
                 </p>
               </div>
               <input
@@ -229,6 +283,60 @@ export function Settings() {
             </div>
           </div>
         )}
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold text-gray-200 mb-3">
+          Local Transcript Diagnostics
+        </h2>
+        <div className="space-y-4">
+          <label className="flex items-center justify-between cursor-pointer">
+            <div>
+              <span className="text-sm text-gray-300">Enable local diagnostics logging</span>
+              <p className="text-xs text-gray-500">
+                Store text-only pipeline checkpoints on this device to help refine transcription behavior over time.
+              </p>
+            </div>
+            <input
+              type="checkbox"
+              checked={config?.transcript_diagnostics_enabled ?? false}
+              onChange={(e) =>
+                updateConfig({ transcript_diagnostics_enabled: e.target.checked })
+              }
+              className="accent-blue-500 w-4 h-4 ml-3"
+            />
+          </label>
+
+          <div className="p-3 bg-gray-800/50 border border-gray-700 rounded-lg text-xs text-gray-400 space-y-2">
+            <p>
+              Local only. Text only. No audio, clipboard contents, or window metadata are captured.
+            </p>
+            <p>
+              Retention is capped at the most recent {diagnosticsStatus?.max_samples ?? 1000} samples.
+            </p>
+            {diagnosticsStatus && (
+              <p className="break-all">
+                Stored samples: {diagnosticsStatus.sample_count} • Database: {diagnosticsStatus.db_path}
+              </p>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <span className="text-sm text-gray-300">Clear stored samples</span>
+              <p className="text-xs text-gray-500">
+                Remove all previously captured diagnostics data without changing the current toggle.
+              </p>
+            </div>
+            <button
+              onClick={clearDiagnosticsData}
+              disabled={!diagnosticsStatus || diagnosticsStatus.sample_count === 0}
+              className="px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-200 hover:border-red-500 hover:text-red-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              Clear data
+            </button>
+          </div>
+        </div>
       </section>
 
       <section>
@@ -309,13 +417,17 @@ export function Settings() {
 
       <section>
         <h2 className="text-lg font-semibold text-gray-200 mb-3">
-          Dictionary & Vocabulary
+          Personal Dictionary & Industry Packs
         </h2>
         <div className="space-y-4">
           <div>
             <h3 className="text-sm font-semibold text-gray-300 mb-2">
-              Industry Pack
+              Active Industry Pack
             </h3>
+            <p className="text-xs text-gray-500 mb-2">
+              Pack terms and pack normalization rules apply only while this scope is active. Activating a pack does not
+              copy its entries into your personal dictionary.
+            </p>
             <IndustryPackSelector
               activePack={config?.active_industry_pack ?? "general"}
               onApply={() => {
@@ -327,10 +439,17 @@ export function Settings() {
 
           <div>
             <h3 className="text-sm font-semibold text-gray-300 mb-2">
-              Vocabulary Words
+              Personal Terms
             </h3>
             <p className="text-xs text-gray-500 mb-2">
-              Words sent to Whisper to improve recognition. Comma-separated.
+              Canonical terms you want the app to preserve. Personal terms now create safe automatic aliases for common
+              shape-based variants like <span className="font-mono">type script → TypeScript</span> and
+              <span className="font-mono"> next js → Next.js</span>, but they are still not sent to the offline
+              recognizer itself.
+            </p>
+            <p className="text-xs text-gray-500 mb-2">
+              Use Personal Normalization Rules below for phonetic mismatches the app cannot infer safely, like
+              <span className="font-mono"> super base → Supabase</span>.
             </p>
             <textarea
               value={vocabInput}
@@ -342,31 +461,33 @@ export function Settings() {
                   .split(",")
                   .map((w) => w.trim())
                   .filter((w) => w.length > 0);
-                saveDict({ ...globalDict, vocabulary: words });
+                saveDict({ ...userDict, user_vocabulary: words });
               }}
               rows={3}
               placeholder="Supabase, Vercel, Kubernetes, ..."
               className="w-full bg-gray-800 border border-gray-700 text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 resize-y"
             />
-            {globalDict.vocabulary.length > 0 && (
+            {userDict.user_vocabulary.length > 0 && (
               <p className="text-xs text-gray-500 mt-1">
-                {globalDict.vocabulary.length} vocabulary term
-                {globalDict.vocabulary.length !== 1 ? "s" : ""}
+                {userDict.user_vocabulary.length} personal term
+                {userDict.user_vocabulary.length !== 1 ? "s" : ""}
               </p>
             )}
           </div>
 
           <div>
             <h3 className="text-sm font-semibold text-gray-300 mb-2">
-              Replacement Rules
+              Personal Normalization Rules
             </h3>
             <p className="text-xs text-gray-500 mb-2">
-              Auto-correct misrecognized words after every transcription (no LLM
-              needed).
+              Deterministic corrections that apply after transcription. These stay in your personal dictionary and are
+              layered on top of the currently active industry pack.
             </p>
             <ReplacementRules
-              rules={globalDict.replacements}
-              onChange={(rules) => saveDict({ ...globalDict, replacements: rules })}
+              rules={userDict.user_normalization_rules}
+              onChange={(rules) =>
+                saveDict({ ...userDict, user_normalization_rules: rules })
+              }
             />
           </div>
         </div>

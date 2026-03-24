@@ -3,12 +3,13 @@ use std::sync::Mutex;
 use tauri::{Manager, State};
 
 use crate::features::capture::recorder::{self, RecordingState};
+use crate::features::diagnostics::{TranscriptDiagnosticsState, TranscriptDiagnosticsStatus};
 use crate::features::output;
 use crate::features::settings::{self, AppConfig, ConfigState};
 use crate::features::speech;
 use crate::features::speech::inference::InferenceState;
 use crate::features::speech::vocabulary::{
-    GlobalDictionary, GlobalDictionaryState, IndustryPackInfo,
+    IndustryPackInfo, UserDictionary, UserDictionaryState,
 };
 use crate::infra::platform::{self, AudioStream, DeviceInfo};
 
@@ -208,7 +209,7 @@ pub fn test_llm_connection(
         name: "Test".to_string(),
         builtin: false,
         system_prompt: "Fix the grammar. Output only the corrected text.".to_string(),
-        dictionary: vec![],
+        terminology_hints: vec![],
         tone: "neutral".to_string(),
     };
 
@@ -281,23 +282,23 @@ pub fn get_available_sounds() -> Vec<String> {
         .collect()
 }
 
-// ---- Global Dictionary & Industry Packs ----
+// ---- User Dictionary & Industry Packs ----
 
 #[tauri::command]
-pub fn get_global_dictionary(
-    state: State<'_, GlobalDictionaryState>,
-) -> Result<GlobalDictionary, String> {
+pub fn get_user_dictionary(
+    state: State<'_, UserDictionaryState>,
+) -> Result<UserDictionary, String> {
     let guard = state.0.lock().map_err(|e| e.to_string())?;
     Ok(guard.clone())
 }
 
 #[tauri::command]
-pub fn save_global_dictionary_cmd(
-    dictionary: GlobalDictionary,
+pub fn save_user_dictionary_cmd(
+    dictionary: UserDictionary,
     app_handle: tauri::AppHandle,
-    state: State<'_, GlobalDictionaryState>,
+    state: State<'_, UserDictionaryState>,
 ) -> Result<(), String> {
-    speech::vocabulary::save_global_dictionary(&app_handle, &dictionary)?;
+    speech::vocabulary::save_user_dictionary(&app_handle, &dictionary)?;
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     *guard = dictionary;
     speech::vocabulary::invalidate_regex_cache();
@@ -313,22 +314,44 @@ pub fn get_industry_packs(app_handle: tauri::AppHandle) -> Result<Vec<IndustryPa
 pub fn apply_industry_pack(
     pack_id: String,
     app_handle: tauri::AppHandle,
-    dict_state: State<'_, GlobalDictionaryState>,
     config_state: State<'_, ConfigState>,
-) -> Result<GlobalDictionary, String> {
-    let pack = speech::vocabulary::load_industry_pack(&app_handle, &pack_id)?;
-
-    let mut guard = dict_state.0.lock().map_err(|e| e.to_string())?;
-
-    speech::vocabulary::merge_pack_into_dictionary(&mut guard, &pack);
-
-    speech::vocabulary::save_global_dictionary(&app_handle, &guard)?;
-    speech::vocabulary::invalidate_regex_cache();
+) -> Result<(), String> {
+    speech::vocabulary::load_industry_pack(&app_handle, &pack_id)?;
 
     let mut config_guard = config_state.0.lock().map_err(|e| e.to_string())?;
     config_guard.active_industry_pack = pack_id;
     settings::save_config(&app_handle, &config_guard)?;
+    speech::vocabulary::invalidate_regex_cache();
 
-    Ok(guard.clone())
+    Ok(())
 }
 
+// ---- Transcript Diagnostics ----
+
+#[tauri::command]
+pub fn get_transcript_diagnostics_status(
+    config_state: State<'_, ConfigState>,
+    diagnostics_state: State<'_, TranscriptDiagnosticsState>,
+) -> Result<TranscriptDiagnosticsStatus, String> {
+    let enabled = config_state
+        .0
+        .lock()
+        .map_err(|e| e.to_string())?
+        .transcript_diagnostics_enabled;
+
+    diagnostics_state.0.status(enabled)
+}
+
+#[tauri::command]
+pub fn clear_transcript_diagnostics(
+    config_state: State<'_, ConfigState>,
+    diagnostics_state: State<'_, TranscriptDiagnosticsState>,
+) -> Result<TranscriptDiagnosticsStatus, String> {
+    let enabled = config_state
+        .0
+        .lock()
+        .map_err(|e| e.to_string())?
+        .transcript_diagnostics_enabled;
+
+    diagnostics_state.0.clear(enabled)
+}

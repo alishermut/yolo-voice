@@ -27,8 +27,8 @@ pub struct Profile {
     #[serde(default)]
     pub builtin: bool,
     pub system_prompt: String,
-    #[serde(default)]
-    pub dictionary: Vec<String>,
+    #[serde(default, alias = "dictionary")]
+    pub terminology_hints: Vec<String>,
     #[serde(default = "default_tone")]
     pub tone: String,
 }

@@ -13,10 +13,10 @@ pub fn post_process_text(
         return Ok(String::new());
     }
 
-    // Build system prompt with dictionary context
+    // Build system prompt with terminology hint context
     let mut system_prompt = profile.system_prompt.clone();
-    if !profile.dictionary.is_empty() {
-        let dict_str = profile.dictionary.join(", ");
+    if !profile.terminology_hints.is_empty() {
+        let dict_str = profile.terminology_hints.join(", ");
         system_prompt.push_str(&format!(
             "\n\nImportant terminology to preserve exactly: {}",
             dict_str

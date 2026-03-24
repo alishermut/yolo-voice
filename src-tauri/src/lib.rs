@@ -4,10 +4,11 @@ mod infra;
 
 use app::commands::AudioState;
 use features::capture::recorder::RecordingState;
+use features::diagnostics::TranscriptDiagnosticsState;
 use features::output::FocusedWindowState;
 use features::settings::ConfigState;
 use features::speech::inference::InferenceState;
-use features::speech::vocabulary::GlobalDictionaryState;
+use features::speech::vocabulary::{UserDictionaryMigration, UserDictionaryState};
 use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -26,8 +27,8 @@ pub fn run() {
         .manage(RecordingState(Mutex::new(None)))
         .manage(FocusedWindowState(Mutex::new(0)))
         .manage(InferenceState(Mutex::new(None)))
-        .manage(GlobalDictionaryState(Mutex::new(
-            features::speech::vocabulary::GlobalDictionary::default(),
+        .manage(UserDictionaryState(Mutex::new(
+            features::speech::vocabulary::UserDictionary::default(),
         )))
         .invoke_handler(tauri::generate_handler![
             app::commands::list_devices,
@@ -48,10 +49,12 @@ pub fn run() {
             app::commands::set_launch_on_startup,
             app::commands::get_app_info,
             app::commands::quit_app,
-            app::commands::get_global_dictionary,
-            app::commands::save_global_dictionary_cmd,
+            app::commands::get_user_dictionary,
+            app::commands::save_user_dictionary_cmd,
             app::commands::get_industry_packs,
             app::commands::apply_industry_pack,
+            app::commands::get_transcript_diagnostics_status,
+            app::commands::clear_transcript_diagnostics,
             app::commands::preview_sound,
             app::commands::get_available_sounds,
         ])
@@ -61,12 +64,26 @@ pub fn run() {
             let config_state = app.state::<ConfigState>();
             *config_state.0.lock().unwrap() = saved_config.clone();
 
-            // Load global dictionary (auto-apply all industry packs on first install)
-            let mut saved_dict =
-                features::speech::vocabulary::load_global_dictionary(&app.handle());
-            features::speech::vocabulary::auto_apply_all_packs(&app.handle(), &mut saved_dict);
-            let dict_state = app.state::<GlobalDictionaryState>();
-            *dict_state.0.lock().unwrap() = saved_dict;
+            // Load user dictionary and migrate legacy merged dictionaries if needed.
+            let load_result = features::speech::vocabulary::load_user_dictionary(&app.handle());
+            if let UserDictionaryMigration::LegacyReset { backup_path } = &load_result.migration {
+                let mut config_guard = config_state.0.lock().unwrap();
+                config_guard.show_dictionary_migration_notice = true;
+                if let Err(err) = features::settings::save_config(&app.handle(), &config_guard) {
+                    eprintln!("[app] Failed to persist dictionary migration notice: {}", err);
+                }
+                eprintln!(
+                    "[app] Reset legacy merged dictionary and wrote backup to {}",
+                    backup_path.display()
+                );
+            }
+
+            let dict_state = app.state::<UserDictionaryState>();
+            *dict_state.0.lock().unwrap() = load_result.dictionary;
+
+            let diagnostics_store =
+                features::diagnostics::TranscriptDiagnosticsStore::new(&app.handle())?;
+            app.manage(TranscriptDiagnosticsState(diagnostics_store));
 
             // Build tray menu
             let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
