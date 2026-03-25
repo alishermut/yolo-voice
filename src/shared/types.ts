@@ -3,7 +3,6 @@
 
 export interface AppConfig {
   hotkey: string;
-  record_mode: "hold" | "toggle";
   device_index: number;
   whisper_model: string;
   device: string;

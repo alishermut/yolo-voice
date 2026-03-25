@@ -19,6 +19,8 @@ pub struct RecordingStream {
     channels: u16,
     /// Present when VAD mode is active.
     accumulator: Option<SegmentAccumulator>,
+    /// Signals that the VAD thread has finished flushing. None in non-VAD mode.
+    vad_done_rx: Option<std::sync::mpsc::Receiver<()>>,
 }
 
 unsafe impl Send for RecordingStream {}
@@ -73,7 +75,7 @@ pub fn start_recording(
     let stop_reader = stop_flag.clone();
 
     // ── VAD setup (optional) ─────────────────────────────────────────────
-    let (vad_audio_tx, accumulator) = if let Some(cfg) = vad_config {
+    let (vad_audio_tx, accumulator, vad_done_rx) = if let Some(cfg) = vad_config {
         let (accumulator, segment_sender) = SegmentAccumulator::new(
             app_handle.clone(),
             cfg.text_cleanup_enabled,
@@ -81,6 +83,8 @@ pub fn start_recording(
 
         // Channel for raw audio: callback → VAD thread
         let (audio_tx, audio_rx) = std::sync::mpsc::channel::<Vec<f32>>();
+        // Channel for VAD thread to signal it has fully flushed
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
 
         let vad_stop = stop_flag.clone();
         let model_path = cfg.model_path;
@@ -92,12 +96,13 @@ pub fn start_recording(
             .name("vad-processor".into())
             .spawn(move || {
                 vad_thread(audio_rx, vad_stop, &model_path, silence_ms, segment_sender, dev_rate, dev_ch);
+                let _ = done_tx.send(());
             })
             .map_err(|e| format!("Failed to spawn VAD thread: {e}"))?;
 
-        (Some(audio_tx), Some(accumulator))
+        (Some(audio_tx), Some(accumulator), Some(done_rx))
     } else {
-        (None, None)
+        (None, None, None)
     };
 
     let vad_tx = vad_audio_tx;
@@ -108,8 +113,11 @@ pub fn start_recording(
             device.build_input_stream(
                 &stream_config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    if let Ok(mut buf) = samples_writer.lock() {
-                        buf.extend_from_slice(data);
+                    // Only accumulate raw samples in non-VAD mode (VAD uses the segment accumulator)
+                    if vad_tx.is_none() {
+                        if let Ok(mut buf) = samples_writer.lock() {
+                            buf.extend_from_slice(data);
+                        }
                     }
                     let sum: f32 = data.iter().map(|s| s * s).sum();
                     let rms_val = (sum / data.len() as f32).sqrt();
@@ -130,8 +138,11 @@ pub fn start_recording(
                 move |data: &[i16], _: &cpal::InputCallbackInfo| {
                     let floats: Vec<f32> =
                         data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
-                    if let Ok(mut buf) = samples_writer.lock() {
-                        buf.extend_from_slice(&floats);
+                    // Only accumulate raw samples in non-VAD mode (VAD uses the segment accumulator)
+                    if vad_tx.is_none() {
+                        if let Ok(mut buf) = samples_writer.lock() {
+                            buf.extend_from_slice(&floats);
+                        }
                     }
                     let sum: f32 = floats.iter().map(|s| s * s).sum();
                     let rms_val = (sum / floats.len() as f32).sqrt();
@@ -173,6 +184,7 @@ pub fn start_recording(
         sample_rate,
         channels,
         accumulator,
+        vad_done_rx,
     })
 }
 
@@ -225,8 +237,12 @@ pub fn stop_and_get_raw_samples(
 pub fn stop_vad_recording(mut recording: RecordingStream) -> Result<FinalizedSegments, String> {
     recording.stop_flag.store(true, Ordering::Relaxed);
 
-    // Give the VAD thread time to process remaining audio
-    std::thread::sleep(Duration::from_millis(150));
+    // Wait for the VAD thread to finish draining and flushing.
+    // The thread sends () on vad_done_rx after its final flush completes.
+    // 3-second timeout guards against a stalled VAD thread.
+    if let Some(rx) = &recording.vad_done_rx {
+        let _ = rx.recv_timeout(Duration::from_secs(3));
+    }
 
     let accumulator = recording
         .accumulator

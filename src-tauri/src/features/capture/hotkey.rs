@@ -122,18 +122,6 @@ pub fn start_hotkey_listener(app_handle: AppHandle) {
                             } else {
                                 state = State::WaitingForDoubleTap;
                                 release_time = Some(Instant::now());
-
-                                let app_clone = app.clone();
-                                let release_instant = Instant::now();
-                                std::thread::spawn(move || {
-                                    std::thread::sleep(std::time::Duration::from_millis(
-                                        DOUBLE_TAP_WINDOW_MS as u64 + 50,
-                                    ));
-                                    let _ = app_clone.emit(
-                                        "hotkey-check-timeout",
-                                        release_instant.elapsed().as_millis(),
-                                    );
-                                });
                             }
                         }
                         State::ToggleRecording => {

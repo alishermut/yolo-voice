@@ -15,17 +15,9 @@ use windows::Win32::System::Registry::{
 
 // ---- Config ----
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum RecordMode {
-    Hold,
-    Toggle,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub hotkey: String,
-    pub record_mode: RecordMode,
     pub device_index: usize,
     /// DEPRECATED: Legacy field from Python sidecar era. Kept for config.json backward compatibility.
     #[serde(default = "default_whisper_model")]
@@ -130,7 +122,6 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             hotkey: "CapsLock".to_string(),
-            record_mode: RecordMode::Hold,
             device_index: 0,
             whisper_model: default_whisper_model(),
             device: default_device(),

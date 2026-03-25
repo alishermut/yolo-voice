@@ -24,6 +24,9 @@ static DOUBLE_PUNCT: LazyLock<Regex> =
 static SENTENCE_CAP: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"([.!?])\s+([a-z])").unwrap());
 
+static LOWERCASE_FIRST_WORD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(\W*)([A-Z][A-Za-z']*)(.*)$").unwrap());
+
 static RESTART_WORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     HashSet::from([
         "i", "the", "a", "an", "we", "you", "he", "she", "it", "they", "to", "of", "and",
@@ -310,9 +313,7 @@ fn lowercase_first_word_force(text: &str) -> String {
         return text.to_string();
     };
 
-    let match_result = Regex::new(r"^(\W*)([A-Z][A-Za-z']*)(.*)$")
-        .unwrap()
-        .captures(text);
+    let match_result = LOWERCASE_FIRST_WORD.captures(text);
 
     let Some(caps) = match_result else {
         return text.to_string();
