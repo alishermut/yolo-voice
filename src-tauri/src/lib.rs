@@ -39,8 +39,11 @@ pub fn run() {
             app::commands::start_recording,
             app::commands::stop_recording,
             app::commands::download_model_cmd,
+            app::commands::cancel_model_download_cmd,
+            app::commands::delete_model_cmd,
             app::commands::get_gpu_available,
             app::commands::get_gpu_info,
+            app::commands::reload_model_cmd,
             app::commands::get_model_status,
             app::commands::get_profiles,
             app::commands::save_profile_cmd,
@@ -117,27 +120,42 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // Position pill window above the taskbar, centered
+            // Position pill window above the taskbar/dock, centered
             if let Some(pill) = app.get_webview_window("pill") {
                 let _ =
                     pill.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
 
-                let work_area = unsafe {
-                    let mut rect = windows::Win32::Foundation::RECT::default();
-                    let _ = windows::Win32::UI::WindowsAndMessaging::SystemParametersInfoW(
-                        windows::Win32::UI::WindowsAndMessaging::SPI_GETWORKAREA,
-                        0,
-                        Some(&mut rect as *mut _ as *mut _),
-                        windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-                    );
-                    rect
-                };
+                let pill_width = 280i32;
+                let pill_height = 50i32;
 
-                let pill_width = 280;
-                let pill_height = 50;
-                let x = (work_area.right - work_area.left - pill_width) / 2 + work_area.left;
-                let y = work_area.bottom - pill_height - 20;
-                let _ = pill.set_position(tauri::PhysicalPosition::new(x, y));
+                #[cfg(windows)]
+                {
+                    let work_area = unsafe {
+                        let mut rect = windows::Win32::Foundation::RECT::default();
+                        let _ = windows::Win32::UI::WindowsAndMessaging::SystemParametersInfoW(
+                            windows::Win32::UI::WindowsAndMessaging::SPI_GETWORKAREA,
+                            0,
+                            Some(&mut rect as *mut _ as *mut _),
+                            windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+                        );
+                        rect
+                    };
+                    let x = (work_area.right - work_area.left - pill_width) / 2 + work_area.left;
+                    let y = work_area.bottom - pill_height - 20;
+                    let _ = pill.set_position(tauri::PhysicalPosition::new(x, y));
+                }
+
+                #[cfg(not(windows))]
+                {
+                    // Use Tauri monitor API for cross-platform positioning
+                    if let Ok(Some(monitor)) = pill.current_monitor() {
+                        let size = monitor.size();
+                        let pos = monitor.position();
+                        let x = pos.x + (size.width as i32 - pill_width) / 2;
+                        let y = pos.y + size.height as i32 - pill_height - 80;
+                        let _ = pill.set_position(tauri::PhysicalPosition::new(x, y));
+                    }
+                }
             }
 
             // Start minimized: hide main window if configured

@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Settings } from "./pages/Settings";
 import { About } from "./pages/About";
 import { Onboarding } from "./pages/Onboarding";
-import { useUpdater } from "./hooks/useUpdater";
+import { UpdaterProvider, useUpdaterContext } from "./contexts/UpdaterContext";
 import { getConfig, quitApp } from "./shared/platform";
 
 type Page = "settings" | "about";
@@ -30,19 +30,16 @@ function Spinner({ className = "" }: { className?: string }) {
   );
 }
 
-function App() {
+function AppContent() {
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
   const [page, setPage] = useState<Page>("settings");
-  const { status: updateStatus, version: updateVersion, checkForUpdates, installUpdate } = useUpdater();
+  const { status: updateStatus, version: updateVersion, error: updateError, checkForUpdates, installUpdate, dismissError } = useUpdaterContext();
 
   useEffect(() => {
     getConfig()
       .then((config) => setOnboarded(config.onboarding_completed))
       .catch(() => setOnboarded(true));
-
-    // Auto-check for updates on startup
-    checkForUpdates();
-  }, [checkForUpdates]);
+  }, []);
 
   // Loading state
   if (onboarded === null) {
@@ -112,11 +109,12 @@ function App() {
         };
       case "error":
         return {
-          label: "Update check failed",
+          label: "Update failed \u2014 retry",
           icon: null,
-          className: "text-red-400/70",
-          onClick: undefined,
-          disabled: true,
+          className: "text-red-400/70 hover:text-red-300 hover:bg-red-900/20",
+          onClick: () => { dismissError(); checkForUpdates(); },
+          disabled: false,
+          title: updateError || "Update check failed",
         };
     }
   })();
@@ -133,6 +131,7 @@ function App() {
           <button
             onClick={updateButton.onClick}
             disabled={updateButton.disabled}
+            title={"title" in updateButton ? (updateButton as { title: string }).title : undefined}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-all ${updateButton.className} ${updateButton.disabled ? "cursor-default" : "cursor-pointer"}`}
           >
             {updateButton.icon}
@@ -189,6 +188,14 @@ function App() {
         {page === "about" && <About />}
       </div>
     </div>
+  );
+}
+
+function App() {
+  return (
+    <UpdaterProvider>
+      <AppContent />
+    </UpdaterProvider>
   );
 }
 

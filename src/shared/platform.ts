@@ -10,6 +10,7 @@ import type {
   DeviceInfo,
   GpuInfo,
   IndustryPackInfo,
+  ModelDownloadProgress,
   PillState,
   Profile,
   SegmentTranscribed,
@@ -55,6 +56,18 @@ export function stopRecording(): Promise<string> {
 
 export function downloadModel(): Promise<void> {
   return invoke("download_model_cmd");
+}
+
+export function cancelModelDownload(): Promise<void> {
+  return invoke("cancel_model_download_cmd");
+}
+
+export function reloadModel(useGpu: boolean): Promise<void> {
+  return invoke("reload_model_cmd", { useGpu });
+}
+
+export function deleteModel(): Promise<void> {
+  return invoke("delete_model_cmd");
 }
 
 export function getGpuAvailable(): Promise<boolean> {
@@ -206,9 +219,9 @@ export function onSegmentTranscribed(
 }
 
 export function onModelDownloadProgress(
-  handler: (progress: { status: string; percent: number; downloaded_mb: number; total_mb: number }) => void,
+  handler: (progress: ModelDownloadProgress) => void,
 ): Promise<UnlistenFn> {
   return listen("model-download-progress", (event) => {
-    handler(event.payload as { status: string; percent: number; downloaded_mb: number; total_mb: number });
+    handler(event.payload as ModelDownloadProgress);
   });
 }

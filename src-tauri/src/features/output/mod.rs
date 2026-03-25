@@ -2,16 +2,22 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
+#[cfg(windows)]
 use windows::core::PCWSTR;
+#[cfg(windows)]
 use windows::Win32::Foundation::HWND;
+#[cfg(windows)]
 use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY};
+#[cfg(windows)]
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
+#[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL,
     VK_SHIFT, VK_V,
 };
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
 };
@@ -65,10 +71,27 @@ fn get_sound_bytes(name: &str) -> &'static [u8] {
     }
 }
 
+// ---- Foreground window capture ----
+
+#[cfg(windows)]
 pub fn capture_foreground_window() -> isize {
     unsafe { GetForegroundWindow().0 as isize }
 }
 
+#[cfg(target_os = "macos")]
+pub fn capture_foreground_window() -> isize {
+    // On macOS, we store the PID of the frontmost app
+    unsafe {
+        let workspace: cocoa::base::id = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let app: cocoa::base::id = msg_send![workspace, frontmostApplication];
+        let pid: i32 = msg_send![app, processIdentifier];
+        pid as isize
+    }
+}
+
+// ---- Terminal detection ----
+
+#[cfg(windows)]
 pub fn is_terminal_window(hwnd: isize) -> bool {
     let terminal_exes = [
         "windowsterminal.exe",
@@ -91,6 +114,52 @@ pub fn is_terminal_window(hwnd: isize) -> bool {
     terminal_exes.iter().any(|t| exe_name == *t)
 }
 
+#[cfg(target_os = "macos")]
+pub fn is_terminal_window(pid: isize) -> bool {
+    let terminal_bundle_ids = [
+        "com.apple.terminal",
+        "com.googlecode.iterm2",
+        "io.alacritty",
+        "com.github.wez.wezterm",
+        "co.zeit.hyper",
+        "net.kovidgoyal.kitty",
+    ];
+
+    let bundle_id = match get_bundle_id_for_pid(pid as i32) {
+        Some(id) => id.to_lowercase(),
+        None => return false,
+    };
+
+    terminal_bundle_ids.iter().any(|t| bundle_id.contains(t))
+}
+
+#[cfg(target_os = "macos")]
+fn get_bundle_id_for_pid(pid: i32) -> Option<String> {
+    unsafe {
+        let workspace: cocoa::base::id = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let apps: cocoa::base::id = msg_send![workspace, runningApplications];
+        let count: usize = msg_send![apps, count];
+        for i in 0..count {
+            let app: cocoa::base::id = msg_send![apps, objectAtIndex: i];
+            let app_pid: i32 = msg_send![app, processIdentifier];
+            if app_pid == pid {
+                let bundle: cocoa::base::id = msg_send![app, bundleIdentifier];
+                if bundle != cocoa::base::nil {
+                    let cstr: *const std::os::raw::c_char = msg_send![bundle, UTF8String];
+                    if !cstr.is_null() {
+                        return Some(std::ffi::CStr::from_ptr(cstr).to_string_lossy().to_string());
+                    }
+                }
+                return None;
+            }
+        }
+        None
+    }
+}
+
+// ---- Window exe name (Windows only) ----
+
+#[cfg(windows)]
 fn get_window_exe_name(hwnd: isize) -> Option<String> {
     unsafe {
         let hwnd = HWND(hwnd as *mut _);
@@ -121,6 +190,8 @@ fn get_window_exe_name(hwnd: isize) -> Option<String> {
     }
 }
 
+// ---- Text insertion ----
+
 pub fn insert_text(text: &str, target_hwnd: isize) -> Result<(), String> {
     if text.is_empty() {
         return Ok(());
@@ -132,16 +203,37 @@ pub fn insert_text(text: &str, target_hwnd: isize) -> Result<(), String> {
         .set_text(text)
         .map_err(|e| format!("Failed to set clipboard text: {}", e))?;
 
+    // Refocus the target window/app
+    #[cfg(windows)]
     unsafe {
         let hwnd = HWND(target_hwnd as *mut _);
         let _ = SetForegroundWindow(hwnd);
     }
+
+    #[cfg(target_os = "macos")]
+    unsafe {
+        let workspace: cocoa::base::id = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let apps: cocoa::base::id = msg_send![workspace, runningApplications];
+        let count: usize = msg_send![apps, count];
+        for i in 0..count {
+            let app: cocoa::base::id = msg_send![apps, objectAtIndex: i];
+            let pid: i32 = msg_send![app, processIdentifier];
+            if pid == target_hwnd as i32 {
+                let _: () = msg_send![app, activateWithOptions: 0x01u64]; // NSApplicationActivateIgnoringOtherApps
+                break;
+            }
+        }
+    }
+
     thread::sleep(Duration::from_millis(50));
 
     let use_shift = is_terminal_window(target_hwnd);
     send_paste_keystroke(use_shift)
 }
 
+// ---- Paste keystroke ----
+
+#[cfg(windows)]
 fn send_paste_keystroke(with_shift: bool) -> Result<(), String> {
     let mut inputs: Vec<INPUT> = Vec::new();
 
@@ -168,6 +260,7 @@ fn send_paste_keystroke(with_shift: bool) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(windows)]
 fn make_key_input(vk: VIRTUAL_KEY, key_up: bool) -> INPUT {
     let mut flags = windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(0);
     if key_up {
@@ -188,8 +281,27 @@ fn make_key_input(vk: VIRTUAL_KEY, key_up: bool) -> INPUT {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn send_paste_keystroke(_with_shift: bool) -> Result<(), String> {
+    // On macOS, use enigo to send Cmd+V
+    use enigo::{Enigo, Keyboard, Settings, Key, Direction};
+
+    let mut enigo = Enigo::new(&Settings::default())
+        .map_err(|e| format!("Failed to create enigo: {}", e))?;
+
+    enigo.key(Key::Meta, Direction::Press)
+        .map_err(|e| format!("Enigo key error: {}", e))?;
+    enigo.key(Key::Unicode('v'), Direction::Click)
+        .map_err(|e| format!("Enigo key error: {}", e))?;
+    enigo.key(Key::Meta, Direction::Release)
+        .map_err(|e| format!("Enigo key error: {}", e))?;
+
+    Ok(())
+}
+
+// ---- Sound playback ----
+
 pub fn play_sound(name: &str) {
-    // Sound data is &'static [u8] from include_bytes!, safe to send across threads.
     let sound_data: &'static [u8] = get_sound_bytes(name);
     thread::spawn(move || {
         play_wav_from_memory(sound_data);
@@ -204,9 +316,44 @@ pub fn play_done_sound(sound_name: &str) {
     play_sound(sound_name);
 }
 
+#[cfg(windows)]
 fn play_wav_from_memory(data: &[u8]) {
     unsafe {
         let ptr = data.as_ptr() as *const u16;
         let _ = PlaySoundW(PCWSTR(ptr), None, SND_MEMORY | SND_ASYNC);
     }
+}
+
+#[cfg(target_os = "macos")]
+fn play_wav_from_memory(data: &[u8]) {
+    use rodio::{Decoder, OutputStream, Sink};
+    use std::io::Cursor;
+
+    let (_stream, stream_handle) = match OutputStream::try_default() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[sound] Failed to open audio output: {}", e);
+            return;
+        }
+    };
+
+    let cursor = Cursor::new(data);
+    let source = match Decoder::new(cursor) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[sound] Failed to decode WAV: {}", e);
+            return;
+        }
+    };
+
+    let sink = match Sink::try_new(&stream_handle) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[sound] Failed to create sink: {}", e);
+            return;
+        }
+    };
+
+    sink.append(source);
+    sink.sleep_until_end();
 }

@@ -5,9 +5,11 @@ import {
   getConfig,
   saveConfig,
   downloadModel,
+  cancelModelDownload,
   getModelStatus,
   getGpuInfo,
   onModelDownloadProgress,
+  onModelStatus,
 } from "../shared/platform";
 
 interface OnboardingProps {
@@ -26,25 +28,75 @@ export function Onboarding({ onComplete }: OnboardingProps) {
   const [cloudApiKey, setCloudApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [initializing, setInitializing] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [downloadStatus, setDownloadStatus] = useState("");
+  const [downloadSpeed, setDownloadSpeed] = useState("");
+  const [downloadEta, setDownloadEta] = useState("");
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [gpuInfo, setGpuInfo] = useState<GpuInfo | null>(null);
 
   useEffect(() => {
     const unlisten = onModelDownloadProgress((progress) => {
-      setDownloadProgress(progress.percent);
       if (progress.status === "downloading") {
-        setDownloadStatus(
-          `Downloading... ${progress.downloaded_mb} / ${progress.total_mb} MB`,
-        );
+        setDownloadProgress(progress.percent);
+        const dlMB = (progress.downloaded_bytes / 1_048_576).toFixed(0);
+        const totalMB = (progress.total_bytes / 1_048_576).toFixed(0);
+        const fileInfo = progress.file_count
+          ? ` (${progress.file_index} of ${progress.file_count})`
+          : "";
+        setDownloadStatus(`Downloading${fileInfo}... ${dlMB} / ${totalMB} MB`);
+        if (progress.speed_bytes_per_sec && progress.speed_bytes_per_sec > 0) {
+          const speed = progress.speed_bytes_per_sec;
+          setDownloadSpeed(
+            speed >= 1_048_576
+              ? `${(speed / 1_048_576).toFixed(1)} MB/s`
+              : `${(speed / 1024).toFixed(0)} KB/s`,
+          );
+        }
+        if (progress.eta_seconds !== undefined && progress.eta_seconds > 0) {
+          const s = progress.eta_seconds;
+          setDownloadEta(
+            s < 60
+              ? `${s}s remaining`
+              : `${Math.floor(s / 60)}m ${s % 60}s remaining`,
+          );
+        } else {
+          setDownloadEta("");
+        }
       } else if (progress.status === "complete") {
+        setDownloadProgress(100);
         setDownloadStatus("Download complete!");
+        setDownloadSpeed("");
+        setDownloadEta("");
+      } else if (progress.status === "initializing") {
+        setDownloading(false);
+        setInitializing(true);
+        setDownloadStatus("Loading model into memory...");
+        setDownloadSpeed("");
+        setDownloadEta("");
+      } else if (progress.status === "error") {
+        setDownloadError(progress.error || "Download failed");
+        setDownloading(false);
+      }
+    });
+
+    const unlistenStatus = onModelStatus((status) => {
+      if (status === "ready") {
+        setDownloading(false);
+        setInitializing(false);
+        setDownloadStatus("Model ready!");
+        setTimeout(() => setStep("done"), 500);
+      } else if (status === "error") {
+        setDownloading(false);
+        setInitializing(false);
+        setDownloadError("Model failed to initialize");
       }
     });
 
     return () => {
       unlisten.then((fn) => fn());
+      unlistenStatus.then((fn) => fn());
     };
   }, []);
 
@@ -74,20 +126,29 @@ export function Onboarding({ onComplete }: OnboardingProps) {
     }
   };
 
-  const handleDownload = async () => {
+  const handleDownload = () => {
     setDownloading(true);
+    setInitializing(false);
     setDownloadError(null);
     setDownloadProgress(0);
+    setDownloadSpeed("");
+    setDownloadEta("");
     setDownloadStatus("Starting download...");
 
-    try {
-      await downloadModel();
-      setDownloadStatus("Model ready!");
-      setTimeout(() => setStep("done"), 500);
-    } catch (e) {
+    // Fire-and-forget: command returns immediately, progress comes via events
+    downloadModel().catch((e) => {
       setDownloadError(String(e));
       setDownloading(false);
-    }
+    });
+  };
+
+  const handleCancelDownload = () => {
+    cancelModelDownload().catch(console.error);
+    setDownloading(false);
+    setDownloadProgress(0);
+    setDownloadStatus("");
+    setDownloadSpeed("");
+    setDownloadEta("");
   };
 
   const handleFinish = async () => {
@@ -302,6 +363,34 @@ export function Onboarding({ onComplete }: OnboardingProps) {
                 <p className="text-sm text-gray-400 text-center">
                   {downloadStatus}
                 </p>
+                {(downloadSpeed || downloadEta) && (
+                  <p className="text-xs text-gray-500 text-center">
+                    {downloadSpeed}{downloadSpeed && downloadEta ? " \u2014 " : ""}{downloadEta}
+                  </p>
+                )}
+                <button
+                  onClick={handleCancelDownload}
+                  className="w-full px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg text-sm font-medium transition-colors"
+                >
+                  Cancel Download
+                </button>
+              </div>
+            )}
+
+            {initializing && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-center gap-3">
+                  <svg className="animate-spin h-5 w-5 text-blue-400" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <p className="text-sm text-blue-300">
+                    Loading model into memory...
+                  </p>
+                </div>
+                <p className="text-xs text-gray-500 text-center">
+                  This may take a moment. The app may be briefly unresponsive.
+                </p>
               </div>
             )}
 
@@ -322,7 +411,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
               </div>
             )}
 
-            {!downloading && !downloadError && (
+            {!downloading && !initializing && !downloadError && (
               <button
                 onClick={() => setStep("engine")}
                 className="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg font-medium transition-colors"

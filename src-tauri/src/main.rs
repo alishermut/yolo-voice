@@ -17,23 +17,43 @@ fn main() {
                     }
                 }
             }
-            if let Ok(file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
+
+            #[cfg(windows)]
             {
-                use std::os::windows::io::IntoRawHandle;
-                let handle = file.into_raw_handle();
-                unsafe {
-                    use windows_sys::Win32::System::Console::SetStdHandle;
-                    use windows_sys::Win32::System::Console::STD_ERROR_HANDLE;
-                    SetStdHandle(STD_ERROR_HANDLE, handle as _);
+                if let Ok(file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                {
+                    use std::os::windows::io::IntoRawHandle;
+                    let handle = file.into_raw_handle();
+                    unsafe {
+                        use windows_sys::Win32::System::Console::SetStdHandle;
+                        use windows_sys::Win32::System::Console::STD_ERROR_HANDLE;
+                        SetStdHandle(STD_ERROR_HANDLE, handle as _);
+                    }
+                    eprintln!(
+                        "\n=== YOLO Voice session started at {:?} ===",
+                        std::time::SystemTime::now()
+                    );
                 }
-                // Write session header
-                eprintln!(
-                    "\n=== YOLO Voice session started at {:?} ===",
-                    std::time::SystemTime::now()
-                );
+            }
+
+            #[cfg(not(windows))]
+            {
+                if let Ok(file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                {
+                    use std::os::unix::io::IntoRawFd;
+                    let fd = file.into_raw_fd();
+                    unsafe { libc::dup2(fd, 2); }
+                    eprintln!(
+                        "\n=== YOLO Voice session started at {:?} ===",
+                        std::time::SystemTime::now()
+                    );
+                }
             }
         }
     }

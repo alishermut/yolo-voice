@@ -6,11 +6,15 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+#[cfg(windows)]
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
+#[cfg(windows)]
 use windows::Win32::Media::Audio::{
     eCapture, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
 };
+#[cfg(windows)]
 use windows::Win32::System::Com::STGM;
+#[cfg(windows)]
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,
 };
@@ -21,6 +25,7 @@ pub struct DeviceInfo {
     pub index: usize,
 }
 
+#[cfg(windows)]
 /// Get full device names from Windows Core Audio API (IMMDeviceEnumerator).
 fn get_windows_audio_device_names() -> Vec<String> {
     let mut names = Vec::new();
@@ -71,6 +76,7 @@ fn get_windows_audio_device_names() -> Vec<String> {
 }
 
 pub fn list_input_devices() -> Vec<DeviceInfo> {
+    #[cfg(windows)]
     let win_names = get_windows_audio_device_names();
 
     let host = cpal::default_host();
@@ -83,11 +89,15 @@ pub fn list_input_devices() -> Vec<DeviceInfo> {
                     #[allow(deprecated)]
                     let cpal_name = d.name().unwrap_or_else(|_| "Unknown".to_string());
 
+                    #[cfg(windows)]
                     let full_name = if i < win_names.len() {
                         win_names[i].clone()
                     } else {
                         cpal_name
                     };
+
+                    #[cfg(not(windows))]
+                    let full_name = cpal_name;
 
                     DeviceInfo {
                         name: full_name,

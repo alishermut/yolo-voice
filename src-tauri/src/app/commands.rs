@@ -1,6 +1,7 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 use crate::features::capture::recorder::{self, RecordingState};
 use crate::features::diagnostics::{TranscriptDiagnosticsState, TranscriptDiagnosticsStatus};
@@ -89,28 +90,92 @@ pub fn stop_recording(state: State<'_, RecordingState>) -> Result<String, String
 
 // ---- Model / Inference ----
 
+static DOWNLOAD_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+static DOWNLOAD_CANCELLED: AtomicBool = AtomicBool::new(false);
+
 #[tauri::command]
 pub fn download_model_cmd(
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let models_dir = crate::infra::model::get_models_dir(&app_handle)?;
-    crate::infra::model::download_model(&models_dir, &app_handle)?;
-
-    // After download, initialize the inference engine
-    let session = speech::inference::InferenceSession::new(&models_dir)
-        .map_err(|e| format!("Model downloaded but failed to initialize: {}", e))?;
-
-    let gpu = session.is_gpu();
-    let state = app_handle.state::<InferenceState>();
-    *state.0.lock().map_err(|e| e.to_string())? = Some(session);
-
-    let _ = tauri::Emitter::emit(&app_handle, "model-status", "ready");
-
-    // Notify frontend if GPU was unavailable and we fell back to CPU
-    if !gpu {
-        let _ = tauri::Emitter::emit(&app_handle, "gpu-fallback", "CPU (GPU not available)");
+    // Prevent duplicate concurrent downloads
+    if DOWNLOAD_IN_PROGRESS
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("Download already in progress".to_string());
     }
 
+    DOWNLOAD_CANCELLED.store(false, Ordering::SeqCst);
+
+    let handle = app_handle.clone();
+    std::thread::spawn(move || {
+        let result = (|| -> Result<(), String> {
+            let models_dir = crate::infra::model::get_models_dir(&handle)?;
+            crate::infra::model::download_model(&models_dir, &handle, &DOWNLOAD_CANCELLED)?;
+
+            // Signal the UI that we're now initializing (loading ONNX into memory)
+            let _ = handle.emit(
+                "model-download-progress",
+                serde_json::json!({ "status": "initializing" }),
+            );
+            let _ = handle.emit("model-status", "loading");
+
+            let session = speech::inference::InferenceSession::new(&models_dir)
+                .map_err(|e| format!("Model downloaded but failed to initialize: {}", e))?;
+
+            let gpu = session.is_gpu();
+            let state = handle.state::<InferenceState>();
+            *state.0.lock().map_err(|e| e.to_string())? = Some(session);
+
+            let _ = handle.emit("model-status", "ready");
+            if !gpu {
+                let _ = handle.emit("gpu-fallback", "CPU (GPU not available)");
+            }
+            Ok(())
+        })();
+
+        DOWNLOAD_IN_PROGRESS.store(false, Ordering::SeqCst);
+
+        if let Err(e) = result {
+            eprintln!("[download] Error: {}", e);
+            let _ = handle.emit(
+                "model-download-progress",
+                serde_json::json!({ "status": "error", "error": e }),
+            );
+            let _ = handle.emit("model-status", "error");
+        }
+    });
+
+    Ok(()) // Returns immediately — download runs in background
+}
+
+#[tauri::command]
+pub fn cancel_model_download_cmd() -> Result<(), String> {
+    if !DOWNLOAD_IN_PROGRESS.load(Ordering::SeqCst) {
+        return Err("No download in progress".to_string());
+    }
+    DOWNLOAD_CANCELLED.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_model_cmd(
+    app_handle: tauri::AppHandle,
+    state: State<'_, InferenceState>,
+) -> Result<(), String> {
+    // Prevent deleting while a download is in progress
+    if DOWNLOAD_IN_PROGRESS.load(Ordering::SeqCst) {
+        return Err("Cannot delete model while download is in progress".to_string());
+    }
+
+    // Unload the inference session (frees GPU/CPU memory)
+    *state.0.lock().map_err(|e| e.to_string())? = None;
+
+    // Delete model files from disk
+    let models_dir = crate::infra::model::get_models_dir(&app_handle)?;
+    crate::infra::model::delete_model_files(&models_dir)?;
+
+    let _ = app_handle.emit("model-status", "not-downloaded");
     Ok(())
 }
 
@@ -125,6 +190,44 @@ pub fn get_gpu_available(
 pub struct GpuInfo {
     pub available: bool,
     pub execution_provider: String,
+}
+
+#[tauri::command]
+pub fn reload_model_cmd(
+    use_gpu: bool,
+    app_handle: tauri::AppHandle,
+    state: State<'_, InferenceState>,
+) -> Result<(), String> {
+    let models_dir = crate::infra::model::get_models_dir(&app_handle)?;
+    if !crate::infra::model::is_model_downloaded(&models_dir) {
+        return Err("Model not downloaded".to_string());
+    }
+
+    // Drop existing session
+    *state.0.lock().map_err(|e| e.to_string())? = None;
+
+    let _ = app_handle.emit("model-status", "loading");
+
+    let handle = app_handle.clone();
+    std::thread::spawn(move || {
+        match speech::inference::InferenceSession::with_gpu(&models_dir, use_gpu) {
+            Ok(session) => {
+                let gpu = session.is_gpu();
+                let state = handle.state::<InferenceState>();
+                *state.0.lock().unwrap() = Some(session);
+                let _ = handle.emit("model-status", "ready");
+                if !gpu {
+                    let _ = handle.emit("gpu-fallback", "CPU (GPU not available)");
+                }
+            }
+            Err(e) => {
+                eprintln!("[reload] Failed: {}", e);
+                let _ = handle.emit("model-status", "error");
+            }
+        }
+    });
+
+    Ok(())
 }
 
 #[tauri::command]

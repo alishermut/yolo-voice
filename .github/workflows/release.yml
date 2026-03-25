@@ -6,7 +6,8 @@ on:
       - 'v*'
 
 jobs:
-  release:
+  # ── Windows build ──────────────────────────────────────────────────
+  release-windows:
     runs-on: windows-latest
     permissions:
       contents: write
@@ -72,7 +73,6 @@ jobs:
           $installer = Get-ChildItem -Path $bundleDir -Filter *setup.exe -File -Recurse | Where-Object { $_.Name -notmatch '\.sig$' } | Select-Object -First 1
           $installerSig = Get-ChildItem -Path $bundleDir -Filter *setup.exe.sig -File -Recurse | Select-Object -First 1
 
-          # Also check for .nsis.zip (some Tauri versions produce this instead)
           $nsisZip = Get-ChildItem -Path $bundleDir -Filter *.nsis.zip -File -Recurse | Select-Object -First 1
           $nsisSig = Get-ChildItem -Path $bundleDir -Filter *.nsis.zip.sig -File -Recurse | Select-Object -First 1
 
@@ -81,7 +81,6 @@ jobs:
             exit 1
           }
 
-          # Use .nsis.zip if available, otherwise use .exe for updater
           if ($nsisZip -and $nsisSig) {
             $updaterFile = $nsisZip
             $sigFile = $nsisSig
@@ -98,7 +97,6 @@ jobs:
           $url = "https://github.com/$repo/releases/download/$tag/$updaterName"
           $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
-          # Build latest.json
           $json = @{
             version = $version
             notes = "YOLO Voice v$version"
@@ -120,7 +118,6 @@ jobs:
             $releaseNotesPath = "release-notes.md"
           }
 
-          # Upload all available artifacts
           $assets = @($installer.FullName, "latest.json")
           if ($installerSig) { $assets += $installerSig.FullName }
           if ($nsisZip) { $assets += $nsisZip.FullName }
@@ -129,3 +126,71 @@ jobs:
           gh release create $tag @assets --title "YOLO Voice v$version" --notes-file "$releaseNotesPath"
 
           Write-Host "Published release $tag with artifacts: $($assets -join ', ')"
+
+  # ── macOS build (Apple Silicon) ────────────────────────────────────
+  release-macos:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri app for macOS
+        run: npm run tauri build -- --target aarch64-apple-darwin
+
+      - name: Upload macOS artifacts to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          VERSION=$(jq -r '.version' src-tauri/tauri.conf.json)
+          TAG="v${VERSION}"
+
+          # Find the .dmg file
+          DMG=$(find src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -name '*.dmg' -type f | head -1)
+          if [ -z "$DMG" ]; then
+            echo "::error::No .dmg file found"
+            exit 1
+          fi
+
+          echo "Found DMG: $DMG"
+
+          # Wait for the Windows job to create the release (it may not exist yet)
+          for i in $(seq 1 30); do
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              echo "Release $TAG exists, uploading macOS artifact..."
+              gh release upload "$TAG" "$DMG" --clobber
+              echo "Uploaded $(basename "$DMG") to release $TAG"
+              exit 0
+            fi
+            echo "Release $TAG not found yet, waiting 30s... (attempt $i/30)"
+            sleep 30
+          done
+
+          # If release still doesn't exist, create it ourselves
+          echo "Creating release $TAG with macOS artifact..."
+          NOTES_FILE="docs/releases/v${VERSION}.md"
+          if [ ! -f "$NOTES_FILE" ]; then
+            echo "YOLO Voice v${VERSION}" > release-notes.md
+            NOTES_FILE="release-notes.md"
+          fi
+          gh release create "$TAG" "$DMG" --title "YOLO Voice v${VERSION}" --notes-file "$NOTES_FILE"

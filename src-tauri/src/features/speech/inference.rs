@@ -18,21 +18,29 @@ impl InferenceSession {
     /// Create a new inference session from the model directory.
     /// Tries DirectML first, falls back to CPU.
     pub fn new(model_dir: &Path) -> Result<Self, String> {
-        // Try DirectML (GPU) first
-        let (parakeet, gpu_available) = match Self::try_create(model_dir, ExecutionProvider::DirectML) {
-            Ok(p) => (p, true),
-            Err(e) => {
-                eprintln!("[inference] DirectML failed ({}), falling back to CPU", e);
-                let p = Self::try_create(model_dir, ExecutionProvider::Cpu)
-                    .map_err(|e| format!("Failed to initialize inference on CPU: {}", e))?;
-                (p, false)
-            }
-        };
+        Self::with_gpu(model_dir, true)
+    }
 
-        Ok(InferenceSession {
-            parakeet,
-            gpu_available,
-        })
+    /// Create a new inference session, optionally using GPU.
+    pub fn with_gpu(model_dir: &Path, use_gpu: bool) -> Result<Self, String> {
+        #[cfg(windows)]
+        if use_gpu {
+            match Self::try_create(model_dir, ExecutionProvider::DirectML) {
+                Ok(p) => return Ok(InferenceSession { parakeet: p, gpu_available: true }),
+                Err(e) => {
+                    eprintln!("[inference] DirectML failed ({}), falling back to CPU", e);
+                }
+            }
+        }
+
+        #[cfg(not(windows))]
+        if use_gpu {
+            eprintln!("[inference] GPU acceleration not available on this platform, using CPU");
+        }
+
+        let p = Self::try_create(model_dir, ExecutionProvider::Cpu)
+            .map_err(|e| format!("Failed to initialize inference on CPU: {}", e))?;
+        Ok(InferenceSession { parakeet: p, gpu_available: false })
     }
 
     fn try_create(model_dir: &Path, provider: ExecutionProvider) -> Result<ParakeetTDT, String> {

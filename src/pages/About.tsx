@@ -1,11 +1,11 @@
 import { useState, useEffect } from "react";
-import { useUpdater } from "../hooks/useUpdater";
+import { useUpdaterContext } from "../contexts/UpdaterContext";
 import { getAppInfo } from "../shared/platform";
 import type { AppInfo } from "../shared/types";
 
 export function About() {
   const [info, setInfo] = useState<AppInfo | null>(null);
-  const { status: updateStatus, version: updateVersion, error: updateError, checkForUpdates, installUpdate } = useUpdater();
+  const { status: updateStatus, version: updateVersion, error: updateError, checkForUpdates, installUpdate, dismissError } = useUpdaterContext();
 
   useEffect(() => {
     getAppInfo().then(setInfo).catch(console.error);
@@ -105,12 +105,20 @@ export function About() {
             <p className="text-sm text-red-400 text-center">
               {updateError || "Failed to check for updates"}
             </p>
-            <button
-              onClick={checkForUpdates}
-              className="w-full px-4 py-2 rounded-lg text-sm font-medium bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
-            >
-              Try Again
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={dismissError}
+                className="flex-1 px-4 py-2 rounded-lg text-sm font-medium bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
+              >
+                Dismiss
+              </button>
+              <button
+                onClick={() => { dismissError(); checkForUpdates(); }}
+                className="flex-1 px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+              >
+                Try Again
+              </button>
+            </div>
           </div>
         )}
       </div>

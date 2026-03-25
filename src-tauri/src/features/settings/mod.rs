@@ -5,7 +5,9 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+#[cfg(windows)]
 use windows::core::PCWSTR;
+#[cfg(windows)]
 use windows::Win32::System::Registry::{
     RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
     HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_SZ,
@@ -191,15 +193,19 @@ pub fn save_config(app_handle: &AppHandle, config: &AppConfig) -> Result<(), Str
     Ok(())
 }
 
-// ---- Startup (Windows Registry) ----
+// ---- Startup ----
 
+#[cfg(windows)]
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+#[cfg(windows)]
 const VALUE_NAME: &str = "YOLOVoice";
 
+#[cfg(windows)]
 fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+#[cfg(windows)]
 pub fn set_launch_on_startup(enable: bool) -> Result<(), String> {
     let exe_path =
         std::env::current_exe().map_err(|e| format!("Failed to get exe path: {}", e))?;
@@ -253,6 +259,7 @@ pub fn set_launch_on_startup(enable: bool) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(windows)]
 pub fn is_launch_on_startup() -> bool {
     unsafe {
         let mut key = HKEY::default();
@@ -285,4 +292,15 @@ pub fn is_launch_on_startup() -> bool {
         let _ = RegCloseKey(key);
         result.is_ok() && data_size > 0
     }
+}
+
+#[cfg(not(windows))]
+pub fn set_launch_on_startup(_enable: bool) -> Result<(), String> {
+    // TODO: implement LaunchAgent plist for macOS
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn is_launch_on_startup() -> bool {
+    false
 }

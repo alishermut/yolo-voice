@@ -1,16 +1,11 @@
 [package]
 name = "yolo-voice"
 version = "0.7.0"
-description = "Windows offline voice dictation app"
+description = "Offline voice dictation app"
 authors = ["Alish"]
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [lib]
-# The `_lib` suffix may seem redundant but it is necessary
-# to make the lib name unique and wouldn't conflict with the bin name.
-# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "yolo_voice_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
@@ -31,14 +26,19 @@ tauri-plugin-updater = "2.10.0"
 tauri-plugin-process = "2.3.1"
 regex = "1"
 dirs-next = "2"
-parakeet-rs = { version = "0.3", features = ["directml"] }
 reqwest = { version = "0.12", features = ["blocking", "json", "multipart"] }
 rubato = "0.16"
 ndarray = "0.17"
 ort = { version = "2.0.0-rc.12", default-features = false }
-windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
+rodio = "0.19"
+enigo = "0.3"
 
-[dependencies.windows]
+# ---- Windows-only dependencies ----
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
+parakeet-rs = { version = "0.3", features = ["directml"] }
+
+[target.'cfg(windows)'.dependencies.windows]
 version = "0.58"
 features = [
     "Win32_Foundation",
@@ -52,3 +52,10 @@ features = [
     "Win32_Devices_FunctionDiscovery",
     "Win32_UI_Shell_PropertiesSystem",
 ]
+
+# ---- macOS-only dependencies ----
+[target.'cfg(target_os = "macos")'.dependencies]
+parakeet-rs = { version = "0.3" }
+cocoa = "0.26"
+objc = "0.2"
+libc = "0.2"

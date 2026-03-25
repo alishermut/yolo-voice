@@ -95,6 +95,19 @@ export interface TranscriptDiagnosticsStatus {
 
 export type PillState = "idle" | "recording" | "transcribing" | "done";
 
+export interface ModelDownloadProgress {
+  status: "downloading" | "complete" | "initializing" | "error";
+  file?: string;
+  file_index?: number;
+  file_count?: number;
+  percent: number;
+  downloaded_bytes: number;
+  total_bytes: number;
+  speed_bytes_per_sec?: number;
+  eta_seconds?: number;
+  error?: string;
+}
+
 export type UpdateStatus =
   | "idle"
   | "checking"
