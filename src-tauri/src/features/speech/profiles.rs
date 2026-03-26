@@ -132,7 +132,32 @@ pub fn save_profile(profiles_dir: &Path, profile: &Profile) -> Result<(), String
         .map_err(|e| format!("Failed to serialize profile: {}", e))?;
     std::fs::write(&path, json)
         .map_err(|e| format!("Failed to write profile: {}", e))?;
+    // Ensure the write is flushed to disk (prevents data loss on crash/close)
+    if let Ok(file) = std::fs::File::open(&path) {
+        let _ = file.sync_all();
+    }
 
+    Ok(())
+}
+
+/// Reset a built-in profile to its default version from bundled resources.
+pub fn reset_profile_to_default(
+    profiles_dir: &Path,
+    id: &str,
+    app_handle: &AppHandle,
+) -> Result<(), String> {
+    let defaults_path = find_default_profiles(app_handle)?;
+    let contents = std::fs::read_to_string(&defaults_path)
+        .map_err(|e| format!("Failed to read default profiles: {}", e))?;
+    let defaults: Vec<Profile> = serde_json::from_str(&contents)
+        .map_err(|e| format!("Failed to parse default profiles: {}", e))?;
+
+    let default_profile = defaults
+        .iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| format!("No default profile with id '{}'", id))?;
+
+    save_profile(profiles_dir, default_profile)?;
     Ok(())
 }
 

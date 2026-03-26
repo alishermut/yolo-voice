@@ -192,6 +192,21 @@ fn get_window_exe_name(hwnd: isize) -> Option<String> {
 
 // ---- Text insertion ----
 
+/// Check if a window belongs to our own process.
+#[cfg(windows)]
+pub fn is_own_window(hwnd: isize) -> bool {
+    unsafe {
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(HWND(hwnd as *mut _), Some(&mut pid));
+        pid != 0 && pid == std::process::id()
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn is_own_window(pid: isize) -> bool {
+    pid == std::process::id() as isize
+}
+
 pub fn insert_text(text: &str, target_hwnd: isize) -> Result<(), String> {
     if text.is_empty() {
         return Ok(());

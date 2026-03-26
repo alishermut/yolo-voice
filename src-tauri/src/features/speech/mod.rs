@@ -5,11 +5,28 @@ pub mod inference;
 pub mod llm;
 pub mod profiles;
 pub mod vad;
+pub mod vision;
 pub mod vocabulary;
 
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 
 use self::inference::InferenceState;
+
+// ---- Shared HTTP client ----
+
+/// Single shared blocking HTTP client for all speech modules.
+/// Uses the longest timeout needed (60s) to cover cloud transcription and vision calls.
+static HTTP_CLIENT: LazyLock<reqwest::blocking::Client> = LazyLock::new(|| {
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .expect("Failed to create HTTP client")
+});
+
+pub fn http_client() -> &'static reqwest::blocking::Client {
+    &HTTP_CLIENT
+}
 
 // ---- Types ----
 
@@ -31,6 +48,9 @@ pub struct Profile {
     pub terminology_hints: Vec<String>,
     #[serde(default = "default_tone")]
     pub tone: String,
+    /// Single letter A-Z for command key + letter style shortcut.
+    #[serde(default)]
+    pub shortcut_key: String,
 }
 
 fn default_tone() -> String {
@@ -90,6 +110,41 @@ pub fn post_process_text(
     llm::post_process_text(text, profile, provider, model, api_key, base_url)
 }
 
+/// Execute a voice command through an LLM.
+pub fn command_llm_call(
+    transcript: &str,
+    system_prompt: &str,
+    provider: &str,
+    model: &str,
+    api_key: &str,
+    base_url: &str,
+) -> Result<String, String> {
+    llm::command_llm_call(transcript, system_prompt, provider, model, api_key, base_url)
+}
+
+/// Classify whether a voice command needs screen context.
+pub fn classify_needs_vision(
+    transcript: &str,
+    provider: &str,
+    model: &str,
+    api_key: &str,
+    base_url: &str,
+) -> bool {
+    llm::classify_needs_vision(transcript, provider, model, api_key, base_url)
+}
+
+/// Send a voice command + screenshot to a vision-capable LLM.
+pub fn vision_command(
+    transcript: &str,
+    screenshot_bytes: &[u8],
+    system_prompt: &str,
+    provider: &str,
+    model: &str,
+    api_key: &str,
+) -> Result<String, String> {
+    vision::vision_command(transcript, screenshot_bytes, system_prompt, provider, model, api_key)
+}
+
 /// Get the profiles directory path.
 pub fn get_profiles_dir(app_handle: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     profiles::get_profiles_dir(app_handle)
@@ -111,4 +166,13 @@ pub fn save_profile(
 /// Delete a profile from disk.
 pub fn delete_profile(profiles_dir: &std::path::Path, id: &str) -> Result<(), String> {
     profiles::delete_profile(profiles_dir, id)
+}
+
+/// Reset a built-in profile to its default version.
+pub fn reset_profile_to_default(
+    profiles_dir: &std::path::Path,
+    id: &str,
+    app_handle: &tauri::AppHandle,
+) -> Result<(), String> {
+    profiles::reset_profile_to_default(profiles_dir, id, app_handle)
 }

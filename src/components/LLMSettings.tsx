@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { inputStyles, buttonVariants } from "./ui/styles";
 import { testLlmConnection } from "../shared/platform";
 
 interface LLMSettingsProps {
@@ -12,9 +13,19 @@ interface LLMSettingsProps {
     llm_api_key?: string;
     llm_base_url?: string;
   }) => void;
+  /** Custom test function. Defaults to testLlmConnection. */
+  testFn?: (provider: string, model: string, apiKey: string, baseUrl: string) => Promise<string>;
+  /** Radio group name to avoid collisions when multiple instances on same page. */
+  radioGroupName?: string;
 }
 
 const PROVIDERS = [
+  {
+    id: "groq",
+    name: "Groq",
+    desc: "Ultra-fast inference. GPT-OSS 120B. Requires API key.",
+    needsKey: true,
+  },
   {
     id: "ollama",
     name: "Ollama (Local)",
@@ -36,6 +47,7 @@ const PROVIDERS = [
 ];
 
 const DEFAULT_MODELS: Record<string, string> = {
+  groq: "openai/gpt-oss-120b",
   ollama: "llama3.1:8b",
   openai: "gpt-4o-mini",
   claude: "claude-sonnet-4-20250514",
@@ -47,12 +59,17 @@ export function LLMSettings({
   apiKey,
   baseUrl,
   onUpdate,
+  testFn,
+  radioGroupName,
 }: LLMSettingsProps) {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
     ok: boolean;
     msg: string;
   } | null>(null);
+
+  const groupName = radioGroupName || "llm_provider";
+  const doTest = testFn || testLlmConnection;
 
   const handleProviderChange = (newProvider: string) => {
     onUpdate({
@@ -63,7 +80,9 @@ export function LLMSettings({
           ? "http://localhost:11434"
           : newProvider === "openai"
             ? "https://api.openai.com"
-            : "",
+            : newProvider === "groq"
+              ? "https://api.groq.com/openai"
+              : "",
     });
   };
 
@@ -71,7 +90,7 @@ export function LLMSettings({
     setTesting(true);
     setTestResult(null);
     try {
-      const result = await testLlmConnection(provider, model, apiKey, baseUrl);
+      const result = await doTest(provider, model, apiKey, baseUrl);
       setTestResult({ ok: true, msg: `Response: "${result}"` });
     } catch (e) {
       setTestResult({ ok: false, msg: String(e) });
@@ -85,31 +104,31 @@ export function LLMSettings({
   return (
     <div className="space-y-4">
       {/* Provider selection */}
-      <div className="space-y-2">
-        <span className="text-sm text-gray-400">LLM Provider</span>
+      <div className="space-y-4">
+        <span className="text-sm text-text-primary">LLM Provider</span>
         <div className="space-y-2">
           {PROVIDERS.map((p) => (
             <label
               key={p.id}
               className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
                 provider === p.id
-                  ? "bg-blue-600/10 border-blue-500/50"
-                  : "bg-gray-800/50 border-gray-700 hover:border-gray-600"
+                  ? "bg-accent-muted border-accent"
+                  : "bg-bg-raised border-border-default hover:border-border-hover"
               }`}
             >
               <input
                 type="radio"
-                name="llm_provider"
+                name={groupName}
                 value={p.id}
                 checked={provider === p.id}
                 onChange={() => handleProviderChange(p.id)}
                 className="accent-blue-500 mt-0.5"
               />
               <div>
-                <span className="text-sm font-medium text-gray-200">
+                <span className="text-sm font-medium text-text-primary">
                   {p.name}
                 </span>
-                <p className="text-xs text-gray-500">{p.desc}</p>
+                <p className="text-xs text-text-muted">{p.desc}</p>
               </div>
             </label>
           ))}
@@ -118,40 +137,40 @@ export function LLMSettings({
 
       {/* Model name */}
       <div className="flex items-center gap-3">
-        <span className="text-sm text-gray-400 w-20">Model</span>
+        <span className="text-sm text-text-primary w-20">Model</span>
         <input
           type="text"
           value={model}
           onChange={(e) => onUpdate({ llm_model: e.target.value })}
           placeholder={DEFAULT_MODELS[provider] || "model-name"}
-          className="flex-1 bg-gray-800 border border-gray-700 text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+          className={`flex-1 ${inputStyles}`}
         />
       </div>
 
       {/* API Key (only for cloud providers) */}
       {currentProvider?.needsKey && (
         <div className="flex items-center gap-3">
-          <span className="text-sm text-gray-400 w-20">API Key</span>
+          <span className="text-sm text-text-primary w-20">API Key</span>
           <input
             type="password"
             value={apiKey}
             onChange={(e) => onUpdate({ llm_api_key: e.target.value })}
             placeholder="sk-..."
-            className="flex-1 bg-gray-800 border border-gray-700 text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+            className={`flex-1 ${inputStyles}`}
           />
         </div>
       )}
 
       {/* Base URL (for Ollama and OpenAI-compatible) */}
-      {(provider === "ollama" || provider === "openai") && (
+      {(provider === "ollama" || provider === "openai" || provider === "groq") && (
         <div className="flex items-center gap-3">
-          <span className="text-sm text-gray-400 w-20">Base URL</span>
+          <span className="text-sm text-text-primary w-20">Base URL</span>
           <input
             type="text"
             value={baseUrl}
             onChange={(e) => onUpdate({ llm_base_url: e.target.value })}
             placeholder="http://localhost:11434"
-            className="flex-1 bg-gray-800 border border-gray-700 text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+            className={`flex-1 ${inputStyles}`}
           />
         </div>
       )}
@@ -161,13 +180,13 @@ export function LLMSettings({
         <button
           onClick={handleTestConnection}
           disabled={testing}
-          className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+          className={buttonVariants.secondary}
         >
           {testing ? "Testing..." : "Test Connection"}
         </button>
         {testResult && (
           <span
-            className={`text-xs ${testResult.ok ? "text-green-400" : "text-red-400"}`}
+            className={`text-xs ${testResult.ok ? "text-success" : "text-error"}`}
           >
             {testResult.ok ? "Connected" : testResult.msg}
           </span>

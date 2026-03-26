@@ -152,20 +152,8 @@ pub fn save_user_dictionary(
     save_user_dictionary_to_path(&path, dict)
 }
 
-pub fn runtime_dictionary_from_user_dictionary(user_dict: &UserDictionary) -> RuntimeDictionary {
-    let generated_user_rules = generate_normalization_rules_for_terms(&user_dict.user_vocabulary);
-
-    RuntimeDictionary {
-        vocabulary: dedupe_vocabulary(user_dict.user_vocabulary.iter().cloned()),
-        normalization_rules: merge_normalization_rule_layers(&[
-            &generated_user_rules,
-            &user_dict.user_normalization_rules,
-        ]),
-    }
-}
-
 pub fn resolve_runtime_dictionary(
-    user_dict: &UserDictionary,
+    general_vocab: &IndustryPack,
     active_pack: Option<&IndustryPack>,
 ) -> RuntimeDictionary {
     let pack_vocabulary = active_pack
@@ -174,35 +162,36 @@ pub fn resolve_runtime_dictionary(
     let pack_rules = active_pack
         .map(|pack| pack.replacements.clone())
         .unwrap_or_default();
-    let generated_user_rules = generate_normalization_rules_for_terms(&user_dict.user_vocabulary);
+    let generated_general_rules = generate_normalization_rules_for_terms(&general_vocab.vocabulary);
 
     RuntimeDictionary {
         vocabulary: dedupe_vocabulary(
-            user_dict
-                .user_vocabulary
+            general_vocab
+                .vocabulary
                 .iter()
                 .cloned()
                 .chain(pack_vocabulary),
         ),
+        // Priority: general rules override pack rules (general layers come after pack)
         normalization_rules: merge_normalization_rule_layers(&[
             &pack_rules,
-            &generated_user_rules,
-            &user_dict.user_normalization_rules,
+            &generated_general_rules,
+            &general_vocab.replacements,
         ]),
     }
 }
 
 pub fn resolve_runtime_dictionary_for_pack(
     app_handle: &AppHandle,
-    user_dict: &UserDictionary,
+    general_vocab: &IndustryPack,
     active_pack_id: &str,
 ) -> Result<RuntimeDictionary, String> {
     if active_pack_id.trim().is_empty() || active_pack_id == "general" {
-        return Ok(resolve_runtime_dictionary(user_dict, None));
+        return Ok(resolve_runtime_dictionary(general_vocab, None));
     }
 
     let pack = load_industry_pack(app_handle, active_pack_id)?;
-    Ok(resolve_runtime_dictionary(user_dict, Some(&pack)))
+    Ok(resolve_runtime_dictionary(general_vocab, Some(&pack)))
 }
 
 pub fn load_or_migrate_user_dictionary_from_path(
@@ -289,12 +278,69 @@ pub fn list_industry_packs(app_handle: &AppHandle) -> Result<Vec<IndustryPackInf
 }
 
 /// Load a specific industry pack by id.
+/// Checks user-edited copy in app_data_dir first, then falls back to bundled resources.
+/// If only the bundled version exists, copies it to app_data_dir for future edits.
 pub fn load_industry_pack(app_handle: &AppHandle, id: &str) -> Result<IndustryPack, String> {
-    let packs_dir = get_industry_packs_dir(app_handle)?;
-    let path = packs_dir.join(format!("{}.json", id));
-    let contents =
-        std::fs::read_to_string(&path).map_err(|e| format!("Pack '{}' not found: {}", id, e))?;
-    serde_json::from_str(&contents).map_err(|e| e.to_string())
+    let user_packs_dir = get_user_industry_packs_dir(app_handle)?;
+    let user_path = user_packs_dir.join(format!("{}.json", id));
+
+    // 1. Check user-edited copy first
+    if user_path.exists() {
+        let contents = std::fs::read_to_string(&user_path)
+            .map_err(|e| format!("Failed to read user pack '{}': {}", id, e))?;
+        return serde_json::from_str(&contents).map_err(|e| e.to_string());
+    }
+
+    // 2. Fall back to bundled resources
+    let bundled_dir = get_industry_packs_dir(app_handle)?;
+    let bundled_path = bundled_dir.join(format!("{}.json", id));
+    let contents = std::fs::read_to_string(&bundled_path)
+        .map_err(|e| format!("Pack '{}' not found: {}", id, e))?;
+    let pack: IndustryPack = serde_json::from_str(&contents).map_err(|e| e.to_string())?;
+
+    // 3. Copy bundled pack to app_data_dir for future reads/edits
+    if let Err(e) = std::fs::create_dir_all(&user_packs_dir) {
+        eprintln!("[vocabulary] Failed to create user packs dir: {}", e);
+    } else if let Err(e) = std::fs::write(&user_path, &contents) {
+        eprintln!("[vocabulary] Failed to copy bundled pack to user dir: {}", e);
+    }
+
+    Ok(pack)
+}
+
+/// Save an edited industry pack to app data dir.
+pub fn save_industry_pack(app_handle: &AppHandle, pack: &IndustryPack) -> Result<(), String> {
+    let user_packs_dir = get_user_industry_packs_dir(app_handle)?;
+    std::fs::create_dir_all(&user_packs_dir).map_err(|e| e.to_string())?;
+    let path = user_packs_dir.join(format!("{}.json", pack.id));
+    let json = serde_json::to_string_pretty(pack).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    // Ensure the write is flushed to disk (prevents data loss on crash/close)
+    if let Ok(file) = std::fs::File::open(&path) {
+        let _ = file.sync_all();
+    }
+    Ok(())
+}
+
+/// Reset an industry pack to its bundled default.
+/// Removes the user-edited copy so the next load falls back to bundled resources.
+pub fn reset_industry_pack(app_handle: &AppHandle, id: &str) -> Result<(), String> {
+    // Verify the bundled pack exists
+    let bundled_dir = get_industry_packs_dir(app_handle)?;
+    let bundled_path = bundled_dir.join(format!("{}.json", id));
+    if !bundled_path.exists() {
+        return Err(format!("No bundled pack found for '{}'", id));
+    }
+
+    // Remove user-edited copy (replace with fresh bundled copy)
+    let user_packs_dir = get_user_industry_packs_dir(app_handle)?;
+    let user_path = user_packs_dir.join(format!("{}.json", id));
+    if user_path.exists() {
+        std::fs::remove_file(&user_path)
+            .map_err(|e| format!("Failed to remove user pack '{}': {}", id, e))?;
+    }
+
+    Ok(())
 }
 
 fn dictionary_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
@@ -303,6 +349,70 @@ fn dictionary_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
         .app_data_dir()
         .map_err(|e: tauri::Error| e.to_string())?;
     Ok(dir.join("global_dictionary.json"))
+}
+
+fn general_vocabulary_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e: tauri::Error| e.to_string())?;
+    Ok(dir.join("general_vocabulary.json"))
+}
+
+/// Load the general vocabulary from app data dir.
+/// Creates a default empty one if it doesn't exist.
+/// Also migrates from old global_dictionary.json if present.
+pub fn load_general_vocabulary(app_handle: &AppHandle) -> Result<IndustryPack, String> {
+    let gen_path = general_vocabulary_path(app_handle)?;
+
+    // If general_vocabulary.json exists, load it directly
+    if gen_path.exists() {
+        let contents = std::fs::read_to_string(&gen_path).map_err(|e| e.to_string())?;
+        let pack: IndustryPack = serde_json::from_str(&contents).map_err(|e| e.to_string())?;
+        return Ok(pack);
+    }
+
+    // Attempt migration from old global_dictionary.json (UserDictionary format)
+    let old_path = dictionary_path(app_handle)?;
+    if old_path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&old_path) {
+            if let Ok(old_dict) = serde_json::from_str::<UserDictionary>(&contents) {
+                let migrated = IndustryPack {
+                    id: "general".to_string(),
+                    name: "User Vocabulary".to_string(),
+                    description: String::new(),
+                    vocabulary: old_dict.user_vocabulary,
+                    replacements: old_dict.user_normalization_rules,
+                };
+                save_general_vocabulary(app_handle, &migrated)?;
+                return Ok(migrated);
+            }
+        }
+    }
+
+    // Return default empty pack
+    Ok(IndustryPack {
+        id: "general".to_string(),
+        name: "User Vocabulary".to_string(),
+        description: String::new(),
+        vocabulary: Vec::new(),
+        replacements: Vec::new(),
+    })
+}
+
+/// Save the general vocabulary to app data dir.
+pub fn save_general_vocabulary(app_handle: &AppHandle, pack: &IndustryPack) -> Result<(), String> {
+    let path = general_vocabulary_path(app_handle)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(pack).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    // Ensure the write is flushed to disk (prevents data loss on crash/close)
+    if let Ok(file) = std::fs::File::open(&path) {
+        let _ = file.sync_all();
+    }
+    Ok(())
 }
 
 fn save_user_dictionary_to_path(path: &Path, dict: &UserDictionary) -> Result<(), String> {
@@ -598,6 +708,14 @@ fn sanitize_rule(rule: &ReplacementRule) -> Option<ReplacementRule> {
     })
 }
 
+fn get_user_industry_packs_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e: tauri::Error| e.to_string())?;
+    Ok(dir.join("industry_packs"))
+}
+
 fn get_industry_packs_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
     if cfg!(debug_assertions) {
         let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
@@ -697,10 +815,12 @@ mod tests {
 
     #[test]
     fn runtime_resolution_includes_only_active_pack() {
-        let user = UserDictionary {
-            version: 2,
-            user_vocabulary: vec!["AlishTerm".to_string()],
-            user_normalization_rules: vec![ReplacementRule {
+        let general = IndustryPack {
+            id: "general".to_string(),
+            name: "User Vocabulary".to_string(),
+            description: String::new(),
+            vocabulary: vec!["AlishTerm".to_string()],
+            replacements: vec![ReplacementRule {
                 find: "super base".to_string(),
                 replace: "Supabase".to_string(),
             }],
@@ -726,8 +846,8 @@ mod tests {
             }],
         };
 
-        let software_runtime = resolve_runtime_dictionary(&user, Some(&software_pack));
-        let medical_runtime = resolve_runtime_dictionary(&user, Some(&medical_pack));
+        let software_runtime = resolve_runtime_dictionary(&general, Some(&software_pack));
+        let medical_runtime = resolve_runtime_dictionary(&general, Some(&medical_pack));
 
         assert!(software_runtime.vocabulary.contains(&"AlishTerm".to_string()));
         assert!(software_runtime.vocabulary.contains(&"TypeScript".to_string()));
@@ -739,17 +859,19 @@ mod tests {
 
     #[test]
     fn personal_terms_generate_safe_compound_aliases() {
-        let user = UserDictionary {
-            version: 2,
-            user_vocabulary: vec![
+        let general = IndustryPack {
+            id: "general".to_string(),
+            name: "General".to_string(),
+            description: String::new(),
+            vocabulary: vec![
                 "TypeScript".to_string(),
                 "Next.js".to_string(),
                 "GitHub".to_string(),
             ],
-            user_normalization_rules: vec![],
+            replacements: vec![],
         };
 
-        let runtime = runtime_dictionary_from_user_dictionary(&user);
+        let runtime = resolve_runtime_dictionary(&general, None);
 
         assert_eq!(
             apply_normalization_rules("type script is great", &runtime.normalization_rules),
@@ -767,13 +889,15 @@ mod tests {
 
     #[test]
     fn personal_terms_do_not_guess_phonetic_aliases() {
-        let user = UserDictionary {
-            version: 2,
-            user_vocabulary: vec!["Supabase".to_string()],
-            user_normalization_rules: vec![],
+        let general = IndustryPack {
+            id: "general".to_string(),
+            name: "General".to_string(),
+            description: String::new(),
+            vocabulary: vec!["Supabase".to_string()],
+            replacements: vec![],
         };
 
-        let runtime = runtime_dictionary_from_user_dictionary(&user);
+        let runtime = resolve_runtime_dictionary(&general, None);
 
         assert_eq!(
             apply_normalization_rules("super base auth", &runtime.normalization_rules),
@@ -783,16 +907,18 @@ mod tests {
 
     #[test]
     fn manual_user_rules_override_generated_personal_term_aliases() {
-        let user = UserDictionary {
-            version: 2,
-            user_vocabulary: vec!["TypeScript".to_string()],
-            user_normalization_rules: vec![ReplacementRule {
+        let general = IndustryPack {
+            id: "general".to_string(),
+            name: "General".to_string(),
+            description: String::new(),
+            vocabulary: vec!["TypeScript".to_string()],
+            replacements: vec![ReplacementRule {
                 find: "type script".to_string(),
                 replace: "Type Script Custom".to_string(),
             }],
         };
 
-        let runtime = runtime_dictionary_from_user_dictionary(&user);
+        let runtime = resolve_runtime_dictionary(&general, None);
 
         assert_eq!(
             apply_normalization_rules("type script", &runtime.normalization_rules),
@@ -802,7 +928,13 @@ mod tests {
 
     #[test]
     fn switching_packs_does_not_leak_previous_pack_rules() {
-        let user = UserDictionary::default();
+        let general = IndustryPack {
+            id: "general".to_string(),
+            name: "User Vocabulary".to_string(),
+            description: String::new(),
+            vocabulary: vec![],
+            replacements: vec![],
+        };
         let software_pack = IndustryPack {
             id: "software_engineering".to_string(),
             name: "Software Engineering".to_string(),
@@ -824,8 +956,8 @@ mod tests {
             }],
         };
 
-        let software_runtime = resolve_runtime_dictionary(&user, Some(&software_pack));
-        let medical_runtime = resolve_runtime_dictionary(&user, Some(&medical_pack));
+        let software_runtime = resolve_runtime_dictionary(&general, Some(&software_pack));
+        let medical_runtime = resolve_runtime_dictionary(&general, Some(&medical_pack));
 
         assert_eq!(
             apply_normalization_rules("type script", &software_runtime.normalization_rules),
@@ -865,16 +997,18 @@ mod tests {
     }
 
     #[test]
-    fn resolving_runtime_dictionary_does_not_mutate_user_storage() {
-        let user = UserDictionary {
-            version: 2,
-            user_vocabulary: vec!["PersonalTerm".to_string()],
-            user_normalization_rules: vec![ReplacementRule {
+    fn resolving_runtime_dictionary_does_not_mutate_general_vocab() {
+        let general = IndustryPack {
+            id: "general".to_string(),
+            name: "User Vocabulary".to_string(),
+            description: String::new(),
+            vocabulary: vec!["PersonalTerm".to_string()],
+            replacements: vec![ReplacementRule {
                 find: "my repo".to_string(),
                 replace: "MyRepo".to_string(),
             }],
         };
-        let snapshot = user.clone();
+        let snapshot = general.clone();
         let pack = IndustryPack {
             id: "software_engineering".to_string(),
             name: "Software Engineering".to_string(),
@@ -886,7 +1020,7 @@ mod tests {
             }],
         };
 
-        let _runtime = resolve_runtime_dictionary(&user, Some(&pack));
-        assert_eq!(user, snapshot);
+        let _runtime = resolve_runtime_dictionary(&general, Some(&pack));
+        assert_eq!(general, snapshot);
     }
 }

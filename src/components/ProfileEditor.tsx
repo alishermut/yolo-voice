@@ -1,20 +1,108 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { inputStyles, textareaStyles, buttonVariants, focusRing } from "./ui/styles";
+import { Select } from "./ui/Select";
 import type { Profile } from "../shared/types";
-import { getProfiles, saveProfile, deleteProfile } from "../shared/platform";
+import {
+  getProfiles,
+  saveProfile,
+  deleteProfile,
+  resetProfileToDefault,
+} from "../shared/platform";
+
+const TONE_OPTIONS = [
+  { value: "neutral", label: "Neutral" },
+  { value: "professional", label: "Professional" },
+  { value: "friendly", label: "Friendly" },
+  { value: "excited", label: "Excited" },
+  { value: "casual", label: "Casual" },
+  { value: "formal", label: "Formal" },
+  { value: "concise", label: "Concise" },
+  { value: "empathetic", label: "Empathetic" },
+];
+
+// Display-friendly key names
+const KEY_DISPLAY: Record<string, string> = {
+  ControlLeft: "L-Ctrl",
+  ControlRight: "R-Ctrl",
+  ShiftLeft: "L-Shift",
+  ShiftRight: "R-Shift",
+  AltLeft: "L-Alt",
+  AltRight: "R-Alt",
+  MetaLeft: "L-Win",
+  MetaRight: "R-Win",
+  CapsLock: "CapsLock",
+  Space: "Space",
+  BackSpace: "Backspace",
+  Return: "Enter",
+};
+
+// Map browser e.code to rdev key name (same as KeybindingInput)
+const CODE_TO_RDEV: Record<string, string> = {
+  ControlLeft: "ControlLeft",
+  ControlRight: "ControlRight",
+  ShiftLeft: "ShiftLeft",
+  ShiftRight: "ShiftRight",
+  AltLeft: "AltLeft",
+  AltRight: "AltRight",
+  MetaLeft: "MetaLeft",
+  MetaRight: "MetaRight",
+  Space: "Space",
+  CapsLock: "CapsLock",
+  Escape: "Escape",
+  Tab: "Tab",
+  Backspace: "BackSpace",
+  Enter: "Return",
+  ArrowUp: "UpArrow",
+  ArrowDown: "DownArrow",
+  ArrowLeft: "LeftArrow",
+  ArrowRight: "RightArrow",
+  Delete: "Delete",
+  Home: "Home",
+  End: "End",
+  PageUp: "PageUp",
+  PageDown: "PageDown",
+  PrintScreen: "PrintScreen",
+  ScrollLock: "ScrollLock",
+  Pause: "Pause",
+  NumLock: "NumLock",
+  F1: "F1",
+  F2: "F2",
+  F3: "F3",
+  F4: "F4",
+  F5: "F5",
+  F6: "F6",
+  F7: "F7",
+  F8: "F8",
+  F9: "F9",
+  F10: "F10",
+  F11: "F11",
+  F12: "F12",
+};
+
+function displayKey(key: string): string {
+  return KEY_DISPLAY[key] || key;
+}
 
 interface ProfileEditorProps {
   activeProfileId: string;
   onProfileChange: (profileId: string) => void;
+  dictationHotkey: string;
+  commandHotkey: string;
 }
 
 export function ProfileEditor({
   activeProfileId,
   onProfileChange,
+  dictationHotkey,
+  commandHotkey,
 }: ProfileEditorProps) {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [editingProfile, setEditingProfile] = useState<Profile | null>(null);
-  const [dictInput, setDictInput] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // Track which profile is listening for a shortcut key
+  const [listeningId, setListeningId] = useState<string | null>(null);
+  // Conflict warning per profile
+  const [conflicts, setConflicts] = useState<Record<string, string>>({});
 
   useEffect(() => {
     loadProfiles();
@@ -54,74 +142,133 @@ export function ProfileEditor({
     }
   };
 
-  const handleCreate = () => {
-    const newId = `custom-${Date.now()}`;
-    setEditingProfile({
-      id: newId,
-      name: "New Profile",
+  const handleReset = async (id: string) => {
+    setError(null);
+    try {
+      await resetProfileToDefault(id);
+      await loadProfiles();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const handleCreate = async () => {
+    const newProfile: Profile = {
+      id: `custom-${Date.now()}`,
+      name: "New Style",
       builtin: false,
       system_prompt:
         "You are a transcription post-processor.\n\nRules:\n- Fix grammar and punctuation\n- Output ONLY the corrected text, nothing else",
       terminology_hints: [],
       tone: "neutral",
-    });
-    setDictInput("");
+      shortcut_key: "",
+    };
+    setError(null);
+    try {
+      await saveProfile(newProfile);
+      await loadProfiles();
+      setEditingProfile(newProfile);
+    } catch (e) {
+      setError(String(e));
+    }
   };
 
   const handleEdit = (profile: Profile) => {
     setEditingProfile({ ...profile });
-    setDictInput(profile.terminology_hints.join(", "));
   };
 
-  const handleDictChange = (value: string) => {
-    setDictInput(value);
-    if (editingProfile) {
-      const words = value
-        .split(",")
-        .map((w) => w.trim())
-        .filter((w) => w.length > 0);
-      setEditingProfile({ ...editingProfile, terminology_hints: words });
-    }
-  };
+  // Check for shortcut key conflicts
+  const checkConflict = useCallback(
+    (key: string, profileId: string): string | null => {
+      if (!key) return null;
+      if (key === dictationHotkey) return "Dictation hotkey";
+      if (key === commandHotkey) return "Command hotkey";
+      const other = profiles.find(
+        (p) => p.id !== profileId && p.shortcut_key === key,
+      );
+      if (other) return `Style "${other.name}"`;
+      return null;
+    },
+    [profiles, dictationHotkey, commandHotkey],
+  );
 
-  // Editor modal
+  // Handle shortcut key assignment via keyboard listener
+  useEffect(() => {
+    if (!listeningId) return;
+
+    const handler = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      let rdevKey = CODE_TO_RDEV[e.code];
+      if (!rdevKey && e.code.startsWith("Key")) {
+        rdevKey = e.code.replace("Key", "");
+      }
+      if (!rdevKey) return;
+
+      // Check conflict
+      const conflict = checkConflict(rdevKey, listeningId);
+      if (conflict) {
+        setConflicts((prev) => ({
+          ...prev,
+          [listeningId]: `\u26A0 Key already used by ${conflict}`,
+        }));
+      } else {
+        setConflicts((prev) => {
+          const next = { ...prev };
+          delete next[listeningId];
+          return next;
+        });
+      }
+
+      // Save the shortcut
+      const profile = profiles.find((p) => p.id === listeningId);
+      if (profile) {
+        const updated = { ...profile, shortcut_key: rdevKey };
+        saveProfile(updated).then(() => loadProfiles());
+      }
+      setListeningId(null);
+    };
+
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [listeningId, profiles, checkConflict]);
+
+  // -- Editor modal -----------------------------------------------------------
   if (editingProfile) {
     return (
       <div className="space-y-4">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-gray-200">
-            {editingProfile.builtin ? "View Profile" : "Edit Profile"}
-          </h3>
+          <h3 className="text-sm font-semibold text-text-primary">Edit Style</h3>
           <button
             onClick={() => setEditingProfile(null)}
-            className="text-gray-400 hover:text-gray-200 text-sm"
+            className={`text-text-secondary hover:text-text-primary text-sm rounded ${focusRing}`}
           >
-            Cancel
+            &larr; Back to list
           </button>
         </div>
 
         {error && (
-          <div className="px-3 py-2 bg-red-900/50 border border-red-700 rounded-lg text-red-300 text-xs">
+          <div className="px-3 py-2 bg-error-muted border border-error rounded-lg text-error text-xs">
             {error}
           </div>
         )}
 
         <div className="space-y-3">
           <div>
-            <label className="text-xs text-gray-400 block mb-1">Name</label>
+            <label className="text-xs text-text-secondary block mb-1">Name</label>
             <input
               type="text"
               value={editingProfile.name}
               onChange={(e) =>
                 setEditingProfile({ ...editingProfile, name: e.target.value })
               }
-              disabled={editingProfile.builtin}
-              className="w-full bg-gray-800 border border-gray-700 text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
+              className={inputStyles}
             />
           </div>
 
           <div>
-            <label className="text-xs text-gray-400 block mb-1">
+            <label className="text-xs text-text-secondary block mb-1">
               System Prompt
             </label>
             <textarea
@@ -132,134 +279,146 @@ export function ProfileEditor({
                   system_prompt: e.target.value,
                 })
               }
-              disabled={editingProfile.builtin}
               rows={6}
-              className="w-full bg-gray-800 border border-gray-700 text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50 resize-y"
+              className={textareaStyles}
             />
           </div>
 
           <div>
-            <label className="text-xs text-gray-400 block mb-1">
-              Terminology Hints (comma-separated terms to preserve)
-            </label>
-            <input
-              type="text"
-              value={dictInput}
-              onChange={(e) => handleDictChange(e.target.value)}
-              disabled={editingProfile.builtin}
-              placeholder="kubectl, React, PostgreSQL, ..."
-              className="w-full bg-gray-800 border border-gray-700 text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
-            />
-            {editingProfile.terminology_hints.length > 0 && (
-              <div className="flex flex-wrap gap-1 mt-2">
-                {editingProfile.terminology_hints.map((word, i) => (
-                  <span
-                    key={i}
-                    className="px-2 py-0.5 bg-gray-700 text-gray-300 rounded text-xs"
-                  >
-                    {word}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div>
-            <label className="text-xs text-gray-400 block mb-1">Tone</label>
-            <select
+            <label className="text-xs text-text-secondary block mb-1">Tone</label>
+            <Select
               value={editingProfile.tone}
-              onChange={(e) =>
-                setEditingProfile({ ...editingProfile, tone: e.target.value })
+              onChange={(v) =>
+                setEditingProfile({ ...editingProfile, tone: v })
               }
-              disabled={editingProfile.builtin}
-              className="bg-gray-800 border border-gray-700 text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
-            >
-              <option value="neutral">Neutral</option>
-              <option value="formal">Formal</option>
-              <option value="casual">Casual</option>
-            </select>
+              options={TONE_OPTIONS.map((t) => ({
+                value: t.value,
+                label: t.label,
+              }))}
+            />
           </div>
         </div>
 
-        {!editingProfile.builtin && (
-          <button
-            onClick={handleSave}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors"
-          >
-            Save Profile
-          </button>
-        )}
+        <button
+          onClick={handleSave}
+          className={buttonVariants.primary}
+        >
+          Save
+        </button>
       </div>
     );
   }
 
-  // Profile list
+  // -- Profile list -----------------------------------------------------------
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       {error && (
-        <div className="px-3 py-2 bg-red-900/50 border border-red-700 rounded-lg text-red-300 text-xs">
+        <div className="px-3 py-2 bg-error-muted border border-error rounded-lg text-error text-xs">
           {error}
         </div>
       )}
 
       {profiles.map((profile) => (
-        <div
-          key={profile.id}
-          className={`flex items-center justify-between p-3 rounded-lg border transition-colors ${
-            activeProfileId === profile.id
-              ? "bg-blue-600/10 border-blue-500/50"
-              : "bg-gray-800/50 border-gray-700"
-          }`}
-        >
-          <div
-            className="flex-1 cursor-pointer"
-            onClick={() => onProfileChange(profile.id)}
-          >
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium text-gray-200">
-                {profile.name}
-              </span>
-              {profile.builtin && (
-                <span className="text-xs text-gray-500">Built-in</span>
-              )}
-              {activeProfileId === profile.id && (
-                <span className="text-xs bg-blue-600/30 text-blue-300 px-2 py-0.5 rounded-full">
-                  Active
+        <div key={profile.id} className="space-y-1">
+          <div className="flex items-center gap-2 p-3 rounded-lg border bg-bg-raised border-border-default transition-colors">
+            {/* Name */}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-text-primary truncate">
+                  {profile.name}
                 </span>
-              )}
+                {profile.builtin && (
+                  <span className="text-xs text-text-muted shrink-0">
+                    Built-in
+                  </span>
+                )}
+              </div>
             </div>
-            {profile.terminology_hints.length > 0 && (
-              <p className="text-xs text-gray-500 mt-0.5">
-                Terminology hints: {profile.terminology_hints.slice(0, 5).join(", ")}
-                {profile.terminology_hints.length > 5 && "..."}
-              </p>
-            )}
-          </div>
 
-          <div className="flex items-center gap-2 ml-3">
+            {/* Inline shortcut key button */}
+            <button
+              onClick={() =>
+                setListeningId(
+                  listeningId === profile.id ? null : profile.id,
+                )
+              }
+              className={`px-3 py-1 rounded text-xs font-mono border transition-colors shrink-0 ${focusRing} ${
+                listeningId === profile.id
+                  ? "bg-warning-muted border-warning text-warning animate-pulse"
+                  : profile.shortcut_key
+                    ? "bg-purple-muted border-purple text-purple"
+                    : "bg-bg-hover border-border-default text-text-secondary"
+              }`}
+              title="Click to set shortcut key"
+            >
+              {listeningId === profile.id
+                ? "Press key..."
+                : profile.shortcut_key
+                  ? displayKey(profile.shortcut_key)
+                  : "Key"}
+            </button>
+
+            {/* Clear shortcut */}
+            {profile.shortcut_key && listeningId !== profile.id && (
+              <button
+                onClick={async () => {
+                  const updated = { ...profile, shortcut_key: "" };
+                  await saveProfile(updated);
+                  await loadProfiles();
+                  setConflicts((prev) => {
+                    const next = { ...prev };
+                    delete next[profile.id];
+                    return next;
+                  });
+                }}
+                className={`text-text-muted hover:text-text-primary text-xs shrink-0 rounded ${focusRing}`}
+                title="Clear shortcut"
+              >
+                &#x2715;
+              </button>
+            )}
+
+            {/* Edit */}
             <button
               onClick={() => handleEdit(profile)}
-              className="px-2 py-1 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+              className={`px-2 py-1 text-xs text-text-secondary hover:text-text-primary transition-colors shrink-0 rounded ${focusRing}`}
             >
-              {profile.builtin ? "View" : "Edit"}
+              Edit
             </button>
-            {!profile.builtin && (
+
+            {/* Reset (built-in) or Delete (custom) */}
+            {profile.builtin ? (
+              <button
+                onClick={() => handleReset(profile.id)}
+                className={`px-2 py-1 text-xs text-text-secondary hover:text-accent transition-colors shrink-0 rounded ${focusRing}`}
+                title="Reset to default"
+              >
+                Reset
+              </button>
+            ) : (
               <button
                 onClick={() => handleDelete(profile.id)}
-                className="px-2 py-1 text-xs text-red-400 hover:text-red-300 transition-colors"
+                className={`px-2 py-1 text-xs text-text-muted hover:text-error transition-colors shrink-0 rounded ${focusRing}`}
               >
                 Delete
               </button>
             )}
           </div>
+
+          {/* Conflict warning */}
+          {conflicts[profile.id] && (
+            <p className="text-xs text-warning pl-3">
+              {conflicts[profile.id]}
+            </p>
+          )}
         </div>
       ))}
 
       <button
         onClick={handleCreate}
-        className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg text-sm font-medium transition-colors"
+        className={buttonVariants.secondary}
       >
-        + New Profile
+        + New Style
       </button>
     </div>
   );

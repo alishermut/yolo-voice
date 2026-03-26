@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { MicSelector } from "../components/MicSelector";
+import { Select } from "../components/ui/Select";
 import type { GpuInfo } from "../shared/types";
 import {
   getConfig,
@@ -269,14 +270,15 @@ export function Onboarding({ onComplete }: OnboardingProps) {
               <div className="space-y-3 pl-2">
                 <div className="flex items-center gap-3">
                   <span className="text-sm text-gray-400 w-20">Provider</span>
-                  <select
+                  <Select
                     value={cloudProvider}
-                    onChange={(e) => setCloudProvider(e.target.value)}
-                    className="flex-1 bg-gray-800 border border-gray-700 text-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="groq">Groq (Whisper)</option>
-                    <option value="deepgram">Deepgram (Nova-2)</option>
-                  </select>
+                    onChange={(v) => setCloudProvider(v)}
+                    options={[
+                      { value: "groq", label: "Groq (Whisper)" },
+                      { value: "deepgram", label: "Deepgram (Nova-2)" },
+                    ]}
+                    className="flex-1"
+                  />
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="text-sm text-gray-400 w-20">API Key</span>

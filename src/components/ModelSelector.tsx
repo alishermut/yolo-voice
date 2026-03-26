@@ -141,12 +141,12 @@ export function ModelSelector() {
 
   const statusColor =
     modelStatus === "ready"
-      ? "bg-green-500"
+      ? "bg-success"
       : modelStatus === "loading"
-        ? "bg-yellow-500"
+        ? "bg-warning"
         : modelStatus === "not-downloaded"
-          ? "bg-gray-500"
-          : "bg-red-500";
+          ? "bg-text-muted"
+          : "bg-error";
 
   const statusText =
     modelStatus === "ready"
@@ -162,11 +162,11 @@ export function ModelSelector() {
   return (
     <div className="space-y-2">
       {/* Engine status */}
-      <div className="flex items-center gap-2 text-xs text-gray-500">
+      <div className="flex items-center gap-2 text-xs text-text-muted">
         <div className={`w-2 h-2 rounded-full ${statusColor}`} />
         Transcription engine: {statusText}
         {modelStatus === "ready" && (
-          <span className={gpuAvailable ? "text-green-500" : "text-yellow-500"}>
+          <span className={gpuAvailable ? "text-success" : "text-warning"}>
             ({gpuAvailable ? "GPU accelerated" : "CPU"})
           </span>
         )}
@@ -174,14 +174,14 @@ export function ModelSelector() {
 
       {/* GPU toggle */}
       {modelStatus === "ready" && !reloading && (
-        <div className="text-xs text-gray-400 bg-gray-800/50 border border-gray-700 rounded-lg px-3 py-2 flex items-center justify-between">
+        <div className="text-xs text-text-secondary bg-bg-raised border border-border-default rounded-lg px-3 py-2 flex items-center justify-between">
           <span>Acceleration: {gpuAvailable ? "GPU (DirectML)" : "CPU"}</span>
           <button
             onClick={() => {
               setReloading(true);
               reloadModel(!gpuAvailable).catch(() => setReloading(false));
             }}
-            className="text-blue-400 hover:text-blue-300 ml-2 transition-colors"
+            className="text-accent hover:text-accent-hover ml-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus focus-visible:ring-offset-2 focus-visible:ring-offset-bg-base rounded"
           >
             Switch to {gpuAvailable ? "CPU" : "GPU"}
           </button>
@@ -189,8 +189,8 @@ export function ModelSelector() {
       )}
 
       {reloading && (
-        <div className="text-xs text-blue-300/80 bg-blue-900/20 border border-blue-800/30 rounded-lg px-3 py-2 flex items-center gap-2">
-          <svg className="animate-spin h-3.5 w-3.5 text-blue-400 shrink-0" viewBox="0 0 24 24" fill="none">
+        <div className="text-xs text-accent bg-accent-muted border border-accent/30 rounded-lg px-3 py-2 flex items-center gap-2">
+          <svg className="animate-spin h-3.5 w-3.5 text-accent shrink-0" viewBox="0 0 24 24" fill="none">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
           </svg>
@@ -200,18 +200,18 @@ export function ModelSelector() {
 
       {/* CPU fallback notice */}
       {modelStatus === "ready" && !gpuAvailable && !reloading && (
-        <div className="text-xs text-yellow-500/80 bg-yellow-900/20 border border-yellow-800/30 rounded-lg px-3 py-2">
+        <div className="text-xs text-warning bg-warning-muted border border-warning/30 rounded-lg px-3 py-2">
           Using CPU mode, which may be slower than GPU.
         </div>
       )}
 
       {/* Model ready: option to delete */}
       {modelStatus === "ready" && !downloading && !confirmingDelete && (
-        <div className="text-xs text-gray-400 bg-gray-800/50 border border-gray-700 rounded-lg px-3 py-2 flex items-center justify-between">
+        <div className="text-xs text-text-secondary bg-bg-raised border border-border-default rounded-lg px-3 py-2 flex items-center justify-between">
           <span>Parakeet TDT model (~2.4 GB on disk).</span>
           <button
             onClick={() => setConfirmingDelete(true)}
-            className="text-gray-500 hover:text-red-400 ml-2 transition-colors"
+            className="text-text-muted hover:text-error ml-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus focus-visible:ring-offset-2 focus-visible:ring-offset-bg-base rounded"
           >
             Delete model
           </button>
@@ -220,18 +220,18 @@ export function ModelSelector() {
 
       {/* Delete confirmation */}
       {confirmingDelete && (
-        <div className="text-xs text-red-400/80 bg-red-900/20 border border-red-800/30 rounded-lg px-3 py-2 space-y-2">
+        <div className="text-xs text-error bg-error-muted border border-error/30 rounded-lg px-3 py-2 space-y-2">
           <p>Delete the speech model? This frees ~2.4 GB but you'll need to re-download it to use offline transcription.</p>
           <div className="flex gap-2 justify-end">
             <button
               onClick={() => setConfirmingDelete(false)}
-              className="px-2 py-1 text-gray-400 hover:text-gray-200 transition-colors"
+              className="px-2 py-1 text-text-secondary hover:text-text-primary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus focus-visible:ring-offset-2 focus-visible:ring-offset-bg-base rounded"
             >
               Cancel
             </button>
             <button
               onClick={handleDelete}
-              className="px-2 py-1 bg-red-600 hover:bg-red-700 text-white rounded transition-colors"
+              className="px-2 py-1 bg-error hover:bg-error text-white rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus focus-visible:ring-offset-2 focus-visible:ring-offset-bg-base"
             >
               Delete
             </button>
@@ -242,23 +242,23 @@ export function ModelSelector() {
       {/* Download progress */}
       {downloading && (
         <div className="space-y-1">
-          <div className="w-full bg-gray-800 rounded-full h-2 overflow-hidden">
+          <div className="w-full bg-bg-raised rounded-full h-2 overflow-hidden">
             <div
-              className="bg-blue-600 h-full rounded-full transition-all duration-300"
+              className="bg-accent h-full rounded-full transition-all duration-300"
               style={{ width: `${downloadProgress}%` }}
             />
           </div>
-          <p className="text-xs text-gray-500 text-center">
+          <p className="text-xs text-text-muted text-center">
             {downloadStatusText}
           </p>
           {(downloadSpeed || downloadEta) && (
-            <p className="text-xs text-gray-600 text-center">
+            <p className="text-xs text-text-muted text-center">
               {downloadSpeed}{downloadSpeed && downloadEta ? " \u2014 " : ""}{downloadEta}
             </p>
           )}
           <button
             onClick={handleCancelDownload}
-            className="w-full text-xs text-gray-500 hover:text-gray-300 transition-colors py-1"
+            className="w-full text-xs text-text-muted hover:text-text-primary transition-colors py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus focus-visible:ring-offset-2 focus-visible:ring-offset-bg-base rounded"
           >
             Cancel
           </button>
@@ -267,8 +267,8 @@ export function ModelSelector() {
 
       {/* Initializing phase */}
       {initializing && (
-        <div className="text-xs text-blue-300/80 bg-blue-900/20 border border-blue-800/30 rounded-lg px-3 py-2 flex items-center gap-2">
-          <svg className="animate-spin h-3.5 w-3.5 text-blue-400 shrink-0" viewBox="0 0 24 24" fill="none">
+        <div className="text-xs text-accent bg-accent-muted border border-accent/30 rounded-lg px-3 py-2 flex items-center gap-2">
+          <svg className="animate-spin h-3.5 w-3.5 text-accent shrink-0" viewBox="0 0 24 24" fill="none">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
           </svg>
@@ -278,11 +278,11 @@ export function ModelSelector() {
 
       {/* Error: re-download action */}
       {modelStatus === "error" && !downloading && (
-        <div className="text-xs text-red-400/80 bg-red-900/20 border border-red-800/30 rounded-lg px-3 py-2 flex items-center justify-between">
+        <div className="text-xs text-error bg-error-muted border border-error/30 rounded-lg px-3 py-2 flex items-center justify-between">
           <span>Engine failed to initialize.</span>
           <button
             onClick={handleDownload}
-            className="text-red-300 underline hover:text-red-200 ml-2"
+            className="text-error underline hover:text-error ml-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus focus-visible:ring-offset-2 focus-visible:ring-offset-bg-base rounded"
           >
             Re-download model
           </button>
@@ -291,11 +291,11 @@ export function ModelSelector() {
 
       {/* Not downloaded: download action */}
       {modelStatus === "not-downloaded" && !downloading && (
-        <div className="text-xs text-gray-400 bg-gray-800/50 border border-gray-700 rounded-lg px-3 py-2 flex items-center justify-between">
+        <div className="text-xs text-text-secondary bg-bg-raised border border-border-default rounded-lg px-3 py-2 flex items-center justify-between">
           <span>Speech model not downloaded yet (~2.4 GB).</span>
           <button
             onClick={handleDownload}
-            className="text-blue-400 underline hover:text-blue-300 ml-2"
+            className="text-accent hover:text-accent-hover underline ml-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus focus-visible:ring-offset-2 focus-visible:ring-offset-bg-base rounded"
           >
             Download
           </button>

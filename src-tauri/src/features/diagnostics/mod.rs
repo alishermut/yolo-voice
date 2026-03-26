@@ -35,6 +35,8 @@ pub struct TranscriptSample {
     pub app_version: String,
     pub session_id: String,
     pub utterance_id: String,
+    /// "dictation" or "command"
+    pub pipeline_mode: String,
     pub transcription_mode: String,
     pub stt_provider: String,
     pub active_industry_pack: String,
@@ -175,6 +177,7 @@ fn open_connection(db_path: &Path) -> Result<Connection, String> {
             app_version TEXT NOT NULL,
             session_id TEXT NOT NULL,
             utterance_id TEXT NOT NULL,
+            pipeline_mode TEXT NOT NULL DEFAULT 'dictation',
             transcription_mode TEXT NOT NULL,
             stt_provider TEXT NOT NULL,
             active_industry_pack TEXT NOT NULL,
@@ -196,6 +199,12 @@ fn open_connection(db_path: &Path) -> Result<Connection, String> {
         ",
     )
     .map_err(|e| e.to_string())?;
+
+    // Migration: add pipeline_mode column to existing databases (ignored if already present)
+    let _ = conn.execute_batch(
+        "ALTER TABLE transcript_samples ADD COLUMN pipeline_mode TEXT NOT NULL DEFAULT 'dictation';"
+    );
+
     Ok(conn)
 }
 
@@ -207,6 +216,7 @@ fn insert_sample(conn: &Connection, sample: &TranscriptSample) -> Result<(), Str
             app_version,
             session_id,
             utterance_id,
+            pipeline_mode,
             transcription_mode,
             stt_provider,
             active_industry_pack,
@@ -222,13 +232,14 @@ fn insert_sample(conn: &Connection, sample: &TranscriptSample) -> Result<(), Str
             final_text,
             inserted_text,
             insert_success
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
         ",
         params![
             sample.created_at,
             sample.app_version,
             sample.session_id,
             sample.utterance_id,
+            sample.pipeline_mode,
             sample.transcription_mode,
             sample.stt_provider,
             sample.active_industry_pack,
@@ -341,6 +352,7 @@ mod tests {
             final_text: Some("Hello world.".to_string()),
             inserted_text: Some("Hello world. ".to_string()),
             insert_success: true,
+            pipeline_mode: "dictation".to_string(),
         }
     }
 

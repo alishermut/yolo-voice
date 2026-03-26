@@ -4,6 +4,7 @@ mod infra;
 
 use app::commands::AudioState;
 use features::capture::recorder::RecordingState;
+use features::capture::{ActiveStyleKey, RuntimeDictionaryCache};
 use features::diagnostics::TranscriptDiagnosticsState;
 use features::output::FocusedWindowState;
 use features::settings::ConfigState;
@@ -27,6 +28,8 @@ pub fn run() {
         .manage(RecordingState(Mutex::new(None)))
         .manage(FocusedWindowState(Mutex::new(0)))
         .manage(InferenceState(Mutex::new(None)))
+        .manage(RuntimeDictionaryCache(Mutex::new(None)))
+        .manage(ActiveStyleKey(Mutex::new(None)))
         .manage(UserDictionaryState(Mutex::new(
             features::speech::vocabulary::UserDictionary::default(),
         )))
@@ -48,18 +51,24 @@ pub fn run() {
             app::commands::get_profiles,
             app::commands::save_profile_cmd,
             app::commands::delete_profile_cmd,
+            app::commands::reset_profile_to_default,
             app::commands::test_llm_connection,
             app::commands::set_launch_on_startup,
             app::commands::get_app_info,
             app::commands::quit_app,
-            app::commands::get_user_dictionary,
-            app::commands::save_user_dictionary_cmd,
             app::commands::get_industry_packs,
             app::commands::apply_industry_pack,
             app::commands::get_transcript_diagnostics_status,
             app::commands::clear_transcript_diagnostics,
             app::commands::preview_sound,
             app::commands::get_available_sounds,
+            app::commands::test_command_llm_connection,
+            app::commands::load_industry_pack_cmd,
+            app::commands::get_general_vocabulary,
+            app::commands::save_general_vocabulary_cmd,
+            app::commands::save_industry_pack_cmd,
+            app::commands::reset_industry_pack_cmd,
+            app::commands::generate_vocab_variants,
         ])
         .setup(|app| {
             // Load persisted config
@@ -165,8 +174,13 @@ pub fn run() {
                 }
             }
 
-            // Start global hotkey listener
-            features::capture::hotkey::start_hotkey_listener(app.handle().clone());
+            // Start global hotkey listener with cached keys
+            let hotkey_cache = features::capture::hotkey::HotkeyCache::new(
+                &saved_config.hotkey,
+                &saved_config.command_hotkey,
+            );
+            app.manage(hotkey_cache.clone());
+            features::capture::hotkey::start_hotkey_listener(app.handle().clone(), hotkey_cache);
 
             // Clean up old whisper models from previous versions
             let _ = infra::model::cleanup_old_models(&app.handle());
@@ -208,6 +222,11 @@ pub fn run() {
                     }
                     Err(e) => {
                         eprintln!("[app] Failed to init inference engine: {}", e);
+                        // Write error to a file for debugging (GUI apps may swallow stderr)
+                        if let Ok(log_dir) = inference_handle.path().app_data_dir() {
+                            let log_path = log_dir.join("engine_error.log");
+                            let _ = std::fs::write(&log_path, format!("Engine init error: {}\nModels dir: {:?}", e, models_dir));
+                        }
                         let _ = inference_handle.emit("model-status", "error");
                     }
                 }
@@ -216,6 +235,12 @@ pub fn run() {
 
             // Set up the hotkey-action event handler (record → transcribe → insert pipeline)
             features::capture::setup_hotkey_handler(&app.handle());
+
+            // Set up the command-hotkey-action event handler (command pipeline)
+            features::capture::setup_command_hotkey_handler(&app.handle());
+
+            // Set up the style-switch event handler (command key + letter)
+            features::capture::setup_style_switch_handler(&app.handle());
 
             Ok(())
         })

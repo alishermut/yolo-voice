@@ -23,13 +23,6 @@ pub fn cloud_transcribe(
     Ok(text.trim().to_string())
 }
 
-fn client() -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))
-}
-
 /// Transcribe via Groq Whisper API (OpenAI-compatible multipart).
 fn cloud_groq(wav_path: &str, api_key: &str, language: &str) -> Result<String, String> {
     let file_bytes = std::fs::read(wav_path)
@@ -49,7 +42,7 @@ fn cloud_groq(wav_path: &str, api_key: &str, language: &str) -> Result<String, S
         form = form.text("language", language.to_string());
     }
 
-    let resp = client()?
+    let resp = super::http_client()
         .post("https://api.groq.com/openai/v1/audio/transcriptions")
         .header("Authorization", format!("Bearer {}", api_key))
         .multipart(form)
@@ -84,7 +77,7 @@ fn cloud_deepgram(wav_path: &str, api_key: &str, language: &str) -> Result<Strin
         lang
     );
 
-    let resp = client()?
+    let resp = super::http_client()
         .post(&url)
         .header("Authorization", format!("Token {}", api_key))
         .header("Content-Type", "audio/wav")

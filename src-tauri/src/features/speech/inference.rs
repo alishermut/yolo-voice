@@ -57,7 +57,14 @@ impl InferenceSession {
         sample_rate: u32,
         channels: u16,
     ) -> Result<String, String> {
+        if samples.is_empty() {
+            return Ok(String::new());
+        }
+
         let audio = prepare_audio(samples, sample_rate, channels)?;
+        if audio.is_empty() {
+            return Ok(String::new());
+        }
 
         let result = self
             .parakeet
@@ -95,13 +102,17 @@ fn prepare_audio(samples: &[f32], sample_rate: u32, channels: u16) -> Result<Vec
         return Ok(mono);
     }
 
+    if mono.is_empty() {
+        return Ok(mono);
+    }
+
     // Resample to 16kHz using rubato
     use rubato::{FftFixedIn, Resampler};
 
     let mut resampler = FftFixedIn::<f32>::new(
         sample_rate as usize,
         16000,
-        mono.len().min(1024), // chunk size
+        mono.len().min(1024).max(1), // chunk size — must be ≥ 1
         1,                     // sub chunks
         1,                     // channels
     )
@@ -109,6 +120,9 @@ fn prepare_audio(samples: &[f32], sample_rate: u32, channels: u16) -> Result<Vec
 
     let mut output = Vec::new();
     let chunk_size = resampler.input_frames_max();
+    if chunk_size == 0 {
+        return Err("Resampler returned zero chunk size".to_string());
+    }
 
     for chunk_start in (0..mono.len()).step_by(chunk_size) {
         let chunk_end = (chunk_start + chunk_size).min(mono.len());

@@ -2,7 +2,19 @@
   "bundle": {
     "targets": ["dmg"],
     "macOS": {
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "11.0",
+      "entitlements": "entitlements.plist",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "YOLO Voice needs microphone access for voice dictation.",
+        "NSAppleEventsUsageDescription": "YOLO Voice needs accessibility access to type transcribed text into other apps."
+      },
+      "dmg": {
+        "appPosition": { "x": 180, "y": 170 },
+        "applicationFolderPosition": { "x": 480, "y": 170 },
+        "windowSize": { "width": 660, "height": 400 }
+      },
+      "signingIdentity": null,
+      "providerShortName": null
     }
   }
 }

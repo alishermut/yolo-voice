@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <!-- Background circle -->
+  <circle cx="256" cy="256" r="256" fill="#16a34a"/>
+  <!-- Flower petals (5 petals around center) -->
+  <ellipse cx="256" cy="160" rx="52" ry="80" fill="white" opacity="0.9" transform="rotate(0 256 256)"/>
+  <ellipse cx="256" cy="160" rx="52" ry="80" fill="white" opacity="0.9" transform="rotate(72 256 256)"/>
+  <ellipse cx="256" cy="160" rx="52" ry="80" fill="white" opacity="0.9" transform="rotate(144 256 256)"/>
+  <ellipse cx="256" cy="160" rx="52" ry="80" fill="white" opacity="0.9" transform="rotate(216 256 256)"/>
+  <ellipse cx="256" cy="160" rx="52" ry="80" fill="white" opacity="0.9" transform="rotate(288 256 256)"/>
+  <!-- Center circle -->
+  <circle cx="256" cy="256" r="44" fill="#15803d"/>
+  <!-- Inner dot - represents voice/sound -->
+  <circle cx="256" cy="256" r="18" fill="white"/>
+</svg>

@@ -3,18 +3,27 @@ use std::sync::Mutex;
 
 use tauri::{Emitter, Manager, State};
 
+use crate::features::capture::hotkey::HotkeyCache;
 use crate::features::capture::recorder::{self, RecordingState};
+use crate::features::capture::RuntimeDictionaryCache;
 use crate::features::diagnostics::{TranscriptDiagnosticsState, TranscriptDiagnosticsStatus};
 use crate::features::output;
 use crate::features::settings::{self, AppConfig, ConfigState};
 use crate::features::speech;
 use crate::features::speech::inference::InferenceState;
-use crate::features::speech::vocabulary::{
-    IndustryPackInfo, UserDictionary, UserDictionaryState,
-};
+use crate::features::speech::vocabulary::{IndustryPack, IndustryPackInfo};
 use crate::infra::platform::{self, AudioStream, DeviceInfo};
 
 pub struct AudioState(pub Mutex<Option<AudioStream>>);
+
+/// Invalidate both the regex cache and the runtime dictionary cache.
+/// Call this whenever vocabulary or replacement rules change.
+fn invalidate_vocabulary_caches(app: &tauri::AppHandle) {
+    speech::vocabulary::invalidate_regex_cache();
+    if let Ok(mut guard) = app.state::<RuntimeDictionaryCache>().0.lock() {
+        *guard = None;
+    }
+}
 
 // ---- Audio Devices ----
 
@@ -56,8 +65,11 @@ pub fn save_config_cmd(
     new_config: AppConfig,
     app_handle: tauri::AppHandle,
     state: State<'_, ConfigState>,
+    hotkey_cache: State<'_, HotkeyCache>,
 ) -> Result<(), String> {
     settings::save_config(&app_handle, &new_config)?;
+    // Update cached hotkey keys so the rdev listener picks up changes immediately
+    hotkey_cache.update(&new_config.hotkey, &new_config.command_hotkey);
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     *guard = new_config;
     Ok(())
@@ -301,6 +313,15 @@ pub fn delete_profile_cmd(
 }
 
 #[tauri::command]
+pub fn reset_profile_to_default(
+    id: String,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let profiles_dir = speech::get_profiles_dir(&app_handle)?;
+    speech::reset_profile_to_default(&profiles_dir, &id, &app_handle)
+}
+
+#[tauri::command]
 pub fn test_llm_connection(
     provider: String,
     model: String,
@@ -314,11 +335,29 @@ pub fn test_llm_connection(
         system_prompt: "Fix the grammar. Output only the corrected text.".to_string(),
         terminology_hints: vec![],
         tone: "neutral".to_string(),
+        shortcut_key: String::new(),
     };
 
     speech::post_process_text(
         "this is a test to check if the connection works",
         &test_profile,
+        &provider,
+        &model,
+        &api_key,
+        &base_url,
+    )
+}
+
+#[tauri::command]
+pub fn test_command_llm_connection(
+    provider: String,
+    model: String,
+    api_key: String,
+    base_url: String,
+) -> Result<String, String> {
+    speech::command_llm_call(
+        "write hello world in python",
+        "You are a voice command assistant. Output only the requested text.",
         &provider,
         &model,
         &api_key,
@@ -385,28 +424,7 @@ pub fn get_available_sounds() -> Vec<String> {
         .collect()
 }
 
-// ---- User Dictionary & Industry Packs ----
-
-#[tauri::command]
-pub fn get_user_dictionary(
-    state: State<'_, UserDictionaryState>,
-) -> Result<UserDictionary, String> {
-    let guard = state.0.lock().map_err(|e| e.to_string())?;
-    Ok(guard.clone())
-}
-
-#[tauri::command]
-pub fn save_user_dictionary_cmd(
-    dictionary: UserDictionary,
-    app_handle: tauri::AppHandle,
-    state: State<'_, UserDictionaryState>,
-) -> Result<(), String> {
-    speech::vocabulary::save_user_dictionary(&app_handle, &dictionary)?;
-    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    *guard = dictionary;
-    speech::vocabulary::invalidate_regex_cache();
-    Ok(())
-}
+// ---- Industry Packs & Vocabulary ----
 
 #[tauri::command]
 pub fn get_industry_packs(app_handle: tauri::AppHandle) -> Result<Vec<IndustryPackInfo>, String> {
@@ -424,9 +442,68 @@ pub fn apply_industry_pack(
     let mut config_guard = config_state.0.lock().map_err(|e| e.to_string())?;
     config_guard.active_industry_pack = pack_id;
     settings::save_config(&app_handle, &config_guard)?;
-    speech::vocabulary::invalidate_regex_cache();
+    invalidate_vocabulary_caches(&app_handle);
 
     Ok(())
+}
+
+// ---- General Vocabulary & Editable Packs ----
+
+#[tauri::command]
+pub fn load_industry_pack_cmd(
+    id: String,
+    app_handle: tauri::AppHandle,
+) -> Result<IndustryPack, String> {
+    speech::vocabulary::load_industry_pack(&app_handle, &id)
+}
+
+#[tauri::command]
+pub fn get_general_vocabulary(
+    app_handle: tauri::AppHandle,
+) -> Result<IndustryPack, String> {
+    speech::vocabulary::load_general_vocabulary(&app_handle)
+}
+
+#[tauri::command]
+pub fn save_general_vocabulary_cmd(
+    pack: IndustryPack,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    speech::vocabulary::save_general_vocabulary(&app_handle, &pack)?;
+    invalidate_vocabulary_caches(&app_handle);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn save_industry_pack_cmd(
+    pack: IndustryPack,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    speech::vocabulary::save_industry_pack(&app_handle, &pack)?;
+    invalidate_vocabulary_caches(&app_handle);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn reset_industry_pack_cmd(
+    id: String,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    speech::vocabulary::reset_industry_pack(&app_handle, &id)?;
+    invalidate_vocabulary_caches(&app_handle);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn generate_vocab_variants(
+    term: String,
+    config_state: State<'_, ConfigState>,
+) -> Result<Vec<String>, String> {
+    let api_key = {
+        let guard = config_state.0.lock().map_err(|e| e.to_string())?;
+        guard.command_api_key.clone()
+    };
+    speech::llm::generate_misspelling_variants(&term, &api_key)
 }
 
 // ---- Transcript Diagnostics ----

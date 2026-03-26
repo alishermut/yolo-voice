@@ -21,12 +21,28 @@ export interface AppConfig {
   launch_on_startup: boolean;
   start_minimized: boolean;
   active_industry_pack: string;
+  sounds_enabled: boolean;
   start_sound: string;
   stop_sound: string;
   vad_silence_threshold_ms: number;
   text_cleanup_enabled: boolean;
   show_dictionary_migration_notice: boolean;
   transcript_diagnostics_enabled: boolean;
+
+  // Command mode
+  command_hotkey: string;
+  command_provider: string;
+  command_model: string;
+  command_api_key: string;
+  command_base_url: string;
+  command_system_prompt: string;
+
+  // Vision (command mode only)
+  cloud_vision_enabled: boolean;
+  cloud_vision_provider: string;
+  cloud_vision_model: string;
+  cloud_vision_api_key: string;
+  vision_capture_scope: string;
 }
 
 export interface GpuInfo {
@@ -68,6 +84,16 @@ export interface Profile {
   system_prompt: string;
   terminology_hints: string[];
   tone: string;
+  /** Single letter A-Z for command key + letter style shortcut. */
+  shortcut_key: string;
+}
+
+export interface IndustryPack {
+  id: string;
+  name: string;
+  description: string;
+  vocabulary: string[];
+  replacements: ReplacementRule[];
 }
 
 export interface IndustryPackInfo {
@@ -93,6 +119,8 @@ export interface TranscriptDiagnosticsStatus {
 }
 
 export type PillState = "idle" | "recording" | "transcribing" | "done";
+
+export type ActiveMode = "dictation" | "command" | "command_vision";
 
 export interface ModelDownloadProgress {
   status: "downloading" | "complete" | "initializing" | "error";

@@ -5,17 +5,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type {
+  ActiveMode,
   AppConfig,
   AppInfo,
   DeviceInfo,
   GpuInfo,
+  IndustryPack,
   IndustryPackInfo,
   ModelDownloadProgress,
   PillState,
   Profile,
   SegmentTranscribed,
   TranscriptDiagnosticsStatus,
-  UserDictionary,
 } from "./types";
 
 // ---- Config ----
@@ -97,6 +98,24 @@ export function deleteProfile(id: string): Promise<void> {
   return invoke("delete_profile_cmd", { id });
 }
 
+export function resetProfileToDefault(id: string): Promise<void> {
+  return invoke("reset_profile_to_default", { id });
+}
+
+export function testCommandLlmConnection(
+  provider: string,
+  model: string,
+  apiKey: string,
+  baseUrl: string,
+): Promise<string> {
+  return invoke<string>("test_command_llm_connection", {
+    provider,
+    model,
+    apiKey,
+    baseUrl,
+  });
+}
+
 export function testLlmConnection(
   provider: string,
   model: string,
@@ -135,17 +154,8 @@ export function getAvailableSounds(): Promise<string[]> {
   return invoke<string[]>("get_available_sounds");
 }
 
-// ---- User Dictionary & Industry Packs ----
+// ---- Industry Packs ----
 
-export function getUserDictionary(): Promise<UserDictionary> {
-  return invoke<UserDictionary>("get_user_dictionary");
-}
-
-export function saveUserDictionary(
-  dictionary: UserDictionary,
-): Promise<void> {
-  return invoke("save_user_dictionary_cmd", { dictionary });
-}
 
 export function getIndustryPacks(): Promise<IndustryPackInfo[]> {
   return invoke<IndustryPackInfo[]>("get_industry_packs");
@@ -155,6 +165,32 @@ export function applyIndustryPack(
   packId: string,
 ): Promise<void> {
   return invoke("apply_industry_pack", { packId });
+}
+
+export function loadIndustryPack(id: string): Promise<IndustryPack> {
+  return invoke<IndustryPack>("load_industry_pack_cmd", { id });
+}
+
+// ---- General Vocabulary & Editable Packs ----
+
+export function getGeneralVocabulary(): Promise<IndustryPack> {
+  return invoke<IndustryPack>("get_general_vocabulary");
+}
+
+export function saveGeneralVocabulary(pack: IndustryPack): Promise<void> {
+  return invoke("save_general_vocabulary_cmd", { pack });
+}
+
+export function saveIndustryPack(pack: IndustryPack): Promise<void> {
+  return invoke("save_industry_pack_cmd", { pack });
+}
+
+export function resetIndustryPack(id: string): Promise<void> {
+  return invoke("reset_industry_pack_cmd", { id });
+}
+
+export function generateVocabVariants(term: string): Promise<string[]> {
+  return invoke<string[]>("generate_vocab_variants", { term });
 }
 
 // ---- Transcript Diagnostics ----
@@ -223,5 +259,21 @@ export function onModelDownloadProgress(
 ): Promise<UnlistenFn> {
   return listen("model-download-progress", (event) => {
     handler(event.payload as ModelDownloadProgress);
+  });
+}
+
+export function onStyleSwitched(
+  handler: (profileName: string) => void,
+): Promise<UnlistenFn> {
+  return getCurrentWebviewWindow().listen<string>("style-switched", (event) => {
+    handler(event.payload);
+  });
+}
+
+export function onActiveMode(
+  handler: (mode: ActiveMode) => void,
+): Promise<UnlistenFn> {
+  return getCurrentWebviewWindow().listen<string>("active-mode", (event) => {
+    handler(event.payload as ActiveMode);
   });
 }

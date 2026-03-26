@@ -128,6 +128,13 @@ jobs:
           Write-Host "Published release $tag with artifacts: $($assets -join ', ')"
 
   # ── macOS build (Apple Silicon) ────────────────────────────────────
+  # To enable code signing and notarization, add these GitHub Secrets:
+  #   APPLE_CERTIFICATE          - Base64-encoded .p12 Developer ID certificate
+  #   APPLE_CERTIFICATE_PASSWORD - Password for the .p12 certificate
+  #   APPLE_SIGNING_IDENTITY     - e.g. "Developer ID Application: Your Name (TEAMID)"
+  #   APPLE_ID                   - Apple ID email for notarization
+  #   APPLE_PASSWORD             - App-specific password for notarization
+  #   APPLE_TEAM_ID              - Apple Developer Team ID
   release-macos:
     runs-on: macos-latest
     permissions:
@@ -154,8 +161,31 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # Optional: Import Apple signing certificate when secrets are configured
+      - name: Import Apple signing certificate
+        if: env.APPLE_CERTIFICATE != ''
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p actions build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p actions build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions build.keychain
+          rm certificate.p12
+
       - name: Build Tauri app for macOS
-        run: npm run tauri build -- --target aarch64-apple-darwin
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Apple signing (used by Tauri if available)
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run tauri build -- --target aarch64-apple-darwin --config src-tauri/tauri.macos.conf.json
 
       - name: Upload macOS artifacts to release
         env:
@@ -164,6 +194,7 @@ jobs:
           set -e
           VERSION=$(jq -r '.version' src-tauri/tauri.conf.json)
           TAG="v${VERSION}"
+          REPO="${{ github.repository }}"
 
           # Find the .dmg file
           DMG=$(find src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -name '*.dmg' -type f | head -1)
@@ -171,26 +202,51 @@ jobs:
             echo "::error::No .dmg file found"
             exit 1
           fi
-
           echo "Found DMG: $DMG"
+          DMG_NAME=$(basename "$DMG")
 
-          # Wait for the Windows job to create the release (it may not exist yet)
+          # Check for Tauri updater signature (.sig file next to DMG)
+          DMG_SIG="${DMG}.sig"
+          MACOS_SIGNATURE=""
+          if [ -f "$DMG_SIG" ]; then
+            MACOS_SIGNATURE=$(cat "$DMG_SIG")
+            echo "Found macOS updater signature"
+          fi
+
+          # Wait for the Windows job to create the release
           for i in $(seq 1 30); do
             if gh release view "$TAG" >/dev/null 2>&1; then
-              echo "Release $TAG exists, uploading macOS artifact..."
-              gh release upload "$TAG" "$DMG" --clobber
-              echo "Uploaded $(basename "$DMG") to release $TAG"
-              exit 0
+              echo "Release $TAG exists"
+              break
             fi
             echo "Release $TAG not found yet, waiting 30s... (attempt $i/30)"
             sleep 30
           done
 
-          # If release still doesn't exist, create it ourselves
-          echo "Creating release $TAG with macOS artifact..."
-          NOTES_FILE="docs/releases/v${VERSION}.md"
-          if [ ! -f "$NOTES_FILE" ]; then
-            echo "YOLO Voice v${VERSION}" > release-notes.md
-            NOTES_FILE="release-notes.md"
+          # Upload DMG to release
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$DMG" --clobber
+            echo "Uploaded $DMG_NAME to release $TAG"
+
+            # Update latest.json to include macOS platform
+            if [ -n "$MACOS_SIGNATURE" ]; then
+              gh release download "$TAG" --pattern "latest.json" --dir /tmp --clobber || true
+              if [ -f /tmp/latest.json ]; then
+                MACOS_URL="https://github.com/${REPO}/releases/download/${TAG}/${DMG_NAME}"
+                # Add darwin-aarch64 entry to the platforms object
+                jq --arg sig "$MACOS_SIGNATURE" --arg url "$MACOS_URL" \
+                  '.platforms["darwin-aarch64"] = {"signature": $sig, "url": $url}' \
+                  /tmp/latest.json > /tmp/latest-updated.json
+                gh release upload "$TAG" /tmp/latest-updated.json --clobber
+                echo "Updated latest.json with darwin-aarch64 platform"
+              fi
+            fi
+          else
+            # Create the release if Windows hasn't yet
+            NOTES_FILE="docs/releases/v${VERSION}.md"
+            if [ ! -f "$NOTES_FILE" ]; then
+              echo "YOLO Voice v${VERSION}" > release-notes.md
+              NOTES_FILE="release-notes.md"
+            fi
+            gh release create "$TAG" "$DMG" --title "YOLO Voice v${VERSION}" --notes-file "$NOTES_FILE"
           fi
-          gh release create "$TAG" "$DMG" --title "YOLO Voice v${VERSION}" --notes-file "$NOTES_FILE"
