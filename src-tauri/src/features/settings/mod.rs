@@ -67,6 +67,12 @@ pub struct AppConfig {
     #[serde(default = "default_text_cleanup")]
     pub text_cleanup_enabled: bool,
     #[serde(default)]
+    pub numerals_enabled: bool,
+    #[serde(default = "default_ui_language")]
+    pub ui_language: String,
+    #[serde(default)]
+    pub pill_pinned: bool,
+    #[serde(default)]
     pub show_dictionary_migration_notice: bool,
     #[serde(default)]
     pub transcript_diagnostics_enabled: bool,
@@ -85,17 +91,6 @@ pub struct AppConfig {
     #[serde(default = "default_command_system_prompt")]
     pub command_system_prompt: String,
 
-    // Vision (command mode only)
-    #[serde(default)]
-    pub cloud_vision_enabled: bool,
-    #[serde(default = "default_vision_provider")]
-    pub cloud_vision_provider: String,
-    #[serde(default)]
-    pub cloud_vision_model: String,
-    #[serde(default)]
-    pub cloud_vision_api_key: String,
-    #[serde(default = "default_vision_scope")]
-    pub vision_capture_scope: String,
 }
 
 fn default_text_cleanup() -> bool {
@@ -106,6 +101,9 @@ fn default_vad_silence_threshold() -> u32 {
     500
 }
 
+fn default_ui_language() -> String {
+    "en".to_string()
+}
 fn default_industry_pack() -> String {
     "general".to_string()
 }
@@ -140,7 +138,7 @@ fn default_cloud_stt_provider() -> String {
     "groq".to_string()
 }
 fn default_command_hotkey() -> String {
-    "ControlLeft+Alt+Space".to_string()
+    "ControlLeft+AltLeft+Space".to_string()
 }
 fn default_command_provider() -> String {
     "groq".to_string()
@@ -156,12 +154,6 @@ fn default_command_system_prompt() -> String {
      the exact text they want inserted. Do not explain, do not add commentary. \
      Output only the requested text."
         .to_string()
-}
-fn default_vision_provider() -> String {
-    "openai".to_string()
-}
-fn default_vision_scope() -> String {
-    "focused_window".to_string()
 }
 fn default_sounds_enabled() -> bool {
     true
@@ -200,6 +192,9 @@ impl Default for AppConfig {
             stop_sound: default_stop_sound(),
             vad_silence_threshold_ms: default_vad_silence_threshold(),
             text_cleanup_enabled: default_text_cleanup(),
+            numerals_enabled: false,
+            ui_language: default_ui_language(),
+            pill_pinned: false,
             show_dictionary_migration_notice: false,
             transcript_diagnostics_enabled: false,
             command_hotkey: default_command_hotkey(),
@@ -208,11 +203,6 @@ impl Default for AppConfig {
             command_api_key: String::new(),
             command_base_url: default_command_base_url(),
             command_system_prompt: default_command_system_prompt(),
-            cloud_vision_enabled: false,
-            cloud_vision_provider: default_vision_provider(),
-            cloud_vision_model: String::new(),
-            cloud_vision_api_key: String::new(),
-            vision_capture_scope: default_vision_scope(),
         }
     }
 }

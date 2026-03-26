@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { inputStyles, buttonVariants } from "./ui/styles";
 import { testLlmConnection } from "../shared/platform";
 
@@ -19,32 +20,14 @@ interface LLMSettingsProps {
   radioGroupName?: string;
 }
 
-const PROVIDERS = [
-  {
-    id: "groq",
-    name: "Groq",
-    desc: "Ultra-fast inference. GPT-OSS 120B. Requires API key.",
-    needsKey: true,
-  },
-  {
-    id: "ollama",
-    name: "Ollama (Local)",
-    desc: "Free, runs locally. Requires Ollama installed.",
-    needsKey: false,
-  },
-  {
-    id: "openai",
-    name: "OpenAI",
-    desc: "GPT-4o-mini or GPT-4o. Requires API key.",
-    needsKey: true,
-  },
-  {
-    id: "claude",
-    name: "Claude (Anthropic)",
-    desc: "Claude Sonnet or Haiku. Requires API key.",
-    needsKey: true,
-  },
-];
+const PROVIDER_IDS = ["groq", "ollama", "openai", "claude"] as const;
+
+const PROVIDER_KEYS: Record<string, { name: string; desc: string; needsKey: boolean }> = {
+  groq: { name: "llm.provider.groq.name", desc: "llm.provider.groq.desc", needsKey: true },
+  ollama: { name: "llm.provider.ollama.name", desc: "llm.provider.ollama.desc", needsKey: false },
+  openai: { name: "llm.provider.openai.name", desc: "llm.provider.openai.desc", needsKey: true },
+  claude: { name: "llm.provider.claude.name", desc: "llm.provider.claude.desc", needsKey: true },
+};
 
 const DEFAULT_MODELS: Record<string, string> = {
   groq: "openai/gpt-oss-120b",
@@ -62,6 +45,7 @@ export function LLMSettings({
   testFn,
   radioGroupName,
 }: LLMSettingsProps) {
+  const { t } = useTranslation();
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
     ok: boolean;
@@ -91,7 +75,7 @@ export function LLMSettings({
     setTestResult(null);
     try {
       const result = await doTest(provider, model, apiKey, baseUrl);
-      setTestResult({ ok: true, msg: `Response: "${result}"` });
+      setTestResult({ ok: true, msg: t("llm.testResponsePrefix", { result }) });
     } catch (e) {
       setTestResult({ ok: false, msg: String(e) });
     } finally {
@@ -99,50 +83,53 @@ export function LLMSettings({
     }
   };
 
-  const currentProvider = PROVIDERS.find((p) => p.id === provider);
+  const currentProvider = PROVIDER_KEYS[provider];
 
   return (
     <div className="space-y-4">
       {/* Provider selection */}
       <div className="space-y-4">
-        <span className="text-sm text-text-primary">LLM Provider</span>
+        <span className="text-sm text-text-primary">{t("llm.providerLabel")}</span>
         <div className="space-y-2">
-          {PROVIDERS.map((p) => (
-            <label
-              key={p.id}
-              className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
-                provider === p.id
-                  ? "bg-accent-muted border-accent"
-                  : "bg-bg-raised border-border-default hover:border-border-hover"
-              }`}
-            >
-              <input
-                type="radio"
-                name={groupName}
-                value={p.id}
-                checked={provider === p.id}
-                onChange={() => handleProviderChange(p.id)}
-                className="accent-blue-500 mt-0.5"
-              />
-              <div>
-                <span className="text-sm font-medium text-text-primary">
-                  {p.name}
-                </span>
-                <p className="text-xs text-text-muted">{p.desc}</p>
-              </div>
-            </label>
-          ))}
+          {PROVIDER_IDS.map((id) => {
+            const p = PROVIDER_KEYS[id];
+            return (
+              <label
+                key={id}
+                className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                  provider === id
+                    ? "bg-accent-muted border-accent"
+                    : "bg-bg-raised border-border-default hover:border-border-hover"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name={groupName}
+                  value={id}
+                  checked={provider === id}
+                  onChange={() => handleProviderChange(id)}
+                  className="accent-blue-500 mt-0.5"
+                />
+                <div>
+                  <span className="text-sm font-medium text-text-primary">
+                    {t(p.name)}
+                  </span>
+                  <p className="text-xs text-text-muted">{t(p.desc)}</p>
+                </div>
+              </label>
+            );
+          })}
         </div>
       </div>
 
       {/* Model name */}
       <div className="flex items-center gap-3">
-        <span className="text-sm text-text-primary w-20">Model</span>
+        <span className="text-sm text-text-primary w-20">{t("llm.modelLabel")}</span>
         <input
           type="text"
           value={model}
           onChange={(e) => onUpdate({ llm_model: e.target.value })}
-          placeholder={DEFAULT_MODELS[provider] || "model-name"}
+          placeholder={DEFAULT_MODELS[provider] || t("llm.modelPlaceholder")}
           className={`flex-1 ${inputStyles}`}
         />
       </div>
@@ -150,12 +137,12 @@ export function LLMSettings({
       {/* API Key (only for cloud providers) */}
       {currentProvider?.needsKey && (
         <div className="flex items-center gap-3">
-          <span className="text-sm text-text-primary w-20">API Key</span>
+          <span className="text-sm text-text-primary w-20">{t("llm.apiKeyLabel")}</span>
           <input
             type="password"
             value={apiKey}
             onChange={(e) => onUpdate({ llm_api_key: e.target.value })}
-            placeholder="sk-..."
+            placeholder={t("llm.apiKeyPlaceholder")}
             className={`flex-1 ${inputStyles}`}
           />
         </div>
@@ -164,12 +151,12 @@ export function LLMSettings({
       {/* Base URL (for Ollama and OpenAI-compatible) */}
       {(provider === "ollama" || provider === "openai" || provider === "groq") && (
         <div className="flex items-center gap-3">
-          <span className="text-sm text-text-primary w-20">Base URL</span>
+          <span className="text-sm text-text-primary w-20">{t("llm.baseUrlLabel")}</span>
           <input
             type="text"
             value={baseUrl}
             onChange={(e) => onUpdate({ llm_base_url: e.target.value })}
-            placeholder="http://localhost:11434"
+            placeholder={t("llm.baseUrlPlaceholder")}
             className={`flex-1 ${inputStyles}`}
           />
         </div>
@@ -182,13 +169,13 @@ export function LLMSettings({
           disabled={testing}
           className={buttonVariants.secondary}
         >
-          {testing ? "Testing..." : "Test Connection"}
+          {testing ? t("llm.testing") : t("llm.testConnection")}
         </button>
         {testResult && (
           <span
             className={`text-xs ${testResult.ok ? "text-success" : "text-error"}`}
           >
-            {testResult.ok ? "Connected" : testResult.msg}
+            {testResult.ok ? t("llm.testSuccess") : testResult.msg}
           </span>
         )}
       </div>

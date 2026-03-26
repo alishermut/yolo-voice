@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { ModelSelector } from "../ModelSelector";
 import type { AppConfig } from "../../shared/types";
 import {
@@ -6,6 +7,7 @@ import {
 } from "../ui/styles";
 import { Select } from "../ui/Select";
 import { Switch } from "../ui/Switch";
+import { OfflineInfoCard, CloudInfoCard } from "./EngineInfoCard";
 
 interface TranscriptionSectionProps {
   config: AppConfig;
@@ -17,12 +19,14 @@ export function TranscriptionSection({
   config,
   updateConfig,
 }: TranscriptionSectionProps) {
+  const { t } = useTranslation();
+
   return (
     <div className="space-y-8">
       {/* Engine toggle */}
       <div>
-        <h3 className={sectionHeader}>Engine</h3>
-        <div className="flex gap-3 mb-4">
+        <h3 className={sectionHeader}>{t("transcription.engine.heading")}</h3>
+        <div className="flex gap-3 mb-2">
           <label
             className={`flex-1 flex items-center gap-2 p-3 rounded-lg border cursor-pointer transition-colors ${
               config.transcription_mode === "offline"
@@ -38,8 +42,8 @@ export function TranscriptionSection({
               className="accent-accent"
             />
             <div>
-              <span className="text-sm font-medium text-text-primary">Offline</span>
-              <p className="text-xs text-text-muted">Local Parakeet TDT</p>
+              <span className="text-sm font-medium text-text-primary">{t("transcription.engine.offlineLabel")}</span>
+              <p className="text-xs text-text-muted">{t("transcription.engine.offlineDescription")}</p>
             </div>
           </label>
           <label
@@ -57,10 +61,18 @@ export function TranscriptionSection({
               className="accent-accent"
             />
             <div>
-              <span className="text-sm font-medium text-text-primary">Cloud</span>
-              <p className="text-xs text-text-muted">Groq / Deepgram API</p>
+              <span className="text-sm font-medium text-text-primary">{t("transcription.engine.cloudLabel")}</span>
+              <p className="text-xs text-text-muted">{t("transcription.engine.cloudDescription")}</p>
             </div>
           </label>
+        </div>
+
+        {/* Info card for selected engine */}
+        <div className="mb-4">
+          {config.transcription_mode !== "cloud"
+            ? <OfflineInfoCard />
+            : <CloudInfoCard provider={config.cloud_stt_provider ?? "groq"} />
+          }
         </div>
 
         {/* Offline settings */}
@@ -71,11 +83,10 @@ export function TranscriptionSection({
             <div className="flex items-center justify-between">
               <div>
                 <span className="text-sm font-medium text-text-primary">
-                  Text cleanup
+                  {t("transcription.offline.textCleanupLabel")}
                 </span>
                 <p className="text-xs text-text-muted">
-                  Remove hard fillers, fix restart stutters, and shape joined
-                  dictation into cleaner sentences
+                  {t("transcription.offline.textCleanupDescription")}
                 </p>
               </div>
               <Switch
@@ -83,7 +94,25 @@ export function TranscriptionSection({
                 onChange={(checked) =>
                   updateConfig({ text_cleanup_enabled: checked })
                 }
-                label="Text cleanup"
+                label={t("transcription.offline.textCleanupLabel")}
+              />
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-sm font-medium text-text-primary">
+                  {t("transcription.offline.numeralsLabel")}
+                </span>
+                <p className="text-xs text-text-muted">
+                  {t("transcription.offline.numeralsDescription")}
+                </p>
+              </div>
+              <Switch
+                checked={config.numerals_enabled}
+                onChange={(checked) =>
+                  updateConfig({ numerals_enabled: checked })
+                }
+                label={t("transcription.offline.numeralsLabel")}
               />
             </div>
           </div>
@@ -94,21 +123,21 @@ export function TranscriptionSection({
           <div className="space-y-4">
             <div className="flex items-center gap-3">
               <span className="text-sm font-medium text-text-primary w-20">
-                Provider
+                {t("transcription.cloud.providerLabel")}
               </span>
               <Select
                 value={config.cloud_stt_provider ?? "groq"}
                 onChange={(v) => updateConfig({ cloud_stt_provider: v })}
                 options={[
-                  { value: "groq", label: "Groq (Whisper large-v3-turbo)" },
-                  { value: "deepgram", label: "Deepgram (Nova-2)" },
+                  { value: "groq", label: t("transcription.cloud.providerGroq") },
+                  { value: "deepgram", label: t("transcription.cloud.providerDeepgram") },
                 ]}
                 className="flex-1"
               />
             </div>
             <div className="flex items-center gap-3">
               <span className="text-sm font-medium text-text-primary w-20">
-                API Key
+                {t("transcription.cloud.apiKeyLabel")}
               </span>
               <input
                 type="password"
@@ -116,7 +145,7 @@ export function TranscriptionSection({
                 onChange={(e) =>
                   updateConfig({ cloud_stt_api_key: e.target.value })
                 }
-                placeholder="Enter your API key..."
+                placeholder={t("transcription.cloud.apiKeyPlaceholder")}
                 className={`flex-1 ${inputStyles}`}
               />
             </div>

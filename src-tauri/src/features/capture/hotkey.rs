@@ -15,7 +15,8 @@ pub struct HotkeyCache(pub Arc<Mutex<HotkeyCacheInner>>);
 
 pub struct HotkeyCacheInner {
     pub dict_key: Option<Key>,
-    pub cmd_key: Option<Key>,
+    /// Command hotkey as a chord — all keys must be held simultaneously.
+    pub cmd_chord: Vec<Key>,
 }
 
 impl HotkeyCache {
@@ -23,7 +24,7 @@ impl HotkeyCache {
     pub fn new(hotkey: &str, command_hotkey: &str) -> Self {
         Self(Arc::new(Mutex::new(HotkeyCacheInner {
             dict_key: parse_key(hotkey),
-            cmd_key: parse_key(command_hotkey),
+            cmd_chord: parse_chord(command_hotkey),
         })))
     }
 
@@ -31,7 +32,7 @@ impl HotkeyCache {
     pub fn update(&self, hotkey: &str, command_hotkey: &str) {
         if let Ok(mut inner) = self.0.lock() {
             inner.dict_key = parse_key(hotkey);
-            inner.cmd_key = parse_key(command_hotkey);
+            inner.cmd_chord = parse_chord(command_hotkey);
         }
     }
 }
@@ -111,6 +112,47 @@ fn parse_key(name: &str) -> Option<Key> {
         "KpDelete" => Some(Key::KpDelete),
         _ => None,
     }
+}
+
+/// Parse a "+"-delimited chord string like "ControlLeft+ShiftLeft" into a Vec<Key>.
+/// Falls back to single-key parsing when no "+" is present.
+fn parse_chord(name: &str) -> Vec<Key> {
+    if name.is_empty() {
+        return Vec::new();
+    }
+    name.split('+')
+        .filter_map(|part| {
+            let trimmed = part.trim();
+            parse_key(trimmed).or_else(|| {
+                // Try letter keys: "A" → KeyA
+                if trimmed.len() == 1 && trimmed.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false) {
+                    let upper = trimmed.to_uppercase();
+                    parse_key(&format!("Key{}", upper))
+                        .or_else(|| {
+                            // Direct letter matching via Unknown variant
+                            match upper.as_str() {
+                                "A" => Some(Key::KeyA), "B" => Some(Key::KeyB),
+                                "C" => Some(Key::KeyC), "D" => Some(Key::KeyD),
+                                "E" => Some(Key::KeyE), "F" => Some(Key::KeyF),
+                                "G" => Some(Key::KeyG), "H" => Some(Key::KeyH),
+                                "I" => Some(Key::KeyI), "J" => Some(Key::KeyJ),
+                                "K" => Some(Key::KeyK), "L" => Some(Key::KeyL),
+                                "M" => Some(Key::KeyM), "N" => Some(Key::KeyN),
+                                "O" => Some(Key::KeyO), "P" => Some(Key::KeyP),
+                                "Q" => Some(Key::KeyQ), "R" => Some(Key::KeyR),
+                                "S" => Some(Key::KeyS), "T" => Some(Key::KeyT),
+                                "U" => Some(Key::KeyU), "V" => Some(Key::KeyV),
+                                "W" => Some(Key::KeyW), "X" => Some(Key::KeyX),
+                                "Y" => Some(Key::KeyY), "Z" => Some(Key::KeyZ),
+                                _ => None,
+                            }
+                        })
+                } else {
+                    None
+                }
+            })
+        })
+        .collect()
 }
 
 /// Convert an rdev Key back to the config string name.
@@ -260,6 +302,8 @@ pub fn start_hotkey_listener(app_handle: AppHandle, cache: HotkeyCache) {
         // Command state
         let mut cmd_state = CommandState::Idle;
         let mut cmd_press_time: Option<Instant> = None;
+        // Track currently held keys for chord detection
+        let mut held_keys: std::collections::HashSet<Key> = std::collections::HashSet::new();
 
         // Style key tracking (for two-key styled dictation)
         let mut style_key_held: Option<Key> = None;
@@ -270,9 +314,16 @@ pub fn start_hotkey_listener(app_handle: AppHandle, cache: HotkeyCache) {
         let app = app_handle.clone();
         let hotkey_cache = cache.clone();
         let callback = move |event: Event| {
-            // Read cached hotkey keys (cheap: only two Option<Key> behind a Mutex)
-            let (dict_key, cmd_key) = match hotkey_cache.0.lock() {
-                Ok(inner) => (inner.dict_key, inner.cmd_key),
+            // Update held keys set
+            match &event.event_type {
+                EventType::KeyPress(key) => { held_keys.insert(*key); }
+                EventType::KeyRelease(key) => { held_keys.remove(key); }
+                _ => {}
+            }
+
+            // Read cached hotkey keys
+            let (dict_key, cmd_chord) = match hotkey_cache.0.lock() {
+                Ok(inner) => (inner.dict_key, inner.cmd_chord.clone()),
                 Err(_) => return,
             };
 
@@ -386,24 +437,27 @@ pub fn start_hotkey_listener(app_handle: AppHandle, cache: HotkeyCache) {
                 }
             }
 
-            // ── Command hotkey handling ──────────────────────────────────
-            if let Some(target_key) = cmd_key {
+            // ── Command hotkey handling (chord-aware) ─────────────────────
+            if !cmd_chord.is_empty() {
+                let all_chord_held = cmd_chord.iter().all(|k| held_keys.contains(k));
+
                 match event.event_type {
-                    // Command key pressed → start recording immediately
-                    EventType::KeyPress(key) if key == target_key => {
-                        if active == ActiveRecording::Dictation {
-                            // Dictation active — ignore
-                        } else if cmd_state == CommandState::Idle {
+                    EventType::KeyPress(_) => {
+                        if all_chord_held
+                            && cmd_state == CommandState::Idle
+                            && active != ActiveRecording::Dictation
+                        {
                             cmd_state = CommandState::Recording;
                             cmd_press_time = Some(Instant::now());
                             active = ActiveRecording::Command;
                             let _ = app.emit("command-hotkey-action", "start");
                         }
                     }
-
-                    // Command key released → stop recording
-                    EventType::KeyRelease(key) if key == target_key => {
-                        if cmd_state == CommandState::Recording {
+                    EventType::KeyRelease(key) => {
+                        // Any chord key released → stop recording
+                        if cmd_state == CommandState::Recording
+                            && cmd_chord.contains(&key)
+                        {
                             let held_ms = cmd_press_time
                                 .map(|t| t.elapsed().as_millis())
                                 .unwrap_or(0);
@@ -414,12 +468,10 @@ pub fn start_hotkey_listener(app_handle: AppHandle, cache: HotkeyCache) {
                             if held_ms >= COMMAND_MIN_HOLD_MS {
                                 let _ = app.emit("command-hotkey-action", "stop");
                             } else {
-                                // Too short — cancel
                                 let _ = app.emit("command-hotkey-action", "cancel");
                             }
                         }
                     }
-
                     _ => {}
                 }
             }

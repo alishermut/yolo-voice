@@ -1,4 +1,6 @@
 import { useState, useEffect } from "react";
+import { useTranslation } from "react-i18next";
+import i18n, { UI_LANGUAGES } from "../../i18n";
 import { MicSelector } from "../MicSelector";
 import type { AppConfig } from "../../shared/types";
 import {
@@ -23,6 +25,7 @@ export function GeneralSection({
   setConfig,
   setError,
 }: GeneralSectionProps) {
+  const { t } = useTranslation();
   const [availableSounds, setAvailableSounds] = useState<string[]>([]);
 
   useEffect(() => {
@@ -33,9 +36,22 @@ export function GeneralSection({
 
   return (
     <div className="space-y-8">
+      {/* Language */}
+      <div>
+        <h3 className={sectionHeader}>{t("general.language.label")}</h3>
+        <Select
+          value={config.ui_language ?? "en"}
+          onChange={(v) => {
+            updateConfig({ ui_language: v });
+            i18n.changeLanguage(v);
+          }}
+          options={UI_LANGUAGES.map((l) => ({ value: l.code, label: l.name }))}
+        />
+      </div>
+
       {/* Microphone */}
       <div>
-        <h3 className={sectionHeader}>Microphone</h3>
+        <h3 className={sectionHeader}>{t("general.microphone.heading")}</h3>
         <MicSelector
           deviceIndex={config.device_index}
           onDeviceChange={(index) => updateConfig({ device_index: index })}
@@ -44,15 +60,15 @@ export function GeneralSection({
 
       {/* Sounds */}
       <div>
-        <h3 className={sectionHeader}>Sounds</h3>
+        <h3 className={sectionHeader}>{t("general.sounds.heading")}</h3>
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
               <span className="text-sm font-medium text-text-primary">
-                Enable sounds
+                {t("general.sounds.enableLabel")}
               </span>
               <p className="text-xs text-text-muted">
-                Play audio feedback when recording starts and stops
+                {t("general.sounds.enableDescription")}
               </p>
             </div>
             <Switch
@@ -60,14 +76,14 @@ export function GeneralSection({
               onChange={(checked) =>
                 updateConfig({ sounds_enabled: checked })
               }
-              label="Enable sounds"
+              label={t("general.sounds.enableLabel")}
             />
           </div>
           {config.sounds_enabled !== false && (
             <>
               <div className="flex items-center gap-3">
                 <span className="text-sm font-medium text-text-primary w-32">
-                  Start recording
+                  {t("general.sounds.startRecording")}
                 </span>
                 <Select
                   value={config.start_sound ?? "chime"}
@@ -81,14 +97,14 @@ export function GeneralSection({
                 <button
                   onClick={() => previewSound(config.start_sound ?? "chime")}
                   className={buttonVariants.icon}
-                  aria-label="Preview sound"
+                  aria-label={t("general.sounds.previewAriaLabel")}
                 >
                   🔊
                 </button>
               </div>
               <div className="flex items-center gap-3">
                 <span className="text-sm font-medium text-text-primary w-32">
-                  Stop recording
+                  {t("general.sounds.stopRecording")}
                 </span>
                 <Select
                   value={config.stop_sound ?? "ding"}
@@ -102,7 +118,7 @@ export function GeneralSection({
                 <button
                   onClick={() => previewSound(config.stop_sound ?? "ding")}
                   className={buttonVariants.icon}
-                  aria-label="Preview sound"
+                  aria-label={t("general.sounds.previewAriaLabel")}
                 >
                   🔊
                 </button>
@@ -114,15 +130,15 @@ export function GeneralSection({
 
       {/* Startup */}
       <div>
-        <h3 className={sectionHeader}>Startup</h3>
+        <h3 className={sectionHeader}>{t("general.startup.heading")}</h3>
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
               <span className="text-sm font-medium text-text-primary">
-                Launch on Windows startup
+                {t("general.startup.launchLabel")}
               </span>
               <p className="text-xs text-text-muted">
-                Start YOLO Voice automatically when you log in
+                {t("general.startup.launchDescription")}
               </p>
             </div>
             <Switch
@@ -137,17 +153,17 @@ export function GeneralSection({
                   setError(String(err));
                 }
               }}
-              label="Launch on Windows startup"
+              label={t("general.startup.launchLabel")}
             />
           </div>
 
           <div className="flex items-center justify-between">
             <div>
               <span className="text-sm font-medium text-text-primary">
-                Start minimized
+                {t("general.startup.minimizedLabel")}
               </span>
               <p className="text-xs text-text-muted">
-                Hide the main window on launch, only show tray icon
+                {t("general.startup.minimizedDescription")}
               </p>
             </div>
             <Switch
@@ -155,7 +171,25 @@ export function GeneralSection({
               onChange={(checked) =>
                 updateConfig({ start_minimized: checked })
               }
-              label="Start minimized"
+              label={t("general.startup.minimizedLabel")}
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="text-sm font-medium text-text-primary">
+                {t("general.pill.label")}
+              </span>
+              <p className="text-xs text-text-muted">
+                {t("general.pill.description")}
+              </p>
+            </div>
+            <Switch
+              checked={config.pill_pinned ?? false}
+              onChange={(checked) =>
+                updateConfig({ pill_pinned: checked })
+              }
+              label={t("general.pill.label")}
             />
           </div>
         </div>

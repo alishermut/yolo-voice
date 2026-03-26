@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AppConfig } from "../shared/types";
 import { getConfig, saveConfig, quitApp, getAppInfo } from "../shared/platform";
@@ -22,26 +23,27 @@ type SettingsSection =
   | "profiles"
   | "about";
 
-const SECTIONS: { key: SettingsSection; label: string; icon: string }[] = [
-  { key: "general", label: "General", icon: "\u2699" },
-  { key: "hotkeys", label: "Hotkeys", icon: "\u2328" },
-  { key: "transcription", label: "Transcription", icon: "\uD83C\uDFA4" },
-  { key: "command", label: "Command Mode", icon: "\u26A1" },
-  { key: "vocabulary", label: "Vocabulary", icon: "\uD83D\uDCD6" },
-  { key: "profiles", label: "Dictation Styles", icon: "\uD83C\uDFA8" },
+const SECTIONS: { key: SettingsSection; labelKey: string; icon: string }[] = [
+  { key: "general", labelKey: "settings.sidebar.section.general", icon: "\u2699" },
+  { key: "hotkeys", labelKey: "settings.sidebar.section.hotkeys", icon: "\u2328" },
+  { key: "transcription", labelKey: "settings.sidebar.section.transcription", icon: "\uD83C\uDFA4" },
+  { key: "command", labelKey: "settings.sidebar.section.commandMode", icon: "\u26A1" },
+  { key: "vocabulary", labelKey: "settings.sidebar.section.vocabulary", icon: "\uD83D\uDCD6" },
+  { key: "profiles", labelKey: "settings.sidebar.section.dictationStyles", icon: "\uD83C\uDFA8" },
 ];
 
-const SECTION_TITLES: Record<SettingsSection, string> = {
-  general: "General",
-  hotkeys: "Hotkeys",
-  transcription: "Transcription Engine",
-  command: "Command Mode",
-  vocabulary: "Vocabulary",
-  profiles: "Dictation Styles",
-  about: "About",
+const SECTION_TITLE_KEYS: Record<SettingsSection, string> = {
+  general: "settings.sectionTitle.general",
+  hotkeys: "settings.sectionTitle.hotkeys",
+  transcription: "settings.sectionTitle.transcription",
+  command: "settings.sectionTitle.command",
+  vocabulary: "settings.sectionTitle.vocabulary",
+  profiles: "settings.sectionTitle.profiles",
+  about: "settings.sectionTitle.about",
 };
 
 export function Settings() {
+  const { t } = useTranslation();
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeSection, setActiveSection] =
@@ -97,7 +99,7 @@ export function Settings() {
   if (!config) {
     return (
       <div className="h-screen bg-bg-base text-text-primary flex items-center justify-center">
-        <p className="text-text-muted text-sm">Loading settings...</p>
+        <p className="text-text-muted text-sm">{t("settings.loading")}</p>
       </div>
     );
   }
@@ -110,20 +112,20 @@ export function Settings() {
       <nav className="w-52 flex-shrink-0 border-r border-border-default bg-bg-base flex flex-col">
         {/* Header */}
         <div className="px-4 pt-5 pb-4 flex items-center gap-2.5">
-          <img src="/app-icon.svg" alt="YOLO Voice" width="28" height="28" className="shrink-0 rounded-md" />
+          <img src="/app-icon.svg" alt={t("settings.sidebar.appName")} width="28" height="28" className="shrink-0 rounded-md" />
           <div>
             <h1 className="text-sm font-semibold text-text-primary leading-tight">
-              YOLO Voice
+              {t("settings.sidebar.appName")}
             </h1>
             <p className="text-xs text-text-muted">
-              v{appInfo?.version ?? "..."}
+              {t("settings.sidebar.version", { version: appInfo?.version ?? "..." })}
             </p>
           </div>
         </div>
 
         {/* Sections */}
         <div className="flex-1 overflow-y-auto px-2 space-y-0.5">
-          {SECTIONS.map(({ key, label, icon }) => (
+          {SECTIONS.map(({ key, labelKey, icon }) => (
             <button
               key={key}
               onClick={() => setActiveSection(key)}
@@ -134,7 +136,7 @@ export function Settings() {
               }`}
             >
               <span className="text-base w-5 text-center opacity-70">{icon}</span>
-              {label}
+              {t(labelKey)}
             </button>
           ))}
 
@@ -149,7 +151,7 @@ export function Settings() {
             }`}
           >
             <span className="text-base w-5 text-center opacity-70">&#9432;</span>
-            About
+            {t("settings.sidebar.section.about")}
           </button>
         </div>
 
@@ -158,16 +160,16 @@ export function Settings() {
           <button
             onClick={() => getCurrentWindow().hide()}
             className={`flex-1 px-2 py-1.5 rounded-lg text-xs font-medium text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors ${focusRing}`}
-            title="Hide to tray"
+            title={t("settings.sidebar.hideTitle")}
           >
-            Hide
+            {t("settings.sidebar.hide")}
           </button>
           <button
             onClick={() => quitApp()}
             className={`flex-1 px-2 py-1.5 rounded-lg text-xs font-medium text-text-muted hover:text-error hover:bg-error-muted transition-colors ${focusRing}`}
-            title="Quit YOLO Voice"
+            title={t("settings.sidebar.quitTitle")}
           >
-            Quit
+            {t("settings.sidebar.quit")}
           </button>
         </div>
       </nav>
@@ -183,7 +185,7 @@ export function Settings() {
                 onClick={() => setError(null)}
                 className={`text-error hover:text-text-primary ml-3 text-xs ${focusRing}`}
               >
-                Dismiss
+                {t("settings.error.dismiss")}
               </button>
             </div>
           )}
@@ -193,12 +195,9 @@ export function Settings() {
             <div className="mb-6 px-4 py-3 bg-warning-muted border border-warning rounded-lg text-warning text-sm">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className="font-medium">Legacy dictionary reset</p>
+                  <p className="font-medium">{t("settings.migration.title")}</p>
                   <p className="text-xs text-warning mt-1">
-                    An older merged dictionary was backed up and reset so
-                    industry packs are scoped correctly now. Your active pack
-                    setting was kept, but personal terms and rules need to be
-                    re-added if they lived only in the old merged file.
+                    {t("settings.migration.description")}
                   </p>
                 </div>
                 <button
@@ -207,7 +206,7 @@ export function Settings() {
                   }
                   className={`px-2 py-1 rounded bg-warning-muted hover:bg-bg-hover text-xs text-text-primary transition-colors ${focusRing}`}
                 >
-                  Dismiss
+                  {t("settings.migration.dismiss")}
                 </button>
               </div>
             </div>
@@ -215,7 +214,7 @@ export function Settings() {
 
           {/* Section title */}
           <h2 className="text-lg font-semibold text-text-primary mb-6">
-            {SECTION_TITLES[activeSection]}
+            {t(SECTION_TITLE_KEYS[activeSection])}
           </h2>
 
           {/* Active section */}

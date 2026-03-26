@@ -37,6 +37,10 @@ const SOUND_GENTLE: &[u8] = include_bytes!("../../../sounds/gentle.wav");
 const SOUND_BRIGHT: &[u8] = include_bytes!("../../../sounds/bright.wav");
 const SOUND_CLASSIC_START: &[u8] = include_bytes!("../../../sounds/classic_start.wav");
 const SOUND_CLASSIC_DONE: &[u8] = include_bytes!("../../../sounds/classic_done.wav");
+const SOUND_RADIO_START: &[u8] = include_bytes!("../../../sounds/radio_start.wav");
+const SOUND_RADIO_DONE: &[u8] = include_bytes!("../../../sounds/radio_done.wav");
+const SOUND_RETRO_START: &[u8] = include_bytes!("../../../sounds/retro_start.wav");
+const SOUND_RETRO_DONE: &[u8] = include_bytes!("../../../sounds/retro_done.wav");
 
 pub const AVAILABLE_SOUNDS: &[&str] = &[
     "chime",
@@ -51,6 +55,10 @@ pub const AVAILABLE_SOUNDS: &[&str] = &[
     "bright",
     "classic_start",
     "classic_done",
+    "radio_start",
+    "radio_done",
+    "retro_start",
+    "retro_done",
 ];
 
 fn get_sound_bytes(name: &str) -> &'static [u8] {
@@ -67,6 +75,10 @@ fn get_sound_bytes(name: &str) -> &'static [u8] {
         "bright" => SOUND_BRIGHT,
         "classic_start" => SOUND_CLASSIC_START,
         "classic_done" => SOUND_CLASSIC_DONE,
+        "radio_start" => SOUND_RADIO_START,
+        "radio_done" => SOUND_RADIO_DONE,
+        "retro_start" => SOUND_RETRO_START,
+        "retro_done" => SOUND_RETRO_DONE,
         _ => SOUND_CHIME,
     }
 }

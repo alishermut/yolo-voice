@@ -3,7 +3,7 @@ mod features;
 mod infra;
 
 use app::commands::AudioState;
-use features::capture::recorder::RecordingState;
+use features::capture::recorder::{RecordingState, WarmDeviceState};
 use features::capture::{ActiveStyleKey, RuntimeDictionaryCache};
 use features::diagnostics::TranscriptDiagnosticsState;
 use features::output::FocusedWindowState;
@@ -26,6 +26,7 @@ pub fn run() {
         .manage(AudioState(Mutex::new(None)))
         .manage(ConfigState(Mutex::new(features::settings::AppConfig::default())))
         .manage(RecordingState(Mutex::new(None)))
+        .manage(WarmDeviceState(Mutex::new(None)))
         .manage(FocusedWindowState(Mutex::new(0)))
         .manage(InferenceState(Mutex::new(None)))
         .manage(RuntimeDictionaryCache(Mutex::new(None)))
@@ -182,6 +183,12 @@ pub fn run() {
             app.manage(hotkey_cache.clone());
             features::capture::hotkey::start_hotkey_listener(app.handle().clone(), hotkey_cache);
 
+            // Pre-warm the audio device so the first recording starts faster
+            features::capture::recorder::spawn_warm_device(
+                &app.handle(),
+                saved_config.device_index,
+            );
+
             // Clean up old whisper models from previous versions
             let _ = infra::model::cleanup_old_models(&app.handle());
 
@@ -214,7 +221,14 @@ pub fn run() {
                     Ok(session) => {
                         let gpu = session.is_gpu();
                         let state = inference_handle.state::<InferenceState>();
-                        *state.0.lock().unwrap() = Some(session);
+                        match state.0.lock() {
+                            Ok(mut g) => *g = Some(session),
+                            Err(e) => {
+                                eprintln!("[app] InferenceState mutex poisoned: {}", e);
+                                let _ = inference_handle.emit("model-status", "error");
+                                return;
+                            }
+                        }
                         let _ = inference_handle.emit("model-status", "ready");
                         if !gpu {
                             let _ = inference_handle.emit("gpu-fallback", "CPU (GPU not available)");

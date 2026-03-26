@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { KeybindingInput } from "../KeybindingInput";
 import type { AppConfig } from "../../shared/types";
 import { testCommandLlmConnection } from "../../shared/platform";
@@ -9,7 +10,6 @@ import {
   sectionHeader,
   descStyles,
 } from "../ui/styles";
-import { Switch } from "../ui/Switch";
 
 interface CommandSectionProps {
   config: AppConfig;
@@ -17,6 +17,7 @@ interface CommandSectionProps {
 }
 
 export function CommandSection({ config, updateConfig }: CommandSectionProps) {
+  const { t } = useTranslation();
   const [testResult, setTestResult] = useState<{
     ok: boolean;
     msg: string;
@@ -25,27 +26,28 @@ export function CommandSection({ config, updateConfig }: CommandSectionProps) {
   return (
     <div className="space-y-8">
       <p className={descStyles}>
-        Hold the command hotkey, speak your request, release. Powered by Groq.
+        {t("command.description")}
       </p>
 
       {/* Command hotkey */}
       <div>
-        <h3 className={sectionHeader}>Command Hotkey</h3>
+        <h3 className={sectionHeader}>{t("command.hotkey.heading")}</h3>
         <div className="space-y-1">
           <div className="flex items-center gap-3">
             <span className="text-sm font-medium text-text-primary w-36">
-              Command hotkey
+              {t("command.hotkey.label")}
             </span>
             <KeybindingInput
               value={config.command_hotkey ?? ""}
               onChange={(command_hotkey) => updateConfig({ command_hotkey })}
+              chord
             />
           </div>
           {config.hotkey &&
             config.command_hotkey &&
             config.hotkey === config.command_hotkey && (
               <p className="text-xs text-warning ml-40">
-                &#9888; Same as dictation hotkey
+                &#9888; {t("command.hotkey.conflictWarning")}
               </p>
             )}
         </div>
@@ -53,11 +55,11 @@ export function CommandSection({ config, updateConfig }: CommandSectionProps) {
 
       {/* Groq API key */}
       <div>
-        <h3 className={sectionHeader}>API Configuration</h3>
+        <h3 className={sectionHeader}>{t("command.api.heading")}</h3>
         <div className="space-y-4">
           <div className="flex items-center gap-3">
             <span className="text-sm font-medium text-text-primary w-36">
-              Groq API Key
+              {t("command.api.keyLabel")}
             </span>
             <input
               type="password"
@@ -65,18 +67,12 @@ export function CommandSection({ config, updateConfig }: CommandSectionProps) {
               onChange={(e) =>
                 updateConfig({ command_api_key: e.target.value })
               }
-              placeholder="gsk_..."
+              placeholder={t("command.api.keyPlaceholder")}
               className={`flex-1 ${inputStyles}`}
             />
           </div>
           <p className={descStyles}>
-            Commands use{" "}
-            <span className="text-text-secondary">openai/gpt-oss-120b</span> for
-            text. Vision uses{" "}
-            <span className="text-text-secondary">
-              meta-llama/llama-4-scout-17b-16e-instruct
-            </span>
-            .
+            {t("command.api.description")}
           </p>
         </div>
       </div>
@@ -93,14 +89,14 @@ export function CommandSection({ config, updateConfig }: CommandSectionProps) {
                 config.command_api_key ?? "",
                 config.command_base_url ?? "https://api.groq.com/openai",
               );
-              setTestResult({ ok: true, msg: "Connected!" });
+              setTestResult({ ok: true, msg: t("command.testConnection.success") });
             } catch (e) {
               setTestResult({ ok: false, msg: String(e) });
             }
           }}
           className={buttonVariants.secondary}
         >
-          Test Connection
+          {t("command.testConnection")}
         </button>
         {testResult && (
           <p
@@ -111,34 +107,11 @@ export function CommandSection({ config, updateConfig }: CommandSectionProps) {
         )}
       </div>
 
-      {/* Vision toggle */}
-      <div>
-        <h3 className={sectionHeader}>Vision</h3>
-        <div className="flex items-center justify-between">
-          <div>
-            <span className="text-sm font-medium text-text-primary">
-              Enable screenshot context
-            </span>
-            <p className={descStyles}>
-              Commands referencing the screen will capture a screenshot
-              automatically. Never saved to disk.
-            </p>
-          </div>
-          <Switch
-            checked={config.cloud_vision_enabled ?? false}
-            onChange={(checked) =>
-              updateConfig({ cloud_vision_enabled: checked })
-            }
-            label="Enable screenshot context"
-          />
-        </div>
-      </div>
-
       {/* System prompt */}
       <div>
-        <h3 className={sectionHeader}>System Prompt</h3>
+        <h3 className={sectionHeader}>{t("command.systemPrompt.heading")}</h3>
         <p className={`${descStyles} mb-2`}>
-          Instructions that tell the LLM how to handle your voice commands.
+          {t("command.systemPrompt.description")}
         </p>
         <textarea
           value={config.command_system_prompt ?? ""}
@@ -147,7 +120,7 @@ export function CommandSection({ config, updateConfig }: CommandSectionProps) {
           }
           rows={3}
           className={textareaStyles}
-          placeholder="You are a voice command assistant..."
+          placeholder={t("command.systemPrompt.placeholder")}
         />
       </div>
     </div>

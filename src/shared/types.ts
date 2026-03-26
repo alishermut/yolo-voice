@@ -26,6 +26,9 @@ export interface AppConfig {
   stop_sound: string;
   vad_silence_threshold_ms: number;
   text_cleanup_enabled: boolean;
+  numerals_enabled: boolean;
+  ui_language: string;
+  pill_pinned: boolean;
   show_dictionary_migration_notice: boolean;
   transcript_diagnostics_enabled: boolean;
 
@@ -37,12 +40,6 @@ export interface AppConfig {
   command_base_url: string;
   command_system_prompt: string;
 
-  // Vision (command mode only)
-  cloud_vision_enabled: boolean;
-  cloud_vision_provider: string;
-  cloud_vision_model: string;
-  cloud_vision_api_key: string;
-  vision_capture_scope: string;
 }
 
 export interface GpuInfo {
@@ -120,7 +117,7 @@ export interface TranscriptDiagnosticsStatus {
 
 export type PillState = "idle" | "recording" | "transcribing" | "done";
 
-export type ActiveMode = "dictation" | "command" | "command_vision";
+export type ActiveMode = "dictation" | "command";
 
 export interface ModelDownloadProgress {
   status: "downloading" | "complete" | "initializing" | "error";

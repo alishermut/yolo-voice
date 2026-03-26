@@ -4,10 +4,76 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::features::speech::accumulator::{FinalizedSegments, SegmentAccumulator, SegmentSender};
 use crate::features::speech::vad::VadProcessor;
+
+// ── Warm device cache ────────────────────────────────────────────────────────
+
+/// Cached audio device + config to skip re-enumeration on every recording.
+pub struct WarmDevice {
+    pub device: cpal::Device,
+    pub config: cpal::SupportedStreamConfig,
+    pub device_index: usize,
+}
+
+pub struct WarmDeviceState(pub Mutex<Option<WarmDevice>>);
+
+/// Resolve audio device + config, using the warm cache if available.
+fn resolve_device(
+    device_index: usize,
+    warm_state: Option<&WarmDeviceState>,
+) -> Result<(cpal::Device, cpal::SupportedStreamConfig), String> {
+    // Try warm cache first
+    if let Some(state) = warm_state {
+        if let Ok(mut guard) = state.0.lock() {
+            if let Some(ref warm) = *guard {
+                if warm.device_index == device_index {
+                    let device = warm.device.clone();
+                    let config = warm.config.clone();
+                    // Take ownership to prevent stale reuse if stream build fails
+                    let _ = guard.take();
+                    return Ok((device, config));
+                }
+            }
+        }
+    }
+
+    // Cold path: enumerate devices
+    let host = cpal::default_host();
+    let device = host
+        .input_devices()
+        .map_err(|e| e.to_string())?
+        .nth(device_index)
+        .ok_or_else(|| "Device not found".to_string())?;
+    let config = device.default_input_config().map_err(|e| e.to_string())?;
+    Ok((device, config))
+}
+
+/// Pre-warm the device cache in a background thread.
+pub fn spawn_warm_device(app_handle: &tauri::AppHandle, device_index: usize) {
+    let handle = app_handle.clone();
+    std::thread::Builder::new()
+        .name("warm-device".into())
+        .spawn(move || {
+            let host = cpal::default_host();
+            let device = match host.input_devices() {
+                Ok(mut devs) => devs.nth(device_index),
+                Err(_) => None,
+            };
+            if let Some(device) = device {
+                if let Ok(config) = device.default_input_config() {
+                    if let Some(state) = handle.try_state::<WarmDeviceState>() {
+                        if let Ok(mut guard) = state.0.lock() {
+                            *guard = Some(WarmDevice { device, config, device_index });
+                        }
+                    }
+                }
+            }
+        })
+        .ok();
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -51,20 +117,19 @@ pub fn start_recording(
     device_index: usize,
     app_handle: AppHandle,
     vad_config: Option<VadConfig>,
+    warm_state: Option<&WarmDeviceState>,
 ) -> Result<RecordingStream, String> {
-    let host = cpal::default_host();
-    let device = host
-        .input_devices()
-        .map_err(|e| e.to_string())?
-        .nth(device_index)
-        .ok_or_else(|| "Device not found".to_string())?;
+    let (device, supported_config) = resolve_device(device_index, warm_state)
+        .or_else(|first_err| {
+            // If warm device failed, retry cold
+            eprintln!("[recorder] Warm device failed ({first_err}), retrying cold");
+            resolve_device(device_index, None)
+        })?;
 
-    let config = device.default_input_config().map_err(|e| e.to_string())?;
-
-    let sample_format = config.sample_format();
-    let sample_rate = config.sample_rate();
-    let channels = config.channels();
-    let stream_config: cpal::StreamConfig = config.into();
+    let sample_format = supported_config.sample_format();
+    let sample_rate = supported_config.sample_rate();
+    let channels = supported_config.channels();
+    let stream_config: cpal::StreamConfig = supported_config.into();
 
     let samples: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
     let samples_writer = samples.clone();
@@ -113,6 +178,9 @@ pub fn start_recording(
             device.build_input_stream(
                 &stream_config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    if data.is_empty() {
+                        return;
+                    }
                     // Only accumulate raw samples in non-VAD mode (VAD uses the segment accumulator)
                     if vad_tx.is_none() {
                         if let Ok(mut buf) = samples_writer.lock() {
@@ -136,6 +204,9 @@ pub fn start_recording(
             device.build_input_stream(
                 &stream_config,
                 move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                    if data.is_empty() {
+                        return;
+                    }
                     let floats: Vec<f32> =
                         data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
                     // Only accumulate raw samples in non-VAD mode (VAD uses the segment accumulator)
@@ -192,11 +263,9 @@ pub fn start_recording(
 pub fn stop_and_save(recording: RecordingStream) -> Result<PathBuf, String> {
     recording.stop_flag.store(true, Ordering::Relaxed);
 
-    let samples = recording
-        .samples
-        .lock()
-        .map_err(|e| e.to_string())?
-        .clone();
+    let samples = std::mem::take(
+        &mut *recording.samples.lock().map_err(|e| e.to_string())?,
+    );
 
     let path = std::env::temp_dir().join("yolo_voice_recording.wav");
 
@@ -224,11 +293,9 @@ pub fn stop_and_get_raw_samples(
 ) -> Result<(Vec<f32>, u32, u16), String> {
     recording.stop_flag.store(true, Ordering::Relaxed);
 
-    let samples = recording
-        .samples
-        .lock()
-        .map_err(|e| e.to_string())?
-        .clone();
+    let samples = std::mem::take(
+        &mut *recording.samples.lock().map_err(|e| e.to_string())?,
+    );
 
     Ok((samples, recording.sample_rate, recording.channels))
 }

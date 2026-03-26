@@ -1,6 +1,5 @@
 pub mod hotkey;
 pub mod recorder;
-pub mod screenshot;
 
 use std::sync::Mutex;
 
@@ -38,12 +37,13 @@ pub fn setup_hotkey_handler(app: &AppHandle) {
     let app_handle = app.clone();
     app.listen("hotkey-action", move |event| {
         let action = event.payload().trim_matches('"');
-        let config = app_handle
-            .state::<ConfigState>()
-            .0
-            .lock()
-            .unwrap()
-            .clone();
+        let config = match app_handle.state::<ConfigState>().0.lock() {
+            Ok(g) => g.clone(),
+            Err(e) => {
+                eprintln!("[capture] Config mutex poisoned: {}", e);
+                return;
+            }
+        };
 
         match action {
             "start" => handle_start(&app_handle, &config),
@@ -60,10 +60,18 @@ fn handle_start(
 ) {
     // Capture the foreground window before recording
     let hwnd = output::capture_foreground_window();
-    *app.state::<FocusedWindowState>().0.lock().unwrap() = hwnd;
+    if let Ok(mut g) = app.state::<FocusedWindowState>().0.lock() {
+        *g = hwnd;
+    }
 
     let recording_state = app.state::<RecordingState>();
-    let mut guard = recording_state.0.lock().unwrap();
+    let mut guard = match recording_state.0.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("[capture] RecordingState mutex poisoned: {}", e);
+            return;
+        }
+    };
     // Stop any existing recording
     *guard = None;
 
@@ -96,19 +104,33 @@ fn handle_start(
         None
     };
 
-    match recorder::start_recording(config.device_index, app.clone(), vad_config) {
+    // Emit events BEFORE audio init so the pill reacts instantly.
+    emit_all(app, "active-mode", "dictation");
+    emit_all(app, "recording-state", "recording");
+    if config.sounds_enabled {
+        output::play_start_sound(&config.start_sound);
+    }
+
+    let warm_state = app.try_state::<recorder::WarmDeviceState>();
+    match recorder::start_recording(
+        config.device_index,
+        app.clone(),
+        vad_config,
+        warm_state.as_deref(),
+    ) {
         Ok(stream) => {
             *guard = Some(stream);
-            emit_all(app, "active-mode", "dictation");
-            emit_all(app, "recording-state", "recording");
-            if config.sounds_enabled {
-                output::play_start_sound(&config.start_sound);
-            }
         }
         Err(e) => {
+            // Rollback: audio init failed after we already showed "recording"
             eprintln!("Failed to start recording: {}", e);
+            emit_all(app, "recording-state", "idle");
+            emit_all(app, "transcription-error", format!("Recording failed: {e}"));
         }
     }
+
+    // Re-warm device for next recording (non-blocking)
+    recorder::spawn_warm_device(app, config.device_index);
 }
 
 fn handle_stop(
@@ -134,7 +156,14 @@ fn handle_stop(
     });
 
     let recording_state = app.state::<RecordingState>();
-    let mut guard = recording_state.0.lock().unwrap();
+    let mut guard = match recording_state.0.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("[capture] RecordingState mutex poisoned: {}", e);
+            emit_all(app, "recording-state", "idle");
+            return;
+        }
+    };
     if let Some(stream) = guard.take() {
         let use_cloud = config.transcription_mode == "cloud";
         let has_vad = recorder::has_vad(&stream);
@@ -145,7 +174,7 @@ fn handle_stop(
 
             let app = app.clone();
             let config = config.clone();
-            let hwnd = *app.state::<FocusedWindowState>().0.lock().unwrap();
+            let hwnd = app.state::<FocusedWindowState>().0.lock().map(|g| *g).unwrap_or(0);
             let style_id = style_profile_id.clone();
 
             std::thread::spawn(move || {
@@ -190,11 +219,12 @@ fn handle_stop(
                 Ok(audio_data) => {
                     emit_all(app, "recording-state", "transcribing");
 
-                    let hwnd = *app
+                    let hwnd = app
                         .state::<FocusedWindowState>()
                         .0
                         .lock()
-                        .unwrap();
+                        .map(|g| *g)
+                        .unwrap_or(0);
 
                     let app = app.clone();
                     let config = config.clone();
@@ -298,6 +328,13 @@ fn finalize_and_insert(
         speech::cleanup::clean_final_text(&normalized_text)
     } else {
         normalized_text.clone()
+    };
+
+    // Number-word → digit conversion (e.g. "twenty three" → "23").
+    let cleaned_text = if config.numerals_enabled {
+        speech::cleanup::convert_number_words(&cleaned_text)
+    } else {
+        cleaned_text
     };
 
     // Only run LLM post-processing if a style was active during recording
@@ -612,12 +649,13 @@ pub fn setup_command_hotkey_handler(app: &AppHandle) {
     let app_handle = app.clone();
     app.listen("command-hotkey-action", move |event| {
         let action = event.payload().trim_matches('"');
-        let config = app_handle
-            .state::<ConfigState>()
-            .0
-            .lock()
-            .unwrap()
-            .clone();
+        let config = match app_handle.state::<ConfigState>().0.lock() {
+            Ok(g) => g.clone(),
+            Err(e) => {
+                eprintln!("[capture] Config mutex poisoned: {}", e);
+                return;
+            }
+        };
 
         match action {
             "start" => handle_command_start(&app_handle, &config),
@@ -631,9 +669,10 @@ pub fn setup_command_hotkey_handler(app: &AppHandle) {
 fn handle_dictation_cancel(app: &AppHandle) {
     // Silently discard any in-progress dictation recording (e.g., style switch)
     let recording_state = app.state::<RecordingState>();
-    let mut guard = recording_state.0.lock().unwrap();
-    if guard.take().is_some() {
-        eprintln!("[capture] Dictation recording cancelled (style switch)");
+    if let Ok(mut guard) = recording_state.0.lock() {
+        if guard.take().is_some() {
+            eprintln!("[capture] Dictation recording cancelled (style switch)");
+        }
     }
     emit_all(app, "recording-state", "idle");
 }
@@ -641,9 +680,10 @@ fn handle_dictation_cancel(app: &AppHandle) {
 fn handle_command_cancel(app: &AppHandle) {
     // Silently discard any in-progress command recording
     let recording_state = app.state::<RecordingState>();
-    let mut guard = recording_state.0.lock().unwrap();
-    if guard.take().is_some() {
-        eprintln!("[capture] Command recording cancelled (style switch or short press)");
+    if let Ok(mut guard) = recording_state.0.lock() {
+        if guard.take().is_some() {
+            eprintln!("[capture] Command recording cancelled (style switch or short press)");
+        }
     }
     emit_all(app, "recording-state", "idle");
 }
@@ -654,30 +694,45 @@ fn handle_command_start(
 ) {
     // Capture the foreground window before recording
     let hwnd = output::capture_foreground_window();
-    *app.state::<FocusedWindowState>().0.lock().unwrap() = hwnd;
+    if let Ok(mut g) = app.state::<FocusedWindowState>().0.lock() {
+        *g = hwnd;
+    }
 
     let recording_state = app.state::<RecordingState>();
-    let mut guard = recording_state.0.lock().unwrap();
+    let mut guard = match recording_state.0.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("[capture] RecordingState mutex poisoned: {}", e);
+            return;
+        }
+    };
 
     // If already recording (dictation in progress), ignore
     if guard.is_some() {
         return;
     }
 
+    // Emit events BEFORE audio init so the pill reacts instantly.
+    emit_all(app, "active-mode", "command");
+    emit_all(app, "recording-state", "recording");
+    if config.sounds_enabled {
+        output::play_start_sound(&config.start_sound);
+    }
+
     // Command mode: always record without VAD (commands are short utterances)
-    match recorder::start_recording(config.device_index, app.clone(), None) {
+    let warm_state = app.try_state::<recorder::WarmDeviceState>();
+    match recorder::start_recording(config.device_index, app.clone(), None, warm_state.as_deref()) {
         Ok(stream) => {
             *guard = Some(stream);
-            emit_all(app, "active-mode", "command");
-            emit_all(app, "recording-state", "recording");
-            if config.sounds_enabled {
-                output::play_start_sound(&config.start_sound);
-            }
         }
         Err(e) => {
             eprintln!("[capture] Failed to start command recording: {}", e);
+            emit_all(app, "recording-state", "idle");
+            emit_all(app, "transcription-error", format!("Recording failed: {e}"));
         }
     }
+
+    recorder::spawn_warm_device(app, config.device_index);
 }
 
 fn handle_command_stop(
@@ -685,7 +740,14 @@ fn handle_command_stop(
     config: &crate::features::settings::AppConfig,
 ) {
     let recording_state = app.state::<RecordingState>();
-    let mut guard = recording_state.0.lock().unwrap();
+    let mut guard = match recording_state.0.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("[capture] RecordingState mutex poisoned: {}", e);
+            emit_all(app, "recording-state", "idle");
+            return;
+        }
+    };
 
     if let Some(stream) = guard.take() {
         emit_all(app, "recording-state", "transcribing");
@@ -722,7 +784,7 @@ fn handle_command_stop(
 
             match transcribe_result {
                 Ok(transcript) => {
-                    let hwnd = *app.state::<FocusedWindowState>().0.lock().unwrap();
+                    let hwnd = app.state::<FocusedWindowState>().0.lock().map(|g| *g).unwrap_or(0);
                     command_finalize(&app, &config, hwnd, transcript);
                 }
                 Err(e) => {
@@ -788,68 +850,7 @@ fn command_finalize(
         config.command_system_prompt.trim()
     };
 
-    let result = if config.cloud_vision_enabled {
-        // Step 1: Cheap intent classification — does this command need screen context?
-        let needs_vision = speech::classify_needs_vision(
-            transcript,
-            &config.command_provider,
-            &config.command_model,
-            &config.command_api_key,
-            &config.command_base_url,
-        );
-
-        if needs_vision {
-            eprintln!("[capture] Intent: needs screen context, capturing screenshot");
-            emit_all(app, "active-mode", "command_vision");
-
-            // Step 2: Capture screenshot
-            let screenshot_result = match config.vision_capture_scope.as_str() {
-                "full_screen" => screenshot::capture_full_screen(),
-                _ => screenshot::capture_focused_window(hwnd),
-            };
-
-            match screenshot_result {
-                Ok(img_bytes) => {
-                    // Step 3: Vision API call using configured provider
-                    let vision_provider = if config.cloud_vision_provider.is_empty() {
-                        &config.command_provider
-                    } else {
-                        &config.cloud_vision_provider
-                    };
-                    let vision_model = if config.cloud_vision_model.is_empty() {
-                        ""
-                    } else {
-                        &config.cloud_vision_model
-                    };
-                    let vision_api_key = if config.cloud_vision_api_key.is_empty() {
-                        &config.command_api_key
-                    } else {
-                        &config.cloud_vision_api_key
-                    };
-                    speech::vision_command(
-                        transcript,
-                        &img_bytes,
-                        system_prompt,
-                        vision_provider,
-                        vision_model,
-                        vision_api_key,
-                    )
-                }
-                Err(e) => {
-                    eprintln!(
-                        "[capture] Screenshot failed, falling back to text-only: {}",
-                        e
-                    );
-                    text_only_command(transcript, system_prompt, config)
-                }
-            }
-        } else {
-            eprintln!("[capture] Intent: text-only command");
-            text_only_command(transcript, system_prompt, config)
-        }
-    } else {
-        text_only_command(transcript, system_prompt, config)
-    };
+    let result = text_only_command(transcript, system_prompt, config);
 
     match result {
         Ok(text) => {

@@ -1,8 +1,11 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useTranslation } from "react-i18next";
 
 interface KeybindingInputProps {
   value: string;
   onChange: (key: string) => void;
+  /** When true, accumulates multiple keys into a chord (e.g. "ControlLeft+ShiftLeft"). */
+  chord?: boolean;
 }
 
 // Map browser e.code values to rdev-compatible key names
@@ -109,42 +112,98 @@ const DISPLAY_NAMES: Record<string, string> = {
   Digit9: "9",
 };
 
-export function KeybindingInput({ value, onChange }: KeybindingInputProps) {
+/** Convert a browser e.code to an rdev key name. */
+function codeToRdev(code: string): string | null {
+  if (CODE_TO_RDEV[code]) return CODE_TO_RDEV[code];
+  if (code.startsWith("Key")) return code.replace("Key", "");
+  if (code.startsWith("Digit")) return code;
+  return null;
+}
+
+/** Display-friendly name for an rdev key string. */
+function displayName(rdevKey: string): string {
+  return DISPLAY_NAMES[rdevKey] || rdevKey;
+}
+
+/** Format a "+"-separated chord value for display. */
+function formatChordDisplay(value: string): string {
+  if (!value) return "";
+  return value.split("+").map(displayName).join(" + ");
+}
+
+export function KeybindingInput({ value, onChange, chord }: KeybindingInputProps) {
+  const { t } = useTranslation();
   const [listening, setListening] = useState(false);
 
-  const handleKeyDown = useCallback(
+  // --- Chord mode: accumulate held keys, register on full release ---
+  const heldKeys = useRef<Set<string>>(new Set());
+  const peakKeys = useRef<Set<string>>(new Set());
+  const [chordPreview, setChordPreview] = useState("");
+
+  const handleChordKeyDown = useCallback((e: KeyboardEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rdev = codeToRdev(e.code);
+    if (!rdev) return;
+    heldKeys.current.add(rdev);
+    peakKeys.current.add(rdev);
+    setChordPreview(Array.from(peakKeys.current).map(displayName).join(" + "));
+  }, []);
+
+  const handleChordKeyUp = useCallback((e: KeyboardEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rdev = codeToRdev(e.code);
+    if (rdev) heldKeys.current.delete(rdev);
+
+    // All keys released → register the chord
+    if (heldKeys.current.size === 0 && peakKeys.current.size > 0) {
+      const chord = Array.from(peakKeys.current).join("+");
+      onChange(chord);
+      peakKeys.current.clear();
+      setChordPreview("");
+      setListening(false);
+    }
+  }, [onChange]);
+
+  // --- Single-key mode (original behavior) ---
+  const handleSingleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
-
-      // Use e.code for precise key identification (left/right aware)
-      const rdevKey = CODE_TO_RDEV[e.code];
-
+      const rdevKey = codeToRdev(e.code);
       if (rdevKey) {
         onChange(rdevKey);
-        setListening(false);
-      } else if (e.code.startsWith("Key")) {
-        // Letter keys: KeyA → A
-        const letter = e.code.replace("Key", "");
-        onChange(letter);
-        setListening(false);
-      } else if (e.code.startsWith("Digit")) {
-        // Number keys
-        onChange(e.code);
         setListening(false);
       }
     },
     [onChange],
   );
 
+  // Attach/detach listeners
   useEffect(() => {
-    if (listening) {
-      window.addEventListener("keydown", handleKeyDown);
-      return () => window.removeEventListener("keydown", handleKeyDown);
-    }
-  }, [listening, handleKeyDown]);
+    if (!listening) return;
 
-  const displayValue = DISPLAY_NAMES[value] || value || "Click to set";
+    if (chord) {
+      // Reset accumulation state
+      heldKeys.current.clear();
+      peakKeys.current.clear();
+      setChordPreview("");
+      window.addEventListener("keydown", handleChordKeyDown);
+      window.addEventListener("keyup", handleChordKeyUp);
+      return () => {
+        window.removeEventListener("keydown", handleChordKeyDown);
+        window.removeEventListener("keyup", handleChordKeyUp);
+      };
+    } else {
+      window.addEventListener("keydown", handleSingleKeyDown);
+      return () => window.removeEventListener("keydown", handleSingleKeyDown);
+    }
+  }, [listening, chord, handleChordKeyDown, handleChordKeyUp, handleSingleKeyDown]);
+
+  const displayValue = chord
+    ? formatChordDisplay(value) || t("keybinding.placeholder")
+    : displayName(value) || t("keybinding.placeholder");
 
   return (
     <button
@@ -156,7 +215,7 @@ export function KeybindingInput({ value, onChange }: KeybindingInputProps) {
       }`}
     >
       {listening ? (
-        "Press any key..."
+        chordPreview || t("keybinding.listening")
       ) : (
         <span className="text-text-secondary">{displayValue}</span>
       )}

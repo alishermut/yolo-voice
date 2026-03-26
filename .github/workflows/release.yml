@@ -65,6 +65,7 @@ jobs:
           $tag = "v$version"
           $repo = "${{ github.repository }}"
           $releaseNotesPath = "docs/releases/v$version.md"
+          $releaseTitle = "YOLO Voice v$version"
 
           Write-Host "Bundle directory: $bundleDir"
           Write-Host "Bundle directory contents:"
@@ -97,9 +98,16 @@ jobs:
           $url = "https://github.com/$repo/releases/download/$tag/$updaterName"
           $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
+          if (Test-Path $releaseNotesPath) {
+            $heading = Get-Content $releaseNotesPath | Where-Object { $_ -match '^#\s+' } | Select-Object -First 1
+            if ($heading) {
+              $releaseTitle = $heading -replace '^#\s+', ''
+            }
+          }
+
           $json = @{
             version = $version
-            notes = "YOLO Voice v$version"
+            notes = $releaseTitle
             pub_date = $pubDate
             platforms = @{
               "windows-x86_64" = @{
@@ -112,6 +120,7 @@ jobs:
           $json | Out-File -FilePath "latest.json" -Encoding utf8
           Write-Host "Generated latest.json:"
           Write-Host $json
+          Write-Host "Release title: $releaseTitle"
 
           if (!(Test-Path $releaseNotesPath)) {
             Set-Content -Path "release-notes.md" -Value "YOLO Voice v$version"
@@ -123,7 +132,7 @@ jobs:
           if ($nsisZip) { $assets += $nsisZip.FullName }
           if ($nsisSig) { $assets += $nsisSig.FullName }
 
-          gh release create $tag @assets --title "YOLO Voice v$version" --notes-file "$releaseNotesPath"
+          gh release create $tag @assets --title "$releaseTitle" --notes-file "$releaseNotesPath"
 
           Write-Host "Published release $tag with artifacts: $($assets -join ', ')"
 
@@ -244,9 +253,16 @@ jobs:
           else
             # Create the release if Windows hasn't yet
             NOTES_FILE="docs/releases/v${VERSION}.md"
+            TITLE="YOLO Voice v${VERSION}"
+            if [ -f "$NOTES_FILE" ]; then
+              HEADING=$(grep -m1 '^# ' "$NOTES_FILE" | sed 's/^# //')
+              if [ -n "$HEADING" ]; then
+                TITLE="$HEADING"
+              fi
+            fi
             if [ ! -f "$NOTES_FILE" ]; then
               echo "YOLO Voice v${VERSION}" > release-notes.md
               NOTES_FILE="release-notes.md"
             fi
-            gh release create "$TAG" "$DMG" --title "YOLO Voice v${VERSION}" --notes-file "$NOTES_FILE"
+            gh release create "$TAG" "$DMG" --title "$TITLE" --notes-file "$NOTES_FILE"
           fi

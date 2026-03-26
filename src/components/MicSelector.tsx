@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { WaveformDisplay } from "./WaveformDisplay";
 import { Select } from "./ui/Select";
 import type { DeviceInfo } from "../shared/types";
@@ -10,6 +11,7 @@ interface MicSelectorProps {
 }
 
 export function MicSelector({ deviceIndex, onDeviceChange }: MicSelectorProps) {
+  const { t } = useTranslation();
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [selected, setSelected] = useState<number>(deviceIndex ?? 0);
   const [testing, setTesting] = useState(false);
@@ -59,7 +61,7 @@ export function MicSelector({ deviceIndex, onDeviceChange }: MicSelectorProps) {
 
   if (devices.length === 0 && !error) {
     return (
-      <p className="text-text-muted text-sm">No microphones found</p>
+      <p className="text-text-muted text-sm">{t("mic.noDevices")}</p>
     );
   }
 
@@ -76,7 +78,7 @@ export function MicSelector({ deviceIndex, onDeviceChange }: MicSelectorProps) {
       {savedDevice && (
         <div className="mb-2 flex items-center gap-2 text-xs text-text-secondary">
           <span className="inline-block w-2 h-2 rounded-full bg-success" />
-          Active: <span className="text-text-primary font-medium">{savedDevice.name}</span>
+          {t("mic.active")} <span className="text-text-primary font-medium">{savedDevice.name}</span>
         </div>
       )}
 
@@ -86,7 +88,7 @@ export function MicSelector({ deviceIndex, onDeviceChange }: MicSelectorProps) {
           onChange={(v) => handleDeviceChange(Number(v))}
           options={devices.map((d) => ({
             value: String(d.index),
-            label: `${d.name}${d.index === deviceIndex ? " (active)" : ""}`,
+            label: `${d.name}${d.index === deviceIndex ? ` ${t("mic.activeSuffix")}` : ""}`,
           }))}
           className="flex-1"
         />
@@ -99,7 +101,7 @@ export function MicSelector({ deviceIndex, onDeviceChange }: MicSelectorProps) {
               : "bg-accent hover:bg-accent-hover text-white"
           }`}
         >
-          {testing ? "Stop" : "Test"}
+          {testing ? t("mic.stopButton") : t("mic.testButton")}
         </button>
       </div>
 

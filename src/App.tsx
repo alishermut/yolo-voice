@@ -4,13 +4,19 @@ import { Settings } from "./pages/Settings";
 import { Onboarding } from "./pages/Onboarding";
 import { UpdaterProvider } from "./contexts/UpdaterContext";
 import { getConfig } from "./shared/platform";
+import i18n from "./i18n";
 
 function AppContent() {
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
 
   useEffect(() => {
     getConfig()
-      .then((config) => setOnboarded(config.onboarding_completed))
+      .then((config) => {
+        setOnboarded(config.onboarding_completed);
+        if (config.ui_language && config.ui_language !== i18n.language) {
+          i18n.changeLanguage(config.ui_language);
+        }
+      })
       .catch(() => setOnboarded(true));
   }, []);
 

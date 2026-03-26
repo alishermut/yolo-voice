@@ -5,7 +5,6 @@ pub mod inference;
 pub mod llm;
 pub mod profiles;
 pub mod vad;
-pub mod vision;
 pub mod vocabulary;
 
 use serde::{Deserialize, Serialize};
@@ -16,7 +15,7 @@ use self::inference::InferenceState;
 // ---- Shared HTTP client ----
 
 /// Single shared blocking HTTP client for all speech modules.
-/// Uses the longest timeout needed (60s) to cover cloud transcription and vision calls.
+/// Uses the longest timeout needed (60s) to cover cloud transcription calls.
 static HTTP_CLIENT: LazyLock<reqwest::blocking::Client> = LazyLock::new(|| {
     reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
@@ -120,29 +119,6 @@ pub fn command_llm_call(
     base_url: &str,
 ) -> Result<String, String> {
     llm::command_llm_call(transcript, system_prompt, provider, model, api_key, base_url)
-}
-
-/// Classify whether a voice command needs screen context.
-pub fn classify_needs_vision(
-    transcript: &str,
-    provider: &str,
-    model: &str,
-    api_key: &str,
-    base_url: &str,
-) -> bool {
-    llm::classify_needs_vision(transcript, provider, model, api_key, base_url)
-}
-
-/// Send a voice command + screenshot to a vision-capable LLM.
-pub fn vision_command(
-    transcript: &str,
-    screenshot_bytes: &[u8],
-    system_prompt: &str,
-    provider: &str,
-    model: &str,
-    api_key: &str,
-) -> Result<String, String> {
-    vision::vision_command(transcript, screenshot_bytes, system_prompt, provider, model, api_key)
 }
 
 /// Get the profiles directory path.

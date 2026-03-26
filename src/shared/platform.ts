@@ -3,7 +3,6 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type {
   ActiveMode,
   AppConfig,
@@ -209,7 +208,7 @@ export function clearTranscriptDiagnostics(): Promise<TranscriptDiagnosticsStatu
 export function onRecordingState(
   handler: (state: PillState) => void,
 ): Promise<UnlistenFn> {
-  return getCurrentWebviewWindow().listen<string>("recording-state", (event) => {
+  return listen<string>("recording-state", (event) => {
     handler(event.payload as PillState);
   });
 }
@@ -217,7 +216,7 @@ export function onRecordingState(
 export function onRecordingLevel(
   handler: (level: number) => void,
 ): Promise<UnlistenFn> {
-  return getCurrentWebviewWindow().listen<number>("recording-level", (event) => {
+  return listen<number>("recording-level", (event) => {
     handler(event.payload);
   });
 }
@@ -249,7 +248,7 @@ export function onGpuFallback(
 export function onSegmentTranscribed(
   handler: (data: SegmentTranscribed) => void,
 ): Promise<UnlistenFn> {
-  return getCurrentWebviewWindow().listen<SegmentTranscribed>("segment-transcribed", (event) => {
+  return listen<SegmentTranscribed>("segment-transcribed", (event) => {
     handler(event.payload);
   });
 }
@@ -265,7 +264,7 @@ export function onModelDownloadProgress(
 export function onStyleSwitched(
   handler: (profileName: string) => void,
 ): Promise<UnlistenFn> {
-  return getCurrentWebviewWindow().listen<string>("style-switched", (event) => {
+  return listen<string>("style-switched", (event) => {
     handler(event.payload);
   });
 }
@@ -273,7 +272,7 @@ export function onStyleSwitched(
 export function onActiveMode(
   handler: (mode: ActiveMode) => void,
 ): Promise<UnlistenFn> {
-  return getCurrentWebviewWindow().listen<string>("active-mode", (event) => {
+  return listen<string>("active-mode", (event) => {
     handler(event.payload as ActiveMode);
   });
 }

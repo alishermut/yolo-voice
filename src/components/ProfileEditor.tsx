@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { inputStyles, textareaStyles, buttonVariants, focusRing } from "./ui/styles";
 import { Select } from "./ui/Select";
 import type { Profile } from "../shared/types";
@@ -8,17 +9,6 @@ import {
   deleteProfile,
   resetProfileToDefault,
 } from "../shared/platform";
-
-const TONE_OPTIONS = [
-  { value: "neutral", label: "Neutral" },
-  { value: "professional", label: "Professional" },
-  { value: "friendly", label: "Friendly" },
-  { value: "excited", label: "Excited" },
-  { value: "casual", label: "Casual" },
-  { value: "formal", label: "Formal" },
-  { value: "concise", label: "Concise" },
-  { value: "empathetic", label: "Empathetic" },
-];
 
 // Display-friendly key names
 const KEY_DISPLAY: Record<string, string> = {
@@ -96,6 +86,7 @@ export function ProfileEditor({
   dictationHotkey,
   commandHotkey,
 }: ProfileEditorProps) {
+  const { t } = useTranslation();
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [editingProfile, setEditingProfile] = useState<Profile | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -103,6 +94,17 @@ export function ProfileEditor({
   const [listeningId, setListeningId] = useState<string | null>(null);
   // Conflict warning per profile
   const [conflicts, setConflicts] = useState<Record<string, string>>({});
+
+  const TONE_OPTIONS = [
+    { value: "neutral", label: t("profiles.editor.toneNeutral") },
+    { value: "professional", label: t("profiles.editor.toneProfessional") },
+    { value: "friendly", label: t("profiles.editor.toneFriendly") },
+    { value: "excited", label: t("profiles.editor.toneExcited") },
+    { value: "casual", label: t("profiles.editor.toneCasual") },
+    { value: "formal", label: t("profiles.editor.toneFormal") },
+    { value: "concise", label: t("profiles.editor.toneConcise") },
+    { value: "empathetic", label: t("profiles.editor.toneEmpathetic") },
+  ];
 
   useEffect(() => {
     loadProfiles();
@@ -211,7 +213,7 @@ export function ProfileEditor({
       if (conflict) {
         setConflicts((prev) => ({
           ...prev,
-          [listeningId]: `\u26A0 Key already used by ${conflict}`,
+          [listeningId]: t("profiles.list.conflictWarning", { conflict }),
         }));
       } else {
         setConflicts((prev) => {
@@ -239,12 +241,12 @@ export function ProfileEditor({
     return (
       <div className="space-y-4">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-text-primary">Edit Style</h3>
+          <h3 className="text-sm font-semibold text-text-primary">{t("profiles.editor.editTitle")}</h3>
           <button
             onClick={() => setEditingProfile(null)}
             className={`text-text-secondary hover:text-text-primary text-sm rounded ${focusRing}`}
           >
-            &larr; Back to list
+            &larr; {t("profiles.editor.backToList")}
           </button>
         </div>
 
@@ -256,7 +258,7 @@ export function ProfileEditor({
 
         <div className="space-y-3">
           <div>
-            <label className="text-xs text-text-secondary block mb-1">Name</label>
+            <label className="text-xs text-text-secondary block mb-1">{t("profiles.editor.nameLabel")}</label>
             <input
               type="text"
               value={editingProfile.name}
@@ -269,7 +271,7 @@ export function ProfileEditor({
 
           <div>
             <label className="text-xs text-text-secondary block mb-1">
-              System Prompt
+              {t("profiles.editor.systemPromptLabel")}
             </label>
             <textarea
               value={editingProfile.system_prompt}
@@ -285,15 +287,15 @@ export function ProfileEditor({
           </div>
 
           <div>
-            <label className="text-xs text-text-secondary block mb-1">Tone</label>
+            <label className="text-xs text-text-secondary block mb-1">{t("profiles.editor.toneLabel")}</label>
             <Select
               value={editingProfile.tone}
               onChange={(v) =>
                 setEditingProfile({ ...editingProfile, tone: v })
               }
-              options={TONE_OPTIONS.map((t) => ({
-                value: t.value,
-                label: t.label,
+              options={TONE_OPTIONS.map((opt) => ({
+                value: opt.value,
+                label: opt.label,
               }))}
             />
           </div>
@@ -303,7 +305,7 @@ export function ProfileEditor({
           onClick={handleSave}
           className={buttonVariants.primary}
         >
-          Save
+          {t("profiles.editor.save")}
         </button>
       </div>
     );
@@ -329,7 +331,7 @@ export function ProfileEditor({
                 </span>
                 {profile.builtin && (
                   <span className="text-xs text-text-muted shrink-0">
-                    Built-in
+                    {t("profiles.list.builtIn")}
                   </span>
                 )}
               </div>
@@ -349,13 +351,13 @@ export function ProfileEditor({
                     ? "bg-purple-muted border-purple text-purple"
                     : "bg-bg-hover border-border-default text-text-secondary"
               }`}
-              title="Click to set shortcut key"
+              title={t("profiles.list.setShortcutTitle")}
             >
               {listeningId === profile.id
-                ? "Press key..."
+                ? t("profiles.list.pressKey")
                 : profile.shortcut_key
                   ? displayKey(profile.shortcut_key)
-                  : "Key"}
+                  : t("profiles.list.key")}
             </button>
 
             {/* Clear shortcut */}
@@ -372,7 +374,7 @@ export function ProfileEditor({
                   });
                 }}
                 className={`text-text-muted hover:text-text-primary text-xs shrink-0 rounded ${focusRing}`}
-                title="Clear shortcut"
+                title={t("profiles.list.clearShortcutTitle")}
               >
                 &#x2715;
               </button>
@@ -383,7 +385,7 @@ export function ProfileEditor({
               onClick={() => handleEdit(profile)}
               className={`px-2 py-1 text-xs text-text-secondary hover:text-text-primary transition-colors shrink-0 rounded ${focusRing}`}
             >
-              Edit
+              {t("profiles.list.edit")}
             </button>
 
             {/* Reset (built-in) or Delete (custom) */}
@@ -391,16 +393,16 @@ export function ProfileEditor({
               <button
                 onClick={() => handleReset(profile.id)}
                 className={`px-2 py-1 text-xs text-text-secondary hover:text-accent transition-colors shrink-0 rounded ${focusRing}`}
-                title="Reset to default"
+                title={t("profiles.list.resetTitle")}
               >
-                Reset
+                {t("profiles.list.reset")}
               </button>
             ) : (
               <button
                 onClick={() => handleDelete(profile.id)}
                 className={`px-2 py-1 text-xs text-text-muted hover:text-error transition-colors shrink-0 rounded ${focusRing}`}
               >
-                Delete
+                {t("profiles.list.delete")}
               </button>
             )}
           </div>
@@ -418,7 +420,7 @@ export function ProfileEditor({
         onClick={handleCreate}
         className={buttonVariants.secondary}
       >
-        + New Style
+        {t("profiles.list.newStyle")}
       </button>
     </div>
   );

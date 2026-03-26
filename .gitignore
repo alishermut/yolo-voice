@@ -37,3 +37,7 @@ sidecar/models/
 
 # Claude
 .claude
+
+# Python cache
+__pycache__/
+*.pyc

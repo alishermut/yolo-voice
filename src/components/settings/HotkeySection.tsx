@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { KeybindingInput } from "../KeybindingInput";
 import type { AppConfig } from "../../shared/types";
 import { sectionHeader } from "../ui/styles";
@@ -8,16 +9,18 @@ interface HotkeySectionProps {
 }
 
 export function HotkeySection({ config, updateConfig }: HotkeySectionProps) {
+  const { t } = useTranslation();
+
   return (
     <div className="space-y-8">
       {/* Hotkey binding */}
       <div>
-        <h3 className={sectionHeader}>Dictation Hotkey</h3>
+        <h3 className={sectionHeader}>{t("hotkeys.dictationHotkey.heading")}</h3>
         <div className="space-y-3">
           <div className="space-y-1">
             <div className="flex items-center gap-3">
               <span className="text-sm font-medium text-text-primary w-24">
-                Key binding
+                {t("hotkeys.dictationHotkey.label")}
               </span>
               <KeybindingInput
                 value={config.hotkey ?? ""}
@@ -26,7 +29,7 @@ export function HotkeySection({ config, updateConfig }: HotkeySectionProps) {
             </div>
             {config.hotkey && config.command_hotkey && config.hotkey === config.command_hotkey && (
               <p className="text-xs text-warning ml-28">
-                &#9888; Same as command hotkey
+                &#9888; {t("hotkeys.dictationHotkey.conflictWarning")}
               </p>
             )}
           </div>
@@ -35,28 +38,28 @@ export function HotkeySection({ config, updateConfig }: HotkeySectionProps) {
 
       {/* Recording mode info */}
       <div>
-        <h3 className={sectionHeader}>Recording Modes</h3>
+        <h3 className={sectionHeader}>{t("hotkeys.recordingModes.heading")}</h3>
         <div className="space-y-2 text-sm">
           <div className="flex items-start gap-3 p-3 bg-bg-raised border border-border-default rounded-lg">
             <span className="text-green-400 font-bold mt-0.5">1</span>
             <div>
-              <span className="text-text-primary font-medium">Hold to record</span>
+              <span className="text-text-primary font-medium">{t("hotkeys.recordingModes.holdTitle")}</span>
               <p className="text-xs text-text-muted">
-                Press and hold the hotkey &rarr; speak &rarr; release to stop and transcribe
+                {t("hotkeys.recordingModes.holdDescription")}
               </p>
             </div>
           </div>
           <div className="flex items-start gap-3 p-3 bg-bg-raised border border-border-default rounded-lg">
             <span className="text-blue-400 font-bold mt-0.5">2</span>
             <div>
-              <span className="text-text-primary font-medium">Double-tap to toggle</span>
+              <span className="text-text-primary font-medium">{t("hotkeys.recordingModes.toggleTitle")}</span>
               <p className="text-xs text-text-muted">
-                Quick double-press &rarr; recording persists &rarr; press again to stop
+                {t("hotkeys.recordingModes.toggleDescription")}
               </p>
             </div>
           </div>
           <p className="text-xs text-text-muted italic">
-            Both modes work automatically with the same hotkey — no need to choose.
+            {t("hotkeys.recordingModes.note")}
           </p>
         </div>
       </div>

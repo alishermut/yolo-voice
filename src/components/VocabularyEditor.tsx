@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import type { IndustryPack, ReplacementRule } from "../shared/types";
 import { generateVocabVariants } from "../shared/platform";
 import { inputStyles, buttonVariants, focusRing } from "./ui/styles";
@@ -27,6 +28,7 @@ export function VocabularyEditor({
   onReset,
   allRules = [],
 }: VocabularyEditorProps) {
+  const { t } = useTranslation();
   const [pack, setPack] = useState<IndustryPack>(vocab);
   const [termInput, setTermInput] = useState("");
   const [variants, setVariants] = useState<VariantEntry[]>([]);
@@ -269,7 +271,7 @@ export function VocabularyEditor({
 
   const handleReset = async () => {
     if (!onReset) return;
-    if (!window.confirm(`Reset "${pack.name}" to its default contents?`)) return;
+    if (!window.confirm(t("vocabulary.editor.resetConfirm", { name: pack.name }))) return;
     setError(null);
     try {
       await onReset();
@@ -290,11 +292,11 @@ export function VocabularyEditor({
           onClick={onBack}
           className={`px-2 py-1 bg-bg-hover hover:bg-bg-active text-text-secondary rounded-lg text-sm transition-colors ${focusRing}`}
         >
-          &larr; Back
+          &larr; {t("vocabulary.editor.back")}
         </button>
         <h3 className="text-base font-semibold text-text-primary">{pack.name}</h3>
         <span className="text-xs text-text-muted">
-          {pack.vocabulary.length} terms, {pack.replacements.length} rules
+          {t("vocabulary.card.termsCount", { count: pack.vocabulary.length })}, {t("vocabulary.card.rulesCount", { count: pack.replacements.length })}
         </span>
       </div>
 
@@ -306,14 +308,14 @@ export function VocabularyEditor({
 
       {/* Add Term */}
       <div className="space-y-2">
-        <label className="text-sm font-medium text-text-secondary">Add Term</label>
+        <label className="text-sm font-medium text-text-secondary">{t("vocabulary.editor.addTermLabel")}</label>
         <div className="flex gap-2">
           <input
             type="text"
             value={termInput}
             onChange={(e) => setTermInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleGenerateVariants()}
-            placeholder="e.g. TypeScript, Kubernetes..."
+            placeholder={t("vocabulary.editor.addTermPlaceholder")}
             className={`flex-1 ${inputStyles}`}
           />
           <button
@@ -321,11 +323,11 @@ export function VocabularyEditor({
             disabled={!termInput.trim() || generating}
             className={`${buttonVariants.primary} disabled:opacity-50 disabled:cursor-not-allowed`}
           >
-            {generating ? "Generating..." : "Add"}
+            {generating ? t("vocabulary.editor.generating") : t("vocabulary.editor.addButton")}
           </button>
         </div>
         <p className="text-xs text-text-muted">
-          AI generates common misspelling variants as substitution rules.
+          {t("vocabulary.editor.addTermHint")}
         </p>
       </div>
 
@@ -333,7 +335,7 @@ export function VocabularyEditor({
       {showVariants && variants.length > 0 && (
         <div className="p-3 bg-bg-raised border border-border-hover rounded-lg space-y-3">
           <p className="text-sm font-medium text-text-primary">
-            {addMoreTerm ? "Additional" : "Generated"} variants for &ldquo;{termInput.trim()}&rdquo;
+            {t("vocabulary.editor.variantsGenerated", { term: termInput.trim() })}
           </p>
           <div className="space-y-1 max-h-48 overflow-y-auto">
             {variants.map((v, i) => (
@@ -356,7 +358,7 @@ export function VocabularyEditor({
                 <span className="text-text-primary">{v.replace}</span>
                 {v.conflict && (
                   <span className="text-warning text-xs ml-1" title="This rule already exists">
-                    &#9888; conflict
+                    &#9888; {t("vocabulary.editor.variantConflict")}
                   </span>
                 )}
               </label>
@@ -368,7 +370,7 @@ export function VocabularyEditor({
               disabled={saving || variants.every((v) => !v.checked)}
               className={`${buttonVariants.primary} px-3 py-1.5 disabled:opacity-50 disabled:cursor-not-allowed`}
             >
-              {saving ? "Saving..." : "Add Selected"}
+              {saving ? t("vocabulary.editor.saving") : t("vocabulary.editor.addSelected")}
             </button>
             <button
               onClick={() => {
@@ -377,7 +379,7 @@ export function VocabularyEditor({
               }}
               className={`${buttonVariants.secondary} px-3 py-1.5`}
             >
-              Cancel
+              {t("vocabulary.editor.cancel")}
             </button>
           </div>
         </div>
@@ -386,13 +388,13 @@ export function VocabularyEditor({
       {showVariants && variants.length === 0 && !generating && (
         <div className="p-3 bg-bg-raised border border-border-hover rounded-lg">
           <p className="text-sm text-text-secondary">
-            {addMoreTerm ? "No new variants found \u2014 all generated variants already exist." : "No variants generated for this term."}
+            {addMoreTerm ? t("vocabulary.editor.noNewVariants") : t("vocabulary.editor.noVariants")}
           </p>
           <button
             onClick={() => setShowVariants(false)}
             className={`mt-2 ${buttonVariants.secondary} px-3 py-1.5`}
           >
-            Dismiss
+            {t("vocabulary.editor.dismiss")}
           </button>
         </div>
       )}
@@ -400,11 +402,11 @@ export function VocabularyEditor({
       {/* Terms with grouped rules */}
       <div className="space-y-1">
         <label className="text-sm font-medium text-text-secondary">
-          Terms &amp; Rules
+          {t("vocabulary.editor.termsAndRulesLabel")}
         </label>
 
         {pack.vocabulary.length === 0 && orphans.length === 0 && (
-          <p className="text-xs text-text-muted">No terms yet. Add one above.</p>
+          <p className="text-xs text-text-muted">{t("vocabulary.editor.noTerms")}</p>
         )}
 
         {pack.vocabulary.length > 0 && (
@@ -430,14 +432,14 @@ export function VocabularyEditor({
                         {term}
                       </span>
                       <span className="text-xs text-text-muted shrink-0">
-                        {rules.length} {rules.length === 1 ? "rule" : "rules"}
+                        {t("vocabulary.editor.ruleCount", { count: rules.length })}
                       </span>
                     </button>
                     <button
                       onClick={() => handleRemoveTerm(term)}
                       disabled={saving}
                       className={`text-text-muted hover:text-error text-xs px-1.5 py-0.5 shrink-0 disabled:opacity-50 transition-colors rounded ${focusRing}`}
-                      title="Remove term and all its rules"
+                      title={t("vocabulary.editor.removeTermTitle")}
                     >
                       &#10005;
                     </button>
@@ -460,7 +462,7 @@ export function VocabularyEditor({
                             onClick={() => handleDeleteRule(rule)}
                             disabled={saving}
                             className={`text-text-disabled hover:text-error px-1 shrink-0 disabled:opacity-50 transition-colors rounded ${focusRing}`}
-                            title="Remove rule"
+                            title={t("vocabulary.editor.removeRuleTitle")}
                           >
                             &#10005;
                           </button>
@@ -471,7 +473,7 @@ export function VocabularyEditor({
 
                   {isExpanded && rules.length === 0 && (
                     <div className="bg-bg-base/30 border-t border-border-default/30 px-3 py-1.5 pl-8">
-                      <span className="text-xs text-text-disabled italic">No substitution rules for this term</span>
+                      <span className="text-xs text-text-disabled italic">{t("vocabulary.editor.noSubstitutionRules")}</span>
                     </div>
                   )}
 
@@ -483,7 +485,7 @@ export function VocabularyEditor({
                         disabled={generating && addMoreTerm === term}
                         className={`text-xs text-accent hover:text-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors rounded ${focusRing}`}
                       >
-                        {generating && addMoreTerm === term ? "Generating..." : "+ Add more rules"}
+                        {generating && addMoreTerm === term ? t("vocabulary.editor.generating") : t("vocabulary.editor.addMoreRules")}
                       </button>
                     </div>
                   )}
@@ -497,7 +499,7 @@ export function VocabularyEditor({
         {orphans.length > 0 && (
           <div className="mt-3 space-y-1">
             <label className="text-xs font-medium text-text-muted">
-              Other Rules ({orphans.length})
+              {t("vocabulary.editor.orphanedRulesLabel", { count: orphans.length })}
             </label>
             <div className="border border-border-default rounded-lg overflow-hidden">
               <div className="max-h-40 overflow-y-auto">
@@ -515,7 +517,7 @@ export function VocabularyEditor({
                       onClick={() => handleDeleteRule(rule)}
                       disabled={saving}
                       className={`text-text-disabled hover:text-error px-1 shrink-0 disabled:opacity-50 transition-colors rounded ${focusRing}`}
-                      title="Remove rule"
+                      title={t("vocabulary.editor.removeRuleTitle")}
                     >
                       &#10005;
                     </button>
@@ -533,14 +535,14 @@ export function VocabularyEditor({
           onClick={handleCsvImport}
           className={`${buttonVariants.secondary} px-3 py-1.5`}
         >
-          Import CSV
+          {t("vocabulary.editor.importCsv")}
         </button>
         {!isGeneral && onReset && (
           <button
             onClick={handleReset}
             className={buttonVariants.danger}
           >
-            Reset to Default
+            {t("vocabulary.editor.resetToDefault")}
           </button>
         )}
       </div>

@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { ProfileEditor } from "../ProfileEditor";
 import type { AppConfig } from "../../shared/types";
 import { descStyles } from "../ui/styles";
@@ -11,11 +12,12 @@ export function ProfilesSection({
   config,
   updateConfig,
 }: ProfilesSectionProps) {
+  const { t } = useTranslation();
+
   return (
     <div>
       <p className={`${descStyles} mb-4`}>
-        Hold dictation key + style's shortcut key to apply a style during recording.
-        Uses <span className="text-text-secondary">openai/gpt-oss-120b</span> via Groq.
+        {t("profiles.description")}
       </p>
       <ProfileEditor
         activeProfileId={config.active_profile_id ?? ""}

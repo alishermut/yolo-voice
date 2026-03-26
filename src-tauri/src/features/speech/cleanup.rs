@@ -334,6 +334,242 @@ fn lowercase_first_word_force(text: &str) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Number-word → digit conversion
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy)]
+enum NumberKind {
+    Unit,    // 0–9
+    Teen,    // 10–19
+    Tens,    // 20, 30, …, 90
+    Hundred, // 100
+    Scale,   // 1 000+
+}
+
+fn number_word_info(word: &str) -> Option<(u64, NumberKind)> {
+    Some(match word.to_ascii_lowercase().as_str() {
+        "zero" => (0, NumberKind::Unit),
+        "one" => (1, NumberKind::Unit),
+        "two" => (2, NumberKind::Unit),
+        "three" => (3, NumberKind::Unit),
+        "four" => (4, NumberKind::Unit),
+        "five" => (5, NumberKind::Unit),
+        "six" => (6, NumberKind::Unit),
+        "seven" => (7, NumberKind::Unit),
+        "eight" => (8, NumberKind::Unit),
+        "nine" => (9, NumberKind::Unit),
+        "ten" => (10, NumberKind::Teen),
+        "eleven" => (11, NumberKind::Teen),
+        "twelve" => (12, NumberKind::Teen),
+        "thirteen" => (13, NumberKind::Teen),
+        "fourteen" => (14, NumberKind::Teen),
+        "fifteen" => (15, NumberKind::Teen),
+        "sixteen" => (16, NumberKind::Teen),
+        "seventeen" => (17, NumberKind::Teen),
+        "eighteen" => (18, NumberKind::Teen),
+        "nineteen" => (19, NumberKind::Teen),
+        "twenty" => (20, NumberKind::Tens),
+        "thirty" => (30, NumberKind::Tens),
+        "forty" => (40, NumberKind::Tens),
+        "fifty" => (50, NumberKind::Tens),
+        "sixty" => (60, NumberKind::Tens),
+        "seventy" => (70, NumberKind::Tens),
+        "eighty" => (80, NumberKind::Tens),
+        "ninety" => (90, NumberKind::Tens),
+        "hundred" => (100, NumberKind::Hundred),
+        "thousand" => (1_000, NumberKind::Scale),
+        "million" => (1_000_000, NumberKind::Scale),
+        "billion" => (1_000_000_000, NumberKind::Scale),
+        "trillion" => (1_000_000_000_000, NumberKind::Scale),
+        _ => return None,
+    })
+}
+
+/// Split a bare word on `-` if both halves are number words (e.g. "twenty-one").
+fn expand_number_token(bare: &str) -> Vec<String> {
+    if number_word_info(bare).is_some() {
+        return vec![bare.to_string()];
+    }
+    if let Some((left, right)) = bare.split_once('-') {
+        if number_word_info(left).is_some() && number_word_info(right).is_some() {
+            return vec![left.to_string(), right.to_string()];
+        }
+    }
+    vec![]
+}
+
+/// Split trailing ASCII punctuation from a token: `"five,"` → `("five", ",")`.
+fn split_trailing_punct(token: &str) -> (&str, &str) {
+    let bare = token.trim_end_matches(|c: char| c.is_ascii_punctuation());
+    (&token[..bare.len()], &token[bare.len()..])
+}
+
+#[derive(Clone)]
+struct NumberAcc {
+    result: u64,
+    group: u64,
+    group_has_content: bool,
+}
+
+impl NumberAcc {
+    fn new() -> Self {
+        Self { result: 0, group: 0, group_has_content: false }
+    }
+
+    /// Try to incorporate `value` of `kind`. Returns false if it would start a
+    /// new number rather than extending the current one.
+    fn try_feed(&mut self, value: u64, kind: NumberKind) -> bool {
+        match kind {
+            NumberKind::Scale => {
+                if self.group == 0 && !self.group_has_content {
+                    self.group = 1;
+                }
+                self.result += self.group * value;
+                self.group = 0;
+                self.group_has_content = false;
+                true
+            }
+            NumberKind::Hundred => {
+                if self.group == 0 && !self.group_has_content {
+                    self.group = 1;
+                }
+                if self.group < 100 {
+                    self.group *= 100;
+                    true
+                } else {
+                    false
+                }
+            }
+            NumberKind::Tens | NumberKind::Teen => {
+                if self.group % 100 == 0 {
+                    self.group += value;
+                    self.group_has_content = true;
+                    true
+                } else {
+                    false
+                }
+            }
+            NumberKind::Unit => {
+                if value == 0 {
+                    // "zero" only valid as a fresh start
+                    if !self.group_has_content && self.result == 0 {
+                        self.group_has_content = true;
+                        true
+                    } else {
+                        false
+                    }
+                } else if !self.group_has_content {
+                    self.group += value;
+                    self.group_has_content = true;
+                    true
+                } else if self.group % 10 == 0 && self.group >= 20 {
+                    // After tens: "twenty" + "five"
+                    self.group += value;
+                    true
+                } else if self.group % 100 == 0 && self.group >= 100 {
+                    // After hundreds: "three hundred" + "five"
+                    self.group += value;
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    fn finalize(&self) -> u64 {
+        self.result + self.group
+    }
+}
+
+/// Replace English number words with their digit equivalents.
+///
+/// ```text
+/// "twenty three"                     → "23"
+/// "one hundred and fifty"            → "150"
+/// "I have five apples and ten pears" → "I have 5 apples and 10 pears"
+/// ```
+pub fn convert_number_words(input: &str) -> String {
+    let tokens: Vec<&str> = input.split_whitespace().collect();
+    if tokens.is_empty() {
+        return String::new();
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = 0;
+
+    while i < tokens.len() {
+        let (bare, suffix) = split_trailing_punct(tokens[i]);
+        let expanded = expand_number_token(bare);
+
+        if expanded.is_empty() {
+            parts.push(tokens[i].to_string());
+            i += 1;
+            continue;
+        }
+
+        // Start a number sequence
+        let mut acc = NumberAcc::new();
+        let mut last_suffix = suffix;
+
+        for word in &expanded {
+            if let Some((val, kind)) = number_word_info(word) {
+                acc.try_feed(val, kind);
+            }
+        }
+        i += 1;
+
+        // Greedily consume more number words
+        while i < tokens.len() {
+            let (next_bare, next_suffix) = split_trailing_punct(tokens[i]);
+
+            // Handle "and" between number parts
+            if next_bare.eq_ignore_ascii_case("and") {
+                if next_suffix.is_empty() {
+                    if i + 1 < tokens.len() {
+                        let (after, _) = split_trailing_punct(tokens[i + 1]);
+                        if !expand_number_token(after).is_empty() {
+                            i += 1; // skip "and"
+                            continue;
+                        }
+                    }
+                }
+                break;
+            }
+
+            let next_expanded = expand_number_token(next_bare);
+            if next_expanded.is_empty() {
+                break;
+            }
+
+            // Speculatively extend
+            let mut temp = acc.clone();
+            let mut ok = true;
+            for word in &next_expanded {
+                if let Some((val, kind)) = number_word_info(word) {
+                    if !temp.try_feed(val, kind) {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+
+            if ok {
+                acc = temp;
+                last_suffix = next_suffix;
+                i += 1;
+            } else {
+                break;
+            }
+        }
+
+        parts.push(format!("{}{}", acc.finalize(), last_suffix));
+    }
+
+    parts.join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,5 +703,87 @@ mod tests {
         assert_eq!(clean_segment_text(""), "");
         assert_eq!(clean_final_text("   "), "");
         assert_eq!(join_segments_heuristic(&[]), "");
+    }
+
+    // --- Number word conversion tests ---
+
+    #[test]
+    fn converts_single_digits() {
+        assert_eq!(convert_number_words("five"), "5");
+        assert_eq!(convert_number_words("zero"), "0");
+        assert_eq!(convert_number_words("nine"), "9");
+    }
+
+    #[test]
+    fn converts_teens_and_tens() {
+        assert_eq!(convert_number_words("thirteen"), "13");
+        assert_eq!(convert_number_words("twenty"), "20");
+        assert_eq!(convert_number_words("ninety"), "90");
+    }
+
+    #[test]
+    fn converts_compound_tens() {
+        assert_eq!(convert_number_words("twenty three"), "23");
+        assert_eq!(convert_number_words("forty five"), "45");
+        assert_eq!(convert_number_words("ninety nine"), "99");
+    }
+
+    #[test]
+    fn converts_hyphenated_compounds() {
+        assert_eq!(convert_number_words("twenty-three"), "23");
+        assert_eq!(convert_number_words("sixty-one"), "61");
+    }
+
+    #[test]
+    fn converts_hundreds() {
+        assert_eq!(convert_number_words("three hundred"), "300");
+        assert_eq!(convert_number_words("three hundred twenty three"), "323");
+        assert_eq!(convert_number_words("one hundred and fifty"), "150");
+    }
+
+    #[test]
+    fn converts_thousands() {
+        assert_eq!(convert_number_words("five thousand"), "5000");
+        assert_eq!(
+            convert_number_words("two thousand five hundred and thirty four"),
+            "2534"
+        );
+    }
+
+    #[test]
+    fn converts_numbers_in_sentence() {
+        assert_eq!(
+            convert_number_words("I have twenty three apples"),
+            "I have 23 apples"
+        );
+        assert_eq!(
+            convert_number_words("chapter five section twelve"),
+            "chapter 5 section 12"
+        );
+    }
+
+    #[test]
+    fn preserves_trailing_punctuation() {
+        assert_eq!(convert_number_words("five."), "5.");
+        assert_eq!(convert_number_words("twenty three,"), "23,");
+        assert_eq!(convert_number_words("I need five."), "I need 5.");
+    }
+
+    #[test]
+    fn keeps_separate_numbers_separate() {
+        assert_eq!(convert_number_words("five five"), "5 5");
+        assert_eq!(convert_number_words("thirteen five"), "13 5");
+    }
+
+    #[test]
+    fn standalone_hundred_thousand() {
+        assert_eq!(convert_number_words("hundred"), "100");
+        assert_eq!(convert_number_words("thousand"), "1000");
+    }
+
+    #[test]
+    fn no_numbers_passthrough() {
+        assert_eq!(convert_number_words("hello world"), "hello world");
+        assert_eq!(convert_number_words(""), "");
     }
 }

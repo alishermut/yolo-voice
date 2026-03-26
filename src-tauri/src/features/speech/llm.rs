@@ -147,44 +147,6 @@ pub fn command_llm_call(
     Ok(result)
 }
 
-/// Classify whether a voice command needs screen context.
-/// Returns true if the command references something visible on screen.
-/// On error, defaults to false (text-only fallback).
-pub fn classify_needs_vision(
-    transcript: &str,
-    provider: &str,
-    model: &str,
-    api_key: &str,
-    base_url: &str,
-) -> bool {
-    const CLASSIFIER_PROMPT: &str = "\
-You are a classifier. Given a voice command, respond with ONLY \"yes\" or \"no\".\n\
-Respond \"yes\" if the command references something visible on screen, such as:\n\
-- \"answer this message\", \"reply to this email\", \"summarize what's on screen\"\n\
-- \"what does this say\", \"fix this error\", \"what app is open\"\n\
-- \"read this\", \"describe what you see\", \"draft a response to this\"\n\
-Respond \"no\" if the command is self-contained, such as:\n\
-- \"write hello world in python\", \"draft an email to Bob\"\n\
-- \"translate good morning to French\", \"write a haiku about clouds\"";
-
-    let result = command_llm_call(
-        transcript,
-        CLASSIFIER_PROMPT,
-        provider,
-        model,
-        api_key,
-        base_url,
-    );
-
-    match result {
-        Ok(response) => response.trim().to_lowercase().starts_with("yes"),
-        Err(e) => {
-            eprintln!("[vision] Intent classification failed, defaulting to text-only: {}", e);
-            false
-        }
-    }
-}
-
 /// Result of detecting a vocabulary addition command from voice input.
 #[derive(Debug, Clone)]
 pub struct VocabCommand {

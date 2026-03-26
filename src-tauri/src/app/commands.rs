@@ -67,9 +67,34 @@ pub fn save_config_cmd(
     state: State<'_, ConfigState>,
     hotkey_cache: State<'_, HotkeyCache>,
 ) -> Result<(), String> {
+    let (old_lang, old_pill_pinned, old_device_index) = {
+        let guard = state.0.lock().map_err(|e| e.to_string())?;
+        (guard.ui_language.clone(), guard.pill_pinned, guard.device_index)
+    };
+
     settings::save_config(&app_handle, &new_config)?;
     // Update cached hotkey keys so the rdev listener picks up changes immediately
     hotkey_cache.update(&new_config.hotkey, &new_config.command_hotkey);
+
+    // Notify all windows when UI language changes
+    if new_config.ui_language != old_lang {
+        let _ = app_handle.emit("ui-language-changed", &new_config.ui_language);
+    }
+    // Notify all windows when pill pinned state changes
+    if new_config.pill_pinned != old_pill_pinned {
+        let _ = app_handle.emit("pill-pinned-changed", new_config.pill_pinned);
+    }
+    // Re-warm audio device if microphone changed
+    if new_config.device_index != old_device_index {
+        use crate::features::capture::recorder::{WarmDeviceState, spawn_warm_device};
+        if let Some(warm) = app_handle.try_state::<WarmDeviceState>() {
+            if let Ok(mut g) = warm.0.lock() {
+                *g = None;
+            }
+        }
+        spawn_warm_device(&app_handle, new_config.device_index);
+    }
+
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     *guard = new_config;
     Ok(())
@@ -85,7 +110,7 @@ pub fn start_recording(
 ) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     *guard = None;
-    let stream = recorder::start_recording(device_index, app_handle, None)?;
+    let stream = recorder::start_recording(device_index, app_handle, None, None)?;
     *guard = Some(stream);
     Ok(())
 }

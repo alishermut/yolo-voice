@@ -123,8 +123,22 @@ pub fn list_profiles(profiles_dir: &Path) -> Result<Vec<Profile>, String> {
     Ok(profiles)
 }
 
+/// Sanitize an ID for use in file paths — reject path traversal attempts.
+fn sanitize_id(id: &str) -> Result<&str, String> {
+    if id.is_empty()
+        || id.contains('/')
+        || id.contains('\\')
+        || id.contains("..")
+        || id.starts_with('.')
+    {
+        return Err(format!("Invalid ID: {}", id));
+    }
+    Ok(id)
+}
+
 /// Save a profile to disk.
 pub fn save_profile(profiles_dir: &Path, profile: &Profile) -> Result<(), String> {
+    sanitize_id(&profile.id)?;
     std::fs::create_dir_all(profiles_dir).map_err(|e| e.to_string())?;
 
     let path = profiles_dir.join(format!("{}.json", profile.id));
@@ -163,6 +177,7 @@ pub fn reset_profile_to_default(
 
 /// Delete a profile from disk.
 pub fn delete_profile(profiles_dir: &Path, id: &str) -> Result<(), String> {
+    sanitize_id(id)?;
     let path = profiles_dir.join(format!("{}.json", id));
     if path.is_file() {
         std::fs::remove_file(&path).map_err(|e| format!("Failed to delete profile: {}", e))?;
