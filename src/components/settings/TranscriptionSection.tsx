@@ -115,6 +115,42 @@ export function TranscriptionSection({
                 label={t("transcription.offline.numeralsLabel")}
               />
             </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-sm font-medium text-text-primary">
+                  {t("transcription.offline.hallucinationFilterLabel")}
+                </span>
+                <p className="text-xs text-text-muted">
+                  {t("transcription.offline.hallucinationFilterDescription")}
+                </p>
+              </div>
+              <Switch
+                checked={config.hallucination_filter_enabled}
+                onChange={(checked) =>
+                  updateConfig({ hallucination_filter_enabled: checked })
+                }
+                label={t("transcription.offline.hallucinationFilterLabel")}
+              />
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-sm font-medium text-text-primary">
+                  {t("transcription.offline.spokenPunctuationLabel")}
+                </span>
+                <p className="text-xs text-text-muted">
+                  {t("transcription.offline.spokenPunctuationDescription")}
+                </p>
+              </div>
+              <Switch
+                checked={config.spoken_punctuation_enabled}
+                onChange={(checked) =>
+                  updateConfig({ spoken_punctuation_enabled: checked })
+                }
+                label={t("transcription.offline.spokenPunctuationLabel")}
+              />
+            </div>
           </div>
         )}
 

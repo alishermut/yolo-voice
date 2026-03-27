@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { KeybindingInput } from "../KeybindingInput";
 import type { AppConfig } from "../../shared/types";
 import { sectionHeader } from "../ui/styles";
+import { Switch } from "../ui/Switch";
 
 interface HotkeySectionProps {
   config: AppConfig;
@@ -61,6 +62,28 @@ export function HotkeySection({ config, updateConfig }: HotkeySectionProps) {
           <p className="text-xs text-text-muted italic">
             {t("hotkeys.recordingModes.note")}
           </p>
+        </div>
+      </div>
+
+      {/* Continuous recording */}
+      <div>
+        <h3 className={sectionHeader}>{t("hotkeys.continuous.heading")}</h3>
+        <div className="flex items-center justify-between">
+          <div>
+            <span className="text-sm font-medium text-text-primary">
+              {t("hotkeys.continuous.label")}
+            </span>
+            <p className="text-xs text-text-muted">
+              {t("hotkeys.continuous.description")}
+            </p>
+          </div>
+          <Switch
+            checked={config.continuous_recording_enabled}
+            onChange={(checked) =>
+              updateConfig({ continuous_recording_enabled: checked })
+            }
+            label={t("hotkeys.continuous.label")}
+          />
         </div>
       </div>
     </div>

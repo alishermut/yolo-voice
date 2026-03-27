@@ -554,3 +554,59 @@ pub fn clear_transcript_diagnostics(
 
     diagnostics_state.0.clear(enabled)
 }
+
+// ---- Transcript History ----
+
+#[tauri::command]
+pub fn get_transcript_history(
+    limit: u32,
+    offset: u32,
+    search: Option<String>,
+    diagnostics_state: State<'_, TranscriptDiagnosticsState>,
+) -> Result<Vec<crate::features::diagnostics::TranscriptHistoryEntry>, String> {
+    diagnostics_state
+        .0
+        .list_history(limit, offset, search.as_deref())
+}
+
+#[tauri::command]
+pub fn delete_transcript_entry(
+    id: i64,
+    diagnostics_state: State<'_, TranscriptDiagnosticsState>,
+) -> Result<(), String> {
+    diagnostics_state.0.delete_entry(id)
+}
+
+#[tauri::command]
+pub fn get_transcript_entry_words(
+    id: i64,
+    diagnostics_state: State<'_, TranscriptDiagnosticsState>,
+) -> Result<Vec<String>, String> {
+    diagnostics_state.0.get_entry_words(id)
+}
+
+// ---- Auto-Learn Dictionary ----
+
+#[tauri::command]
+pub fn add_words_to_dictionary(
+    words: Vec<String>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let mut general = speech::vocabulary::load_general_vocabulary(&app_handle)?;
+
+    for word in &words {
+        let trimmed = word.trim().to_string();
+        if !trimmed.is_empty()
+            && !general
+                .vocabulary
+                .iter()
+                .any(|v| v.eq_ignore_ascii_case(&trimmed))
+        {
+            general.vocabulary.push(trimmed);
+        }
+    }
+
+    speech::vocabulary::save_general_vocabulary(&app_handle, &general)?;
+    invalidate_vocabulary_caches(&app_handle);
+    Ok(())
+}

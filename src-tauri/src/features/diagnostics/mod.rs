@@ -298,6 +298,110 @@ fn clear_samples(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// A lightweight transcript history entry for the user-facing history UI.
+#[derive(Debug, Clone, Serialize)]
+pub struct TranscriptHistoryEntry {
+    pub id: i64,
+    pub created_at: i64,
+    pub final_text: Option<String>,
+    pub inserted_text: Option<String>,
+    pub transcription_mode: String,
+    pub stt_provider: String,
+    pub pipeline_mode: String,
+    pub insert_success: bool,
+}
+
+impl TranscriptDiagnosticsStore {
+    /// Query paginated transcript history, newest first.
+    pub fn list_history(
+        &self,
+        limit: u32,
+        offset: u32,
+        search: Option<&str>,
+    ) -> Result<Vec<TranscriptHistoryEntry>, String> {
+        self.flush_writer();
+        let conn = open_connection(&self.db_path)?;
+
+        let (query, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(term) = search {
+            if term.trim().is_empty() {
+                (
+                    "SELECT id, created_at, final_text, inserted_text, transcription_mode, stt_provider, pipeline_mode, insert_success \
+                     FROM transcript_samples ORDER BY created_at DESC, id DESC LIMIT ?1 OFFSET ?2".to_string(),
+                    vec![Box::new(limit as i64), Box::new(offset as i64)],
+                )
+            } else {
+                let like = format!("%{}%", term.replace('%', "\\%").replace('_', "\\_"));
+                (
+                    "SELECT id, created_at, final_text, inserted_text, transcription_mode, stt_provider, pipeline_mode, insert_success \
+                     FROM transcript_samples WHERE final_text LIKE ?1 ESCAPE '\\' \
+                     ORDER BY created_at DESC, id DESC LIMIT ?2 OFFSET ?3".to_string(),
+                    vec![Box::new(like), Box::new(limit as i64), Box::new(offset as i64)],
+                )
+            }
+        } else {
+            (
+                "SELECT id, created_at, final_text, inserted_text, transcription_mode, stt_provider, pipeline_mode, insert_success \
+                 FROM transcript_samples ORDER BY created_at DESC, id DESC LIMIT ?1 OFFSET ?2".to_string(),
+                vec![Box::new(limit as i64), Box::new(offset as i64)],
+            )
+        };
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
+        let entries = stmt
+            .query_map(params_refs.as_slice(), |row| {
+                Ok(TranscriptHistoryEntry {
+                    id: row.get(0)?,
+                    created_at: row.get(1)?,
+                    final_text: row.get(2)?,
+                    inserted_text: row.get(3)?,
+                    transcription_mode: row.get(4)?,
+                    stt_provider: row.get(5)?,
+                    pipeline_mode: row.get(6)?,
+                    insert_success: row.get(7)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(entries)
+    }
+
+    /// Delete a single transcript history entry by id.
+    pub fn delete_entry(&self, id: i64) -> Result<(), String> {
+        self.flush_writer();
+        let conn = open_connection(&self.db_path)?;
+        conn.execute("DELETE FROM transcript_samples WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Extract unique words from a transcript's final_text (for auto-learn dictionary).
+    pub fn get_entry_words(&self, id: i64) -> Result<Vec<String>, String> {
+        self.flush_writer();
+        let conn = open_connection(&self.db_path)?;
+        let text: Option<String> = conn
+            .query_row(
+                "SELECT final_text FROM transcript_samples WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+
+        let words = text
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(|w| w.trim_matches(|c: char| c.is_ascii_punctuation()).to_string())
+            .filter(|w| !w.is_empty() && w.len() > 1)
+            .collect::<std::collections::HashSet<String>>()
+            .into_iter()
+            .collect();
+
+        Ok(words)
+    }
+}
+
 pub fn current_timestamp_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

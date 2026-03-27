@@ -15,7 +15,7 @@ use windows::Win32::System::Threading::{
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL,
-    VK_SHIFT, VK_V,
+    VK_MEDIA_PLAY_PAUSE, VK_SHIFT, VK_V,
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -306,6 +306,29 @@ fn make_key_input(vk: VIRTUAL_KEY, key_up: bool) -> INPUT {
             },
         },
     }
+}
+
+/// Send a media play/pause key event to toggle system media playback.
+#[cfg(windows)]
+pub fn send_media_play_pause() {
+    let inputs = vec![
+        make_key_input(VK_MEDIA_PLAY_PAUSE, false),
+        make_key_input(VK_MEDIA_PLAY_PAUSE, true),
+    ];
+    unsafe {
+        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn send_media_play_pause() {
+    // macOS: use osascript to simulate media key
+    let _ = std::process::Command::new("osascript")
+        .args([
+            "-e",
+            "tell application \"System Events\" to key code 16",
+        ])
+        .output();
 }
 
 #[cfg(target_os = "macos")]

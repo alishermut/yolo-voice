@@ -76,6 +76,14 @@ pub struct AppConfig {
     pub show_dictionary_migration_notice: bool,
     #[serde(default)]
     pub transcript_diagnostics_enabled: bool,
+    #[serde(default = "default_hallucination_filter")]
+    pub hallucination_filter_enabled: bool,
+    #[serde(default)]
+    pub spoken_punctuation_enabled: bool,
+    #[serde(default)]
+    pub continuous_recording_enabled: bool,
+    #[serde(default)]
+    pub auto_pause_media_enabled: bool,
 
     // Command mode
     #[serde(default = "default_command_hotkey")]
@@ -155,6 +163,9 @@ fn default_command_system_prompt() -> String {
      Output only the requested text."
         .to_string()
 }
+fn default_hallucination_filter() -> bool {
+    true
+}
 fn default_sounds_enabled() -> bool {
     true
 }
@@ -197,6 +208,10 @@ impl Default for AppConfig {
             pill_pinned: false,
             show_dictionary_migration_notice: false,
             transcript_diagnostics_enabled: false,
+            hallucination_filter_enabled: default_hallucination_filter(),
+            spoken_punctuation_enabled: false,
+            continuous_recording_enabled: false,
+            auto_pause_media_enabled: false,
             command_hotkey: default_command_hotkey(),
             command_provider: default_command_provider(),
             command_model: default_command_model(),

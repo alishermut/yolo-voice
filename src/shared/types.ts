@@ -31,6 +31,10 @@ export interface AppConfig {
   pill_pinned: boolean;
   show_dictionary_migration_notice: boolean;
   transcript_diagnostics_enabled: boolean;
+  hallucination_filter_enabled: boolean;
+  spoken_punctuation_enabled: boolean;
+  continuous_recording_enabled: boolean;
+  auto_pause_media_enabled: boolean;
 
   // Command mode
   command_hotkey: string;
@@ -112,6 +116,17 @@ export interface TranscriptDiagnosticsStatus {
   sample_count: number;
   max_samples: number;
   db_path: string;
+}
+
+export interface TranscriptHistoryEntry {
+  id: number;
+  created_at: number;
+  final_text: string | null;
+  inserted_text: string | null;
+  transcription_mode: string;
+  stt_provider: string;
+  pipeline_mode: string;
+  insert_success: boolean;
 }
 
 export type PillState = "idle" | "recording" | "transcribing" | "done";

@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { Pill } from "./components/Pill";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import i18n from "./i18n";
 import { listen } from "@tauri-apps/api/event";
 import { getConfig } from "./shared/platform";
@@ -22,7 +23,9 @@ listen<string>("ui-language-changed", (event) => {
 });
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <Pill />
-  </React.StrictMode>,
+  <ErrorBoundary>
+    <React.StrictMode>
+      <Pill />
+    </React.StrictMode>
+  </ErrorBoundary>,
 );

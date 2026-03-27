@@ -192,6 +192,24 @@ export function GeneralSection({
               label={t("general.pill.label")}
             />
           </div>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="text-sm font-medium text-text-primary">
+                {t("general.mediaPause.label")}
+              </span>
+              <p className="text-xs text-text-muted">
+                {t("general.mediaPause.description")}
+              </p>
+            </div>
+            <Switch
+              checked={config.auto_pause_media_enabled ?? false}
+              onChange={(checked) =>
+                updateConfig({ auto_pause_media_enabled: checked })
+              }
+              label={t("general.mediaPause.label")}
+            />
+          </div>
         </div>
       </div>
     </div>

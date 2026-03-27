@@ -16,6 +16,7 @@ import type {
   Profile,
   SegmentTranscribed,
   TranscriptDiagnosticsStatus,
+  TranscriptHistoryEntry,
 } from "./types";
 
 // ---- Config ----
@@ -200,6 +201,32 @@ export function getTranscriptDiagnosticsStatus(): Promise<TranscriptDiagnosticsS
 
 export function clearTranscriptDiagnostics(): Promise<TranscriptDiagnosticsStatus> {
   return invoke<TranscriptDiagnosticsStatus>("clear_transcript_diagnostics");
+}
+
+// ---- Transcript History ----
+
+export function getTranscriptHistory(
+  limit: number,
+  offset: number,
+  search?: string,
+): Promise<TranscriptHistoryEntry[]> {
+  return invoke<TranscriptHistoryEntry[]>("get_transcript_history", {
+    limit,
+    offset,
+    search: search || null,
+  });
+}
+
+export function deleteTranscriptEntry(id: number): Promise<void> {
+  return invoke("delete_transcript_entry", { id });
+}
+
+export function getTranscriptEntryWords(id: number): Promise<string[]> {
+  return invoke<string[]>("get_transcript_entry_words", { id });
+}
+
+export function addWordsToDictionary(words: string[]): Promise<void> {
+  return invoke("add_words_to_dictionary", { words });
 }
 
 // ---- Event Listeners ----

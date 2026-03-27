@@ -1,7 +1,8 @@
 pub mod hotkey;
 pub mod recorder;
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use serde_json;
 use tauri::{AppHandle, Listener, Manager};
@@ -25,6 +26,12 @@ pub struct RuntimeDictionaryCache(pub Mutex<Option<RuntimeDictionary>>);
 /// Holds the rdev key name of the style shortcut pressed during dictation.
 /// Set by the hotkey listener on style-key press, read + cleared by handle_stop.
 pub struct ActiveStyleKey(pub Mutex<Option<String>>);
+
+/// Generation counter for continuous recording.
+/// Incremented on each `handle_start` when continuous mode is active.
+/// Set to 0 on explicit user stop or cancel.  `finalize_and_insert` captures
+/// the generation at pipeline start and only auto-restarts if it still matches.
+pub struct ContinuousGeneration(pub Arc<AtomicU64>);
 
 const DEFAULT_COMMAND_SYSTEM_PROMPT: &str =
     "You are a voice command assistant. The user speaks a command and you produce \
@@ -104,9 +111,22 @@ fn handle_start(
         None
     };
 
+    // Track continuous recording generation
+    if config.continuous_recording_enabled {
+        app.state::<ContinuousGeneration>()
+            .0
+            .fetch_add(1, Ordering::SeqCst);
+    }
+
     // Emit events BEFORE audio init so the pill reacts instantly.
     emit_all(app, "active-mode", "dictation");
     emit_all(app, "recording-state", "recording");
+    if config.continuous_recording_enabled {
+        emit_all(app, "continuous-active", "true");
+    }
+    if config.auto_pause_media_enabled {
+        output::send_media_play_pause();
+    }
     if config.sounds_enabled {
         output::play_start_sound(&config.start_sound);
     }
@@ -137,6 +157,12 @@ fn handle_stop(
     app: &AppHandle,
     config: &crate::features::settings::AppConfig,
 ) {
+    // Break continuous recording cycle — user explicitly pressed stop
+    app.state::<ContinuousGeneration>()
+        .0
+        .store(0, Ordering::SeqCst);
+    emit_all(app, "continuous-active", "false");
+
     // Read and clear the active style key (set by hotkey listener if style key was held)
     let style_key = app
         .state::<ActiveStyleKey>()
@@ -309,6 +335,12 @@ fn finalize_and_insert(
     runtime_dict: &RuntimeDictionary,
     style_profile_id: Option<String>,
 ) {
+    // Capture continuous recording generation at pipeline start
+    let continuous_gen = app
+        .state::<ContinuousGeneration>()
+        .0
+        .load(Ordering::SeqCst);
+
     if transcript.raw_segments.is_empty() && transcript.joined_text.trim().is_empty() {
         eprintln!("[capture] Transcription produced empty text");
         if config.sounds_enabled {
@@ -323,11 +355,26 @@ fn finalize_and_insert(
         &runtime_dict.normalization_rules,
     );
 
+    // Spoken punctuation: "period" → ".", "comma" → "," etc.
+    // Runs BEFORE cleanup so inserted periods trigger sentence capitalization.
+    let normalized_text = if config.spoken_punctuation_enabled {
+        speech::cleanup::replace_spoken_punctuation(&normalized_text)
+    } else {
+        normalized_text
+    };
+
     // Final deterministic cleanup happens once after full assembly.
     let cleaned_text = if config.text_cleanup_enabled {
         speech::cleanup::clean_final_text(&normalized_text)
     } else {
         normalized_text.clone()
+    };
+
+    // Hallucination filtering: remove known phantom phrases and repetition loops.
+    let cleaned_text = if config.hallucination_filter_enabled {
+        speech::cleanup::filter_hallucinations(&cleaned_text)
+    } else {
+        cleaned_text
     };
 
     // Number-word → digit conversion (e.g. "twenty three" → "23").
@@ -351,10 +398,10 @@ fn finalize_and_insert(
                 match speech::post_process_text(
                     &cleaned_text,
                     &profile,
-                    "groq",
-                    "openai/gpt-oss-120b",
+                    &config.command_provider,
+                    &config.command_model,
                     &config.command_api_key,
-                    "https://api.groq.com/openai",
+                    &config.command_base_url,
                 ) {
                     Ok(processed) => Some(processed),
                     Err(e) => {
@@ -423,10 +470,28 @@ fn finalize_and_insert(
         insert_success,
     );
 
+    if config.auto_pause_media_enabled {
+        output::send_media_play_pause();
+    }
     if config.sounds_enabled {
         output::play_done_sound(&config.stop_sound);
     }
     emit_all(app, "recording-state", "done");
+
+    // Auto-restart if continuous recording is still active (generation unchanged)
+    if config.continuous_recording_enabled && continuous_gen > 0 {
+        let current = app
+            .state::<ContinuousGeneration>()
+            .0
+            .load(Ordering::SeqCst);
+        if current == continuous_gen {
+            let app_clone = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                emit_all(&app_clone, "hotkey-action", "start");
+            });
+        }
+    }
 }
 
 /// Background transcription pipeline (legacy non-VAD path).
@@ -667,6 +732,12 @@ pub fn setup_command_hotkey_handler(app: &AppHandle) {
 }
 
 fn handle_dictation_cancel(app: &AppHandle) {
+    // Break continuous recording cycle
+    app.state::<ContinuousGeneration>()
+        .0
+        .store(0, Ordering::SeqCst);
+    emit_all(app, "continuous-active", "false");
+
     // Silently discard any in-progress dictation recording (e.g., style switch)
     let recording_state = app.state::<RecordingState>();
     if let Ok(mut guard) = recording_state.0.lock() {

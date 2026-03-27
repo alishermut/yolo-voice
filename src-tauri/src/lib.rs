@@ -4,7 +4,7 @@ mod infra;
 
 use app::commands::AudioState;
 use features::capture::recorder::{RecordingState, WarmDeviceState};
-use features::capture::{ActiveStyleKey, RuntimeDictionaryCache};
+use features::capture::{ActiveStyleKey, ContinuousGeneration, RuntimeDictionaryCache};
 use features::diagnostics::TranscriptDiagnosticsState;
 use features::output::FocusedWindowState;
 use features::settings::ConfigState;
@@ -31,6 +31,7 @@ pub fn run() {
         .manage(InferenceState(Mutex::new(None)))
         .manage(RuntimeDictionaryCache(Mutex::new(None)))
         .manage(ActiveStyleKey(Mutex::new(None)))
+        .manage(ContinuousGeneration(std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0))))
         .manage(UserDictionaryState(Mutex::new(
             features::speech::vocabulary::UserDictionary::default(),
         )))
@@ -70,6 +71,10 @@ pub fn run() {
             app::commands::save_industry_pack_cmd,
             app::commands::reset_industry_pack_cmd,
             app::commands::generate_vocab_variants,
+            app::commands::get_transcript_history,
+            app::commands::delete_transcript_entry,
+            app::commands::get_transcript_entry_words,
+            app::commands::add_words_to_dictionary,
         ])
         .setup(|app| {
             // Load persisted config

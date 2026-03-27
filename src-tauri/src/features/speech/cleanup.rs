@@ -335,6 +335,260 @@ fn lowercase_first_word_force(text: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Hallucination filtering
+// ---------------------------------------------------------------------------
+
+/// Known hallucination phrases that Whisper / Parakeet produce on silence or
+/// background noise.  Matched case-insensitively as whole sentences or entire
+/// input.  English-only for now.
+static HALLUCINATION_PHRASES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    let phrases = [
+        "thank you for watching",
+        "thanks for watching",
+        "thank you for listening",
+        "thanks for listening",
+        "subscribe to my channel",
+        "please subscribe",
+        "like and subscribe",
+        "please like and subscribe",
+        "see you in the next",
+        "see you in the next video",
+        "see you next time",
+        "don't forget to subscribe",
+        "hit the like button",
+        "bye bye",
+    ];
+    phrases
+        .iter()
+        .map(|p| {
+            // Match the phrase as a standalone sentence (possibly preceded/followed
+            // by punctuation and whitespace) or as the entire input.
+            let escaped = regex::escape(p);
+            Regex::new(&format!(r"(?i)(?:^|\.\s*|\!\s*|\?\s*){}\s*[.!?]*\s*", escaped))
+                .unwrap()
+        })
+        .collect()
+});
+
+/// Bracketed / parenthesised audio labels produced by some models.
+static HALLUCINATION_LABELS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\s*[\[\(]\s*(?:music|applause|laughter|silence|inaudible|blank audio)\s*[\]\)]\s*")
+        .unwrap()
+});
+
+/// Remove known hallucination phrases from the text.
+pub fn filter_hallucination_phrases(input: &str) -> String {
+    if input.trim().is_empty() {
+        return String::new();
+    }
+
+    let mut text = input.to_string();
+
+    // Remove bracketed labels first
+    text = HALLUCINATION_LABELS.replace_all(&text, " ").to_string();
+
+    // Remove known phrases
+    for re in HALLUCINATION_PHRASES.iter() {
+        text = re.replace_all(&text, " ").to_string();
+    }
+
+    let result = MULTI_SPACE.replace_all(text.trim(), " ").to_string();
+
+    // If only punctuation/whitespace remains, treat as fully hallucinated
+    if result.trim().chars().all(|c| c.is_ascii_punctuation() || c.is_whitespace()) {
+        return String::new();
+    }
+    result.trim().to_string()
+}
+
+/// Detect and collapse repetition loops.
+///
+/// If a sentence (split on `.!?`) repeats 3+ consecutive times, keep one.
+/// If a sub-sentence phrase of 2-5 words repeats 3+ times in a row, keep one.
+pub fn filter_hallucination_loops(input: &str) -> String {
+    if input.trim().is_empty() {
+        return String::new();
+    }
+
+    // --- Sentence-level dedup ---
+    let sentence_re = LazyLock::force(&SENTENCE_SPLIT);
+    let sentences: Vec<&str> = sentence_re
+        .split(input)
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if sentences.len() >= 3 {
+        // Count consecutive runs; collapse runs of 3+ to a single occurrence.
+        let mut deduped: Vec<&str> = Vec::new();
+        let mut i = 0;
+        while i < sentences.len() {
+            let start = i;
+            // Count how many consecutive identical sentences follow
+            while i + 1 < sentences.len()
+                && sentences[i + 1].eq_ignore_ascii_case(sentences[start])
+            {
+                i += 1;
+            }
+            let run_len = i - start + 1;
+            if run_len >= 3 {
+                // Collapse to single occurrence
+                deduped.push(sentences[start]);
+            } else {
+                // Keep all (1 or 2 occurrences)
+                for j in start..=i {
+                    deduped.push(sentences[j]);
+                }
+            }
+            i += 1;
+        }
+        if deduped.len() < sentences.len() {
+            let joined = deduped.join(". ");
+            // Restore trailing period if original had one
+            let result = if input.trim_end().ends_with('.') && !joined.ends_with('.') {
+                format!("{}.", joined)
+            } else {
+                joined
+            };
+            return filter_word_level_loops(&result);
+        }
+    }
+
+    filter_word_level_loops(input)
+}
+
+/// Split on sentence-ending punctuation while keeping the structure.
+static SENTENCE_SPLIT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[.!?]+\s*").unwrap());
+
+/// Collapse word-level repetition: if a contiguous run of identical 2-5 word
+/// chunks repeats 3+ times, keep one occurrence.
+fn filter_word_level_loops(input: &str) -> String {
+    let words: Vec<&str> = input.split_whitespace().collect();
+    if words.len() < 6 {
+        return input.to_string();
+    }
+
+    let mut result = words.clone();
+    // Try phrase lengths from 5 down to 2
+    for phrase_len in (2..=5).rev() {
+        let mut cleaned: Vec<&str> = Vec::new();
+        let mut i = 0;
+        while i < result.len() {
+            if i + phrase_len * 3 <= result.len() {
+                let phrase: Vec<&str> = result[i..i + phrase_len].to_vec();
+                let phrase_lower: Vec<String> =
+                    phrase.iter().map(|w| w.to_lowercase()).collect();
+                let mut reps = 1usize;
+                let mut j = i + phrase_len;
+                while j + phrase_len <= result.len() {
+                    let next: Vec<String> = result[j..j + phrase_len]
+                        .iter()
+                        .map(|w| w.to_lowercase())
+                        .collect();
+                    if next == phrase_lower {
+                        reps += 1;
+                        j += phrase_len;
+                    } else {
+                        break;
+                    }
+                }
+                if reps >= 3 {
+                    // Keep one occurrence, skip the rest
+                    cleaned.extend_from_slice(&result[i..i + phrase_len]);
+                    i = j;
+                    continue;
+                }
+            }
+            cleaned.push(result[i]);
+            i += 1;
+        }
+        result = cleaned;
+    }
+
+    result.join(" ")
+}
+
+/// Combined hallucination filter: phrases first, then loops.
+pub fn filter_hallucinations(input: &str) -> String {
+    let after_phrases = filter_hallucination_phrases(input);
+    if after_phrases.is_empty() {
+        return String::new();
+    }
+    filter_hallucination_loops(&after_phrases)
+}
+
+// ---------------------------------------------------------------------------
+// Spoken punctuation commands
+// ---------------------------------------------------------------------------
+
+struct SpokenPunctRule {
+    regex: Regex,
+    replacement: &'static str,
+}
+
+static SPOKEN_PUNCTUATION_RULES: LazyLock<Vec<SpokenPunctRule>> = LazyLock::new(|| {
+    let rules: Vec<(&str, &str)> = vec![
+        (r"(?i)\bnew paragraph\b", "\n\n"),
+        (r"(?i)\bnew line\b", "\n"),
+        (r"(?i)\bnewline\b", "\n"),
+        (r"(?i)\bfull stop\b", "."),
+        (r"(?i)\bquestion mark\b", "?"),
+        (r"(?i)\bexclamation mark\b", "!"),
+        (r"(?i)\bexclamation point\b", "!"),
+        (r"(?i)\bopen parenthesis\b", "("),
+        (r"(?i)\bclose parenthesis\b", ")"),
+        (r"(?i)\bopen paren\b", "("),
+        (r"(?i)\bclose paren\b", ")"),
+        (r"(?i)\bopen quote\b", "\""),
+        (r"(?i)\bclose quote\b", "\""),
+        (r"(?i)\bend quote\b", "\""),
+        (r"(?i)\bsemi colon\b", ";"),
+        (r"(?i)\bsemicolon\b", ";"),
+        (r"(?i)\bperiod\b", "."),
+        (r"(?i)\bcomma\b", ","),
+        (r"(?i)\bcolon\b", ":"),
+        (r"(?i)\bdash\b", " \u{2014} "),
+        (r"(?i)\bhyphen\b", "-"),
+    ];
+    rules
+        .into_iter()
+        .map(|(pattern, replacement)| SpokenPunctRule {
+            regex: Regex::new(pattern).unwrap(),
+            replacement,
+        })
+        .collect()
+});
+
+/// Replace spoken punctuation words with their symbol equivalents.
+///
+/// English-only. Multi-word commands ("new line", "question mark") are matched
+/// before single-word ones ("period", "comma") because the rule list is
+/// processed in order and multi-word patterns are listed first.
+pub fn replace_spoken_punctuation(input: &str) -> String {
+    if input.trim().is_empty() {
+        return String::new();
+    }
+
+    let mut text = input.to_string();
+    for rule in SPOKEN_PUNCTUATION_RULES.iter() {
+        text = rule.regex.replace_all(&text, rule.replacement).to_string();
+    }
+
+    // Normalize spacing but preserve intentional newlines
+    let mut result = String::new();
+    for line in text.split('\n') {
+        let cleaned = normalize_spacing_and_punctuation(line);
+        let trimmed = cleaned.trim();
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        result.push_str(trimmed);
+    }
+    result
+}
+
+// ---------------------------------------------------------------------------
 // Number-word → digit conversion
 // ---------------------------------------------------------------------------
 
@@ -785,5 +1039,144 @@ mod tests {
     fn no_numbers_passthrough() {
         assert_eq!(convert_number_words("hello world"), "hello world");
         assert_eq!(convert_number_words(""), "");
+    }
+
+    // --- Hallucination filtering tests ---
+
+    #[test]
+    fn filters_known_hallucination_phrases() {
+        assert_eq!(filter_hallucinations("Thank you for watching"), "");
+        assert_eq!(filter_hallucinations("thanks for listening"), "");
+        assert_eq!(filter_hallucinations("Please subscribe"), "");
+        assert_eq!(filter_hallucinations("Like and subscribe"), "");
+        assert_eq!(filter_hallucinations("[Music]"), "");
+        assert_eq!(filter_hallucinations("(applause)"), "");
+        assert_eq!(filter_hallucinations("(Silence)"), "");
+    }
+
+    #[test]
+    fn preserves_normal_text_with_similar_words() {
+        // "thank you" alone is NOT a hallucination phrase
+        assert_eq!(filter_hallucinations("thank you"), "thank you");
+        assert_eq!(
+            filter_hallucinations("I want to subscribe to the newsletter"),
+            "I want to subscribe to the newsletter"
+        );
+    }
+
+    #[test]
+    fn removes_hallucination_mixed_with_real_text() {
+        let input = "Hello world. Thank you for watching.";
+        let result = filter_hallucinations(input);
+        assert!(result.contains("Hello world"));
+        assert!(!result.contains("Thank you for watching"));
+    }
+
+    #[test]
+    fn collapses_sentence_repetition_loops() {
+        // 4 repetitions → collapsed to 1
+        assert_eq!(
+            filter_hallucinations("Thank you. Thank you. Thank you. Thank you."),
+            "Thank you."
+        );
+        // Two repetitions are preserved (not a loop of 3+)
+        assert_eq!(
+            filter_hallucinations("OK. OK."),
+            "OK. OK."
+        );
+        // 3 repetitions → collapsed to 1
+        assert_eq!(
+            filter_hallucination_loops("Stop. Stop. Stop."),
+            "Stop."
+        );
+    }
+
+    #[test]
+    fn collapses_word_level_loops() {
+        // 3+ repetitions of a multi-word phrase
+        let input = "the end the end the end the end";
+        let result = filter_hallucination_loops(input);
+        assert_eq!(result, "the end");
+    }
+
+    #[test]
+    fn preserves_intentional_double_repetition() {
+        // "very very" is only 2 reps, not 3 — preserved
+        assert_eq!(
+            filter_hallucination_loops("this is very very important"),
+            "this is very very important"
+        );
+    }
+
+    #[test]
+    fn empty_after_all_filtering() {
+        assert_eq!(filter_hallucinations(""), "");
+        assert_eq!(filter_hallucinations("   "), "");
+        assert_eq!(filter_hallucinations("..."), "");
+    }
+
+    // --- Spoken punctuation tests ---
+
+    #[test]
+    fn replaces_basic_spoken_punctuation() {
+        assert_eq!(
+            replace_spoken_punctuation("hello period how are you"),
+            "hello. how are you"
+        );
+        assert_eq!(
+            replace_spoken_punctuation("yes comma I agree"),
+            "yes, I agree"
+        );
+    }
+
+    #[test]
+    fn replaces_question_and_exclamation() {
+        assert_eq!(
+            replace_spoken_punctuation("is that right question mark"),
+            "is that right?"
+        );
+        assert_eq!(
+            replace_spoken_punctuation("wow exclamation mark"),
+            "wow!"
+        );
+        assert_eq!(
+            replace_spoken_punctuation("really exclamation point"),
+            "really!"
+        );
+    }
+
+    #[test]
+    fn replaces_new_line_and_paragraph() {
+        assert_eq!(
+            replace_spoken_punctuation("first line new line second line"),
+            "first line\nsecond line"
+        );
+        assert_eq!(
+            replace_spoken_punctuation("intro new paragraph body"),
+            "intro\n\nbody"
+        );
+    }
+
+    #[test]
+    fn replaces_multi_word_before_single_word() {
+        // "full stop" should be matched before "stop" could cause issues
+        assert_eq!(
+            replace_spoken_punctuation("end of sentence full stop"),
+            "end of sentence."
+        );
+        // "semi colon" (two words) should work
+        assert_eq!(
+            replace_spoken_punctuation("item one semi colon item two"),
+            "item one; item two"
+        );
+    }
+
+    #[test]
+    fn spoken_punctuation_passthrough() {
+        assert_eq!(
+            replace_spoken_punctuation("hello world"),
+            "hello world"
+        );
+        assert_eq!(replace_spoken_punctuation(""), "");
     }
 }

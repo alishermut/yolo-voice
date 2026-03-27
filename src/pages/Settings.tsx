@@ -14,6 +14,7 @@ import { TranscriptionSection } from "../components/settings/TranscriptionSectio
 import { VocabularySection } from "../components/settings/VocabularySection";
 import { ProfilesSection } from "../components/settings/ProfilesSection";
 import { AboutSection } from "../components/settings/AboutSection";
+import { HistorySection } from "../components/settings/HistorySection";
 
 type SettingsSection =
   | "general"
@@ -22,6 +23,7 @@ type SettingsSection =
   | "command"
   | "vocabulary"
   | "profiles"
+  | "history"
   | "about";
 
 const SECTIONS: { key: SettingsSection; labelKey: string; icon: string }[] = [
@@ -31,6 +33,7 @@ const SECTIONS: { key: SettingsSection; labelKey: string; icon: string }[] = [
   { key: "command", labelKey: "settings.sidebar.section.commandMode", icon: "\u26A1" },
   { key: "vocabulary", labelKey: "settings.sidebar.section.vocabulary", icon: "\uD83D\uDCD6" },
   { key: "profiles", labelKey: "settings.sidebar.section.dictationStyles", icon: "\uD83C\uDFA8" },
+  { key: "history", labelKey: "settings.sidebar.section.history", icon: "\uD83D\uDCCB" },
 ];
 
 const SECTION_TITLE_KEYS: Record<SettingsSection, string> = {
@@ -40,6 +43,7 @@ const SECTION_TITLE_KEYS: Record<SettingsSection, string> = {
   command: "settings.sectionTitle.command",
   vocabulary: "settings.sectionTitle.vocabulary",
   profiles: "settings.sectionTitle.profiles",
+  history: "settings.sectionTitle.history",
   about: "settings.sectionTitle.about",
 };
 
@@ -286,6 +290,7 @@ export function Settings() {
           {activeSection === "profiles" && (
             <ProfilesSection config={config} updateConfig={updateConfig} />
           )}
+          {activeSection === "history" && <HistorySection />}
           {activeSection === "about" && <AboutSection />}
         </div>
       </div>
