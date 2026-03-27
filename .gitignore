@@ -38,6 +38,9 @@ sidecar/models/
 # Claude
 .claude
 
+# Internal research & planning docs (not for public consumption)
+_internal/
+
 # Python cache
 __pycache__/
 *.pyc
