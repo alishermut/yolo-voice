@@ -171,6 +171,13 @@ pub fn run() {
                         let _ = pill.set_position(tauri::PhysicalPosition::new(x, y));
                     }
                 }
+
+                // Install WinEvent hooks that re-assert HWND_TOPMOST whenever
+                // another app (Electron, Discord, etc.) steals z-order.
+                #[cfg(windows)]
+                if let Ok(hwnd) = pill.hwnd() {
+                    infra::topmost_guard::install(hwnd.0);
+                }
             }
 
             // Start minimized: hide main window if configured
