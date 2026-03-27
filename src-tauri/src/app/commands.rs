@@ -411,20 +411,14 @@ pub struct AppInfo {
     pub version: String,
     pub name: String,
     pub launch_on_startup: bool,
-    pub log_path: String,
 }
 
 #[tauri::command]
 pub fn get_app_info() -> AppInfo {
-    let log_path = dirs_next::data_dir()
-        .map(|d| d.join("com.alish.yolo-voice").join("yolo-voice.log"))
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
     AppInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         name: "YOLO Voice".to_string(),
         launch_on_startup: settings::is_launch_on_startup(),
-        log_path,
     }
 }
 

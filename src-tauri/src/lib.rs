@@ -236,11 +236,6 @@ pub fn run() {
                     }
                     Err(e) => {
                         eprintln!("[app] Failed to init inference engine: {}", e);
-                        // Write error to a file for debugging (GUI apps may swallow stderr)
-                        if let Ok(log_dir) = inference_handle.path().app_data_dir() {
-                            let log_path = log_dir.join("engine_error.log");
-                            let _ = std::fs::write(&log_path, format!("Engine init error: {}\nModels dir: {:?}", e, models_dir));
-                        }
                         let _ = inference_handle.emit("model-status", "error");
                     }
                 }

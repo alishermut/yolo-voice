@@ -58,9 +58,10 @@ export function UpdaterProvider({ children }: { children: ReactNode }) {
     setStatus("idle");
   }, []);
 
-  // Auto-check for updates on mount
+  // Auto-check for updates 10s after mount to avoid blocking startup
   useEffect(() => {
-    checkForUpdates();
+    const timer = setTimeout(checkForUpdates, 10_000);
+    return () => clearTimeout(timer);
   }, [checkForUpdates]);
 
   return (

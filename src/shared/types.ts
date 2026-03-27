@@ -105,7 +105,6 @@ export interface AppInfo {
   version: string;
   name: string;
   launch_on_startup: boolean;
-  log_path: string;
 }
 
 export interface TranscriptDiagnosticsStatus {

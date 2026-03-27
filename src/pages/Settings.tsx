@@ -6,6 +6,7 @@ import { getConfig, saveConfig, quitApp, getAppInfo } from "../shared/platform";
 import type { AppInfo } from "../shared/types";
 import { useToast, ToastContainer } from "../components/Toast";
 import { focusRing } from "../components/ui/styles";
+import { useUpdaterContext } from "../contexts/UpdaterContext";
 import { GeneralSection } from "../components/settings/GeneralSection";
 import { HotkeySection } from "../components/settings/HotkeySection";
 import { CommandSection } from "../components/settings/CommandSection";
@@ -50,6 +51,8 @@ export function Settings() {
     useState<SettingsSection>("general");
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const { toasts, addToast } = useToast();
+  const { status: updateStatus, version: updateVersion, installUpdate } = useUpdaterContext();
+  const [updateDismissed, setUpdateDismissed] = useState(false);
 
   useEffect(() => {
     getConfig()
@@ -152,6 +155,9 @@ export function Settings() {
           >
             <span className="text-base w-5 text-center opacity-70">&#9432;</span>
             {t("settings.sidebar.section.about")}
+            {(updateStatus === "ready" || updateStatus === "downloading") && (
+              <span className="ml-auto w-2 h-2 rounded-full bg-success animate-pulse" />
+            )}
           </button>
         </div>
 
@@ -208,6 +214,37 @@ export function Settings() {
                 >
                   {t("settings.migration.dismiss")}
                 </button>
+              </div>
+            </div>
+          )}
+
+          {/* Update banner */}
+          {updateStatus === "downloading" && (
+            <div className="mb-6 px-4 py-3 bg-accent/10 border border-accent rounded-lg text-accent text-sm flex items-center gap-3">
+              <span className="animate-spin text-base">&#8635;</span>
+              <span>{t("updater.banner.downloading", { version: updateVersion })}</span>
+            </div>
+          )}
+          {updateStatus === "ready" && !updateDismissed && (
+            <div className="mb-6 px-4 py-3 bg-success/10 border border-success rounded-lg text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-success font-medium">
+                  {t("updater.banner.ready", { version: updateVersion })}
+                </span>
+                <div className="flex gap-2 shrink-0">
+                  <button
+                    onClick={() => setUpdateDismissed(true)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors ${focusRing}`}
+                  >
+                    {t("updater.banner.later")}
+                  </button>
+                  <button
+                    onClick={installUpdate}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium bg-success text-white hover:opacity-90 transition-opacity ${focusRing}`}
+                  >
+                    {t("updater.banner.installRestart")}
+                  </button>
+                </div>
               </div>
             </div>
           )}
