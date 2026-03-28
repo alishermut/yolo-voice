@@ -66,6 +66,8 @@ pub struct AppConfig {
     pub vad_silence_threshold_ms: u32,
     #[serde(default = "default_text_cleanup")]
     pub text_cleanup_enabled: bool,
+    #[serde(default = "default_offline_accuracy_boost")]
+    pub offline_accuracy_boost_enabled: bool,
     #[serde(default)]
     pub numerals_enabled: bool,
     #[serde(default = "default_ui_language")]
@@ -105,8 +107,12 @@ fn default_text_cleanup() -> bool {
     true
 }
 
+fn default_offline_accuracy_boost() -> bool {
+    false
+}
+
 fn default_vad_silence_threshold() -> u32 {
-    500
+    700
 }
 
 fn default_ui_language() -> String {
@@ -203,6 +209,7 @@ impl Default for AppConfig {
             stop_sound: default_stop_sound(),
             vad_silence_threshold_ms: default_vad_silence_threshold(),
             text_cleanup_enabled: default_text_cleanup(),
+            offline_accuracy_boost_enabled: default_offline_accuracy_boost(),
             numerals_enabled: false,
             ui_language: default_ui_language(),
             pill_pinned: false,

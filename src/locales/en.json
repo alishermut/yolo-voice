@@ -63,6 +63,8 @@
   "transcription.engine.cloudDescription": "Groq / Deepgram API",
   "transcription.offline.textCleanupLabel": "Text cleanup",
   "transcription.offline.textCleanupDescription": "Remove hard fillers, fix restart stutters, and shape joined dictation into cleaner sentences",
+  "transcription.offline.accuracyBoostLabel": "Accuracy boost",
+  "transcription.offline.accuracyBoostDescription": "Keep fast preview updates, then run a smarter final offline pass on longer or unstable dictation to improve language consistency",
   "transcription.offline.numeralsLabel": "Numbers as digits",
   "transcription.offline.numeralsDescription": "Convert spoken number words to digits (e.g. \"twenty three\" becomes \"23\")",
   "transcription.offline.hallucinationFilterLabel": "Hallucination filter",

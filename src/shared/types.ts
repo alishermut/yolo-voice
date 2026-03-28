@@ -26,6 +26,7 @@ export interface AppConfig {
   stop_sound: string;
   vad_silence_threshold_ms: number;
   text_cleanup_enabled: boolean;
+  offline_accuracy_boost_enabled: boolean;
   numerals_enabled: boolean;
   ui_language: string;
   pill_pinned: boolean;

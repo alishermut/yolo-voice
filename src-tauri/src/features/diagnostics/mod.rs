@@ -44,6 +44,14 @@ pub struct TranscriptSample {
     pub cleanup_enabled: bool,
     pub post_processing_enabled: bool,
     pub vad_silence_threshold_ms: u32,
+    pub utterance_duration_ms: u64,
+    pub preview_segment_count: u32,
+    pub final_pass_used: bool,
+    pub final_pass_reason: String,
+    pub final_pass_latency_ms: Option<i64>,
+    pub language_family: String,
+    pub language_lock_confidence: String,
+    pub mixed_script_detected: bool,
     pub raw_segments_json: String,
     pub joined_text: Option<String>,
     pub normalized_text: Option<String>,
@@ -185,6 +193,14 @@ fn open_connection(db_path: &Path) -> Result<Connection, String> {
             cleanup_enabled INTEGER NOT NULL,
             post_processing_enabled INTEGER NOT NULL,
             vad_silence_threshold_ms INTEGER NOT NULL,
+            utterance_duration_ms INTEGER NOT NULL DEFAULT 0,
+            preview_segment_count INTEGER NOT NULL DEFAULT 0,
+            final_pass_used INTEGER NOT NULL DEFAULT 0,
+            final_pass_reason TEXT NOT NULL DEFAULT 'single-pass',
+            final_pass_latency_ms INTEGER,
+            language_family TEXT NOT NULL DEFAULT 'unknown',
+            language_lock_confidence TEXT NOT NULL DEFAULT 'none',
+            mixed_script_detected INTEGER NOT NULL DEFAULT 0,
             raw_segments_json TEXT NOT NULL,
             joined_text TEXT,
             normalized_text TEXT,
@@ -203,6 +219,30 @@ fn open_connection(db_path: &Path) -> Result<Connection, String> {
     // Migration: add pipeline_mode column to existing databases (ignored if already present)
     let _ = conn.execute_batch(
         "ALTER TABLE transcript_samples ADD COLUMN pipeline_mode TEXT NOT NULL DEFAULT 'dictation';"
+    );
+    let _ = conn.execute_batch(
+        "ALTER TABLE transcript_samples ADD COLUMN utterance_duration_ms INTEGER NOT NULL DEFAULT 0;"
+    );
+    let _ = conn.execute_batch(
+        "ALTER TABLE transcript_samples ADD COLUMN preview_segment_count INTEGER NOT NULL DEFAULT 0;"
+    );
+    let _ = conn.execute_batch(
+        "ALTER TABLE transcript_samples ADD COLUMN final_pass_used INTEGER NOT NULL DEFAULT 0;"
+    );
+    let _ = conn.execute_batch(
+        "ALTER TABLE transcript_samples ADD COLUMN final_pass_reason TEXT NOT NULL DEFAULT 'single-pass';"
+    );
+    let _ = conn.execute_batch(
+        "ALTER TABLE transcript_samples ADD COLUMN final_pass_latency_ms INTEGER;"
+    );
+    let _ = conn.execute_batch(
+        "ALTER TABLE transcript_samples ADD COLUMN language_family TEXT NOT NULL DEFAULT 'unknown';"
+    );
+    let _ = conn.execute_batch(
+        "ALTER TABLE transcript_samples ADD COLUMN language_lock_confidence TEXT NOT NULL DEFAULT 'none';"
+    );
+    let _ = conn.execute_batch(
+        "ALTER TABLE transcript_samples ADD COLUMN mixed_script_detected INTEGER NOT NULL DEFAULT 0;"
     );
 
     Ok(conn)
@@ -224,6 +264,14 @@ fn insert_sample(conn: &Connection, sample: &TranscriptSample) -> Result<(), Str
             cleanup_enabled,
             post_processing_enabled,
             vad_silence_threshold_ms,
+            utterance_duration_ms,
+            preview_segment_count,
+            final_pass_used,
+            final_pass_reason,
+            final_pass_latency_ms,
+            language_family,
+            language_lock_confidence,
+            mixed_script_detected,
             raw_segments_json,
             joined_text,
             normalized_text,
@@ -232,7 +280,7 @@ fn insert_sample(conn: &Connection, sample: &TranscriptSample) -> Result<(), Str
             final_text,
             inserted_text,
             insert_success
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)
         ",
         params![
             sample.created_at,
@@ -247,6 +295,14 @@ fn insert_sample(conn: &Connection, sample: &TranscriptSample) -> Result<(), Str
             sample.cleanup_enabled,
             sample.post_processing_enabled,
             sample.vad_silence_threshold_ms,
+            sample.utterance_duration_ms,
+            sample.preview_segment_count,
+            sample.final_pass_used,
+            sample.final_pass_reason,
+            sample.final_pass_latency_ms,
+            sample.language_family,
+            sample.language_lock_confidence,
+            sample.mixed_script_detected,
             sample.raw_segments_json,
             sample.joined_text,
             sample.normalized_text,
@@ -448,6 +504,14 @@ mod tests {
             cleanup_enabled: true,
             post_processing_enabled: false,
             vad_silence_threshold_ms: 500,
+            utterance_duration_ms: 2_500,
+            preview_segment_count: 1,
+            final_pass_used: false,
+            final_pass_reason: "single-pass".to_string(),
+            final_pass_latency_ms: None,
+            language_family: "latin".to_string(),
+            language_lock_confidence: "high".to_string(),
+            mixed_script_detected: false,
             raw_segments_json: "[\"hello world\"]".to_string(),
             joined_text: Some("hello world".to_string()),
             normalized_text: Some("Hello world".to_string()),
@@ -528,6 +592,34 @@ mod tests {
 
         let status = store.clear(true).unwrap();
         assert_eq!(status.sample_count, 0);
+
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn bootstrap_migrates_new_telemetry_columns() {
+        let db_path = temp_db_path("diagnostics-migration");
+        let store = TranscriptDiagnosticsStore::from_db_path(db_path.clone()).unwrap();
+        store.flush_for_tests();
+
+        let conn = open_connection(&db_path).unwrap();
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(transcript_samples)")
+            .unwrap();
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|row| row.ok())
+            .collect();
+
+        assert!(columns.contains(&"utterance_duration_ms".to_string()));
+        assert!(columns.contains(&"preview_segment_count".to_string()));
+        assert!(columns.contains(&"final_pass_used".to_string()));
+        assert!(columns.contains(&"final_pass_reason".to_string()));
+        assert!(columns.contains(&"final_pass_latency_ms".to_string()));
+        assert!(columns.contains(&"language_family".to_string()));
+        assert!(columns.contains(&"language_lock_confidence".to_string()));
+        assert!(columns.contains(&"mixed_script_detected".to_string()));
 
         let _ = fs::remove_file(db_path);
     }

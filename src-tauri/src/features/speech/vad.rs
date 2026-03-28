@@ -27,10 +27,10 @@ const CONTEXT_SIZE: usize = 64;
 const DEFAULT_THRESHOLD: f32 = 0.5;
 
 /// Minimum speech duration in ms — ignore blips shorter than this.
-const MIN_SPEECH_MS: u32 = 250;
+const MIN_SPEECH_MS: u32 = 350;
 
 /// Padding added after speech end to avoid cutting off trailing sounds (ms).
-const SPEECH_PAD_MS: u32 = 30;
+const SPEECH_PAD_MS: u32 = 120;
 
 // ── Public types ─────────────────────────────────────────────────────────────
 

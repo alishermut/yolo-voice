@@ -11,6 +11,7 @@ use tauri::{AppHandle, Manager};
 
 use super::cleanup;
 use super::inference::InferenceState;
+use super::language;
 use super::vad::SpeechSegment;
 use crate::app::events::emit_all;
 
@@ -121,7 +122,8 @@ impl SegmentAccumulator {
 
     fn clean_segment(raw_text: &str, text_cleanup_enabled: bool) -> String {
         if text_cleanup_enabled {
-            cleanup::clean_segment_text(raw_text)
+            let language_family = language::detect_language_family(raw_text);
+            cleanup::clean_segment_text_for_language(raw_text, language_family)
         } else {
             raw_text.trim().to_string()
         }
@@ -129,7 +131,8 @@ impl SegmentAccumulator {
 
     fn assemble_preview(texts: &[String], text_cleanup_enabled: bool) -> String {
         if text_cleanup_enabled {
-            cleanup::join_segments_heuristic(texts)
+            let language_family = language::analyze_preview_segments(texts).family;
+            cleanup::join_segments_for_language(texts, language_family)
         } else {
             cleanup::join_segments_minimal(texts)
         }

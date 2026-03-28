@@ -9,6 +9,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use super::language::{detect_language_family, LanguageFamily};
+
 static HARD_FILLER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(uh[\s-]huh|um+|uh+|er+|ah+|huh|mm+|hm+)\b[,]?\s*").unwrap()
 });
@@ -100,9 +102,18 @@ static AFFIRMATIONS: LazyLock<HashSet<&'static str>> =
 
 /// Lightweight per-segment cleanup. Avoids sentence shaping so segment joins can
 /// use more context later.
+#[allow(dead_code)]
 pub fn clean_segment_text(input: &str) -> String {
+    clean_segment_text_for_language(input, detect_language_family(input))
+}
+
+pub fn clean_segment_text_for_language(input: &str, language_family: LanguageFamily) -> String {
     if input.trim().is_empty() {
         return String::new();
+    }
+
+    if !should_use_english_transforms(language_family) {
+        return normalize_spacing_and_punctuation(input).trim().to_string();
     }
 
     let mut text = input.to_string();
@@ -113,9 +124,18 @@ pub fn clean_segment_text(input: &str) -> String {
 }
 
 /// Stronger final cleanup after segments have been assembled.
+#[allow(dead_code)]
 pub fn clean_final_text(input: &str) -> String {
+    clean_final_text_for_language(input, detect_language_family(input))
+}
+
+pub fn clean_final_text_for_language(input: &str, language_family: LanguageFamily) -> String {
     if input.trim().is_empty() {
         return String::new();
+    }
+
+    if !should_use_english_transforms(language_family) {
+        return normalize_spacing_and_punctuation(input).trim().to_string();
     }
 
     let mut text = input.to_string();
@@ -126,7 +146,12 @@ pub fn clean_final_text(input: &str) -> String {
 }
 
 /// Heuristic segment joining for VAD output.
+#[allow(dead_code)]
 pub fn join_segments_heuristic(segments: &[String]) -> String {
+    join_segments_for_language(segments, LanguageFamily::Latin)
+}
+
+pub fn join_segments_for_language(segments: &[String], language_family: LanguageFamily) -> String {
     let cleaned: Vec<String> = segments
         .iter()
         .map(|segment| segment.trim())
@@ -139,6 +164,10 @@ pub fn join_segments_heuristic(segments: &[String]) -> String {
     }
     if cleaned.len() == 1 {
         return cleaned[0].clone();
+    }
+
+    if !should_use_english_transforms(language_family) {
+        return join_segments_minimal(&cleaned);
     }
 
     let mut result = cleaned[0].clone();
@@ -180,6 +209,10 @@ pub fn join_segments_heuristic(segments: &[String]) -> String {
     }
 
     result
+}
+
+pub fn should_use_english_transforms(language_family: LanguageFamily) -> bool {
+    matches!(language_family, LanguageFamily::Latin)
 }
 
 /// Minimal join path when text cleanup is disabled.
@@ -900,6 +933,33 @@ mod tests {
         assert_eq!(clean_segment_text("uh open the settings menu"), "open the settings menu");
         assert_eq!(clean_segment_text("actually"), "actually");
         assert_eq!(clean_segment_text("hello. how are you"), "hello. how are you");
+    }
+
+    #[test]
+    fn cyrillic_text_bypasses_english_only_cleanup() {
+        assert_eq!(
+            clean_final_text_for_language(
+                "ну period давай двадцать три",
+                LanguageFamily::Cyrillic
+            ),
+            "ну period давай двадцать три"
+        );
+        assert_eq!(
+            join_segments_for_language(
+                &["Привет".to_string(), "Как дела".to_string()],
+                LanguageFamily::Cyrillic
+            ),
+            "Привет Как дела"
+        );
+    }
+
+    #[test]
+    fn english_continuation_rules_do_not_touch_cyrillic_segments() {
+        let segments = vec!["Для релиза".to_string(), "И нужно уведомить команду".to_string()];
+        assert_eq!(
+            join_segments_for_language(&segments, LanguageFamily::Cyrillic),
+            "Для релиза И нужно уведомить команду"
+        );
     }
 
     #[test]

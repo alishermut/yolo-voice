@@ -7588,7 +7588,7 @@ dependencies = [
 
 [[package]]
 name = "yolo-voice"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "arboard",
  "cocoa 0.26.1",

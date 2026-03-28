@@ -2,6 +2,7 @@ pub mod accumulator;
 pub mod cleanup;
 pub mod cloud;
 pub mod inference;
+pub mod language;
 pub mod llm;
 pub mod profiles;
 pub mod vad;

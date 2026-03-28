@@ -85,6 +85,8 @@ pub struct RecordingStream {
     channels: u16,
     /// Present when VAD mode is active.
     accumulator: Option<SegmentAccumulator>,
+    /// Mono 16 kHz utterance buffer captured alongside VAD preview segments.
+    vad_mono_samples_16k: Option<Arc<Mutex<Vec<f32>>>>,
     /// Signals that the VAD thread has finished flushing. None in non-VAD mode.
     vad_done_rx: Option<std::sync::mpsc::Receiver<()>>,
 }
@@ -104,6 +106,14 @@ pub struct VadConfig {
     pub silence_threshold_ms: u32,
     pub model_path: PathBuf,
     pub text_cleanup_enabled: bool,
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct CompletedVadRecording {
+    pub transcript: FinalizedSegments,
+    pub mono_samples_16k: Vec<f32>,
+    pub utterance_duration_ms: u64,
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -140,11 +150,12 @@ pub fn start_recording(
     let stop_reader = stop_flag.clone();
 
     // ── VAD setup (optional) ─────────────────────────────────────────────
-    let (vad_audio_tx, accumulator, vad_done_rx) = if let Some(cfg) = vad_config {
+    let (vad_audio_tx, accumulator, vad_mono_samples_16k, vad_done_rx) = if let Some(cfg) = vad_config {
         let (accumulator, segment_sender) = SegmentAccumulator::new(
             app_handle.clone(),
             cfg.text_cleanup_enabled,
         );
+        let utterance_samples_16k = Arc::new(Mutex::new(Vec::new()));
 
         // Channel for raw audio: callback → VAD thread
         let (audio_tx, audio_rx) = std::sync::mpsc::channel::<Vec<f32>>();
@@ -156,18 +167,33 @@ pub fn start_recording(
         let silence_ms = cfg.silence_threshold_ms;
         let dev_rate = sample_rate;
         let dev_ch = channels;
+        let utterance_samples = utterance_samples_16k.clone();
 
         std::thread::Builder::new()
             .name("vad-processor".into())
             .spawn(move || {
-                vad_thread(audio_rx, vad_stop, &model_path, silence_ms, segment_sender, dev_rate, dev_ch);
+                vad_thread(
+                    audio_rx,
+                    vad_stop,
+                    &model_path,
+                    silence_ms,
+                    segment_sender,
+                    utterance_samples,
+                    dev_rate,
+                    dev_ch,
+                );
                 let _ = done_tx.send(());
             })
             .map_err(|e| format!("Failed to spawn VAD thread: {e}"))?;
 
-        (Some(audio_tx), Some(accumulator), Some(done_rx))
+        (
+            Some(audio_tx),
+            Some(accumulator),
+            Some(utterance_samples_16k),
+            Some(done_rx),
+        )
     } else {
-        (None, None, None)
+        (None, None, None, None)
     };
 
     let vad_tx = vad_audio_tx;
@@ -255,6 +281,7 @@ pub fn start_recording(
         sample_rate,
         channels,
         accumulator,
+        vad_mono_samples_16k,
         vad_done_rx,
     })
 }
@@ -300,8 +327,8 @@ pub fn stop_and_get_raw_samples(
     Ok((samples, recording.sample_rate, recording.channels))
 }
 
-/// Stop a VAD-enabled recording and return assembled transcript context.
-pub fn stop_vad_recording(mut recording: RecordingStream) -> Result<FinalizedSegments, String> {
+/// Stop a VAD-enabled recording and return assembled transcript context plus mono audio.
+pub fn stop_vad_recording(mut recording: RecordingStream) -> Result<CompletedVadRecording, String> {
     recording.stop_flag.store(true, Ordering::Relaxed);
 
     // Wait for the VAD thread to finish draining and flushing.
@@ -316,7 +343,21 @@ pub fn stop_vad_recording(mut recording: RecordingStream) -> Result<FinalizedSeg
         .take()
         .ok_or_else(|| "No VAD accumulator — not a VAD recording".to_string())?;
 
-    Ok(accumulator.finalize())
+    let mono_samples_16k = recording
+        .vad_mono_samples_16k
+        .take()
+        .ok_or_else(|| "No VAD mono sample buffer — not a VAD recording".to_string())?
+        .lock()
+        .map_err(|e| e.to_string())
+        .map(|mut guard| std::mem::take(&mut *guard))?;
+
+    let utterance_duration_ms = (mono_samples_16k.len() as u64 * 1000) / 16000;
+
+    Ok(CompletedVadRecording {
+        transcript: accumulator.finalize(),
+        mono_samples_16k,
+        utterance_duration_ms,
+    })
 }
 
 /// Check if this recording has VAD active.
@@ -375,6 +416,7 @@ fn vad_thread(
     model_path: &std::path::Path,
     silence_ms: u32,
     segment_sender: SegmentSender,
+    utterance_samples_16k: Arc<Mutex<Vec<f32>>>,
     device_sample_rate: u32,
     device_channels: u16,
 ) {
@@ -417,6 +459,7 @@ fn vad_thread(
         };
 
         // Resample to 16 kHz (linear interpolation — adequate for VAD)
+        let resampled_start = vad_buf.len();
         if needs_resample {
             let out_len = (mono.len() as f64 * ratio) as usize;
             for i in 0..out_len {
@@ -430,6 +473,12 @@ fn vad_thread(
         } else {
             vad_buf.extend_from_slice(&mono);
         };
+
+        if vad_buf.len() > resampled_start {
+            if let Ok(mut guard) = utterance_samples_16k.lock() {
+                guard.extend_from_slice(&vad_buf[resampled_start..]);
+            }
+        }
 
         // Feed buffered audio to VAD (it processes in 512-sample chunks internally)
         if vad_buf.len() >= 512 {

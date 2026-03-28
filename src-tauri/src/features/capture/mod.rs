@@ -15,6 +15,7 @@ use crate::features::output::{self, FocusedWindowState};
 use crate::features::settings::ConfigState;
 use crate::features::speech;
 use crate::features::speech::inference::InferenceState;
+use crate::features::speech::language::{self, LanguageFamily, LanguageLockConfidence};
 use crate::features::speech::vocabulary::RuntimeDictionary;
 
 use self::recorder::{RecordingState, VadConfig};
@@ -37,7 +38,6 @@ const DEFAULT_COMMAND_SYSTEM_PROMPT: &str =
     "You are a voice command assistant. The user speaks a command and you produce \
      the exact text they want inserted. Do not explain, do not add commentary. \
      Output only the requested text.";
-
 /// Set up the hotkey-action event listener that orchestrates the
 /// record → transcribe → insert pipeline.
 pub fn setup_hotkey_handler(app: &AppHandle) {
@@ -205,16 +205,28 @@ fn handle_stop(
 
             std::thread::spawn(move || {
                 match recorder::stop_vad_recording(stream) {
-                    Ok(transcript) => {
+                    Ok(recording) => {
                         let runtime_dict = resolve_runtime_dictionary(&app, &config);
+                        let preview_analysis =
+                            language::analyze_preview_segments(&recording.transcript.raw_segments);
+                        let preview_segment_count = preview_analysis.non_empty_segments;
+
                         finalize_and_insert(
                             &app,
                             &config,
                             hwnd,
                             TranscriptPipelineInput {
-                                raw_segments: transcript.raw_segments,
-                                joined_text: transcript.joined_text,
+                                raw_segments: recording.transcript.raw_segments,
+                                joined_text: recording.transcript.joined_text,
                                 stt_provider: "parakeet-tdt".to_string(),
+                                utterance_duration_ms: recording.utterance_duration_ms,
+                                preview_segment_count,
+                                preview_language_family: preview_analysis.family,
+                                preview_language_lock_confidence: preview_analysis.confidence,
+                                mixed_script_detected: preview_analysis.mixed_script_detected,
+                                final_pass_used: false,
+                                final_pass_reason: "disabled".to_string(),
+                                final_pass_latency_ms: None,
                             },
                             &runtime_dict,
                             style_id,
@@ -321,6 +333,14 @@ struct TranscriptPipelineInput {
     raw_segments: Vec<String>,
     joined_text: String,
     stt_provider: String,
+    utterance_duration_ms: u64,
+    preview_segment_count: usize,
+    preview_language_family: LanguageFamily,
+    preview_language_lock_confidence: LanguageLockConfidence,
+    mixed_script_detected: bool,
+    final_pass_used: bool,
+    final_pass_reason: String,
+    final_pass_latency_ms: Option<u64>,
 }
 
 /// Finalize text: apply replacements, post-process, insert.
@@ -354,10 +374,12 @@ fn finalize_and_insert(
         &transcript.joined_text,
         &runtime_dict.normalization_rules,
     );
+    let cleanup_language = effective_cleanup_language(&transcript, &normalized_text);
+    let allow_english_shaped_transforms = !matches!(cleanup_language, LanguageFamily::Cyrillic);
 
     // Spoken punctuation: "period" → ".", "comma" → "," etc.
     // Runs BEFORE cleanup so inserted periods trigger sentence capitalization.
-    let normalized_text = if config.spoken_punctuation_enabled {
+    let normalized_text = if config.spoken_punctuation_enabled && allow_english_shaped_transforms {
         speech::cleanup::replace_spoken_punctuation(&normalized_text)
     } else {
         normalized_text
@@ -365,7 +387,7 @@ fn finalize_and_insert(
 
     // Final deterministic cleanup happens once after full assembly.
     let cleaned_text = if config.text_cleanup_enabled {
-        speech::cleanup::clean_final_text(&normalized_text)
+        speech::cleanup::clean_final_text_for_language(&normalized_text, cleanup_language)
     } else {
         normalized_text.clone()
     };
@@ -378,7 +400,7 @@ fn finalize_and_insert(
     };
 
     // Number-word → digit conversion (e.g. "twenty three" → "23").
-    let cleaned_text = if config.numerals_enabled {
+    let cleaned_text = if config.numerals_enabled && allow_english_shaped_transforms {
         speech::cleanup::convert_number_words(&cleaned_text)
     } else {
         cleaned_text
@@ -503,6 +525,20 @@ fn transcribe_and_insert(
     runtime_dict: &RuntimeDictionary,
     style_profile_id: Option<String>,
 ) {
+    let utterance_duration_ms = match &audio_data {
+        AudioData::WavFile(_) => 0,
+        AudioData::RawSamples {
+            samples,
+            sample_rate,
+            channels,
+        } => {
+            let channel_count = u64::from((*channels).max(1));
+            let sample_rate = u64::from((*sample_rate).max(1));
+            let frames = samples.len() as u64 / channel_count;
+            (frames * 1000) / sample_rate
+        }
+    };
+
     let transcribe_result = match audio_data {
         AudioData::WavFile(wav_path) => speech::cloud_transcribe(
             &wav_path,
@@ -529,14 +565,24 @@ fn transcribe_and_insert(
 
     match transcribe_result {
         Ok(raw_text) => {
+            let raw_segments = vec![raw_text.clone()];
+            let preview_analysis = language::analyze_preview_segments(&raw_segments);
             finalize_and_insert(
                 app,
                 config,
                 hwnd,
                 TranscriptPipelineInput {
-                    raw_segments: vec![raw_text.clone()],
+                    raw_segments,
                     joined_text: raw_text,
                     stt_provider: resolve_stt_provider(config),
+                    utterance_duration_ms,
+                    preview_segment_count: preview_analysis.non_empty_segments,
+                    preview_language_family: preview_analysis.family,
+                    preview_language_lock_confidence: preview_analysis.confidence,
+                    mixed_script_detected: preview_analysis.mixed_script_detected,
+                    final_pass_used: false,
+                    final_pass_reason: "single-pass".to_string(),
+                    final_pass_latency_ms: None,
                 },
                 runtime_dict,
                 style_profile_id,
@@ -651,6 +697,17 @@ fn maybe_log_transcript_sample(
         cleanup_enabled: config.text_cleanup_enabled,
         post_processing_enabled: config.post_processing_enabled,
         vad_silence_threshold_ms: config.vad_silence_threshold_ms,
+        utterance_duration_ms: transcript.utterance_duration_ms,
+        preview_segment_count: transcript.preview_segment_count as u32,
+        final_pass_used: transcript.final_pass_used,
+        final_pass_reason: transcript.final_pass_reason.clone(),
+        final_pass_latency_ms: transcript.final_pass_latency_ms.map(|ms| ms as i64),
+        language_family: transcript.preview_language_family.as_str().to_string(),
+        language_lock_confidence: transcript
+            .preview_language_lock_confidence
+            .as_str()
+            .to_string(),
+        mixed_script_detected: transcript.mixed_script_detected,
         raw_segments_json,
         joined_text: option_if_not_empty(&transcript.joined_text),
         normalized_text,
@@ -668,6 +725,19 @@ fn option_if_not_empty(text: &str) -> Option<String> {
         None
     } else {
         Some(trimmed.to_string())
+    }
+}
+
+fn effective_cleanup_language(
+    transcript: &TranscriptPipelineInput,
+    normalized_text: &str,
+) -> LanguageFamily {
+    if transcript.preview_language_lock_confidence == LanguageLockConfidence::High
+        && transcript.preview_language_family != LanguageFamily::Unknown
+    {
+        transcript.preview_language_family
+    } else {
+        language::detect_language_family(normalized_text)
     }
 }
 
@@ -1055,6 +1125,14 @@ mod tests {
             raw_segments: vec!["deploy to staging".to_string()],
             joined_text: "deploy to staging".to_string(),
             stt_provider: "parakeet-tdt".to_string(),
+            utterance_duration_ms: 1_500,
+            preview_segment_count: 1,
+            preview_language_family: LanguageFamily::Latin,
+            preview_language_lock_confidence: LanguageLockConfidence::High,
+            mixed_script_detected: false,
+            final_pass_used: false,
+            final_pass_reason: "single-pass".to_string(),
+            final_pass_latency_ms: None,
         };
 
         let raw_segments_json = serde_json::to_string(&input.raw_segments).unwrap();
@@ -1068,10 +1146,19 @@ mod tests {
             raw_segments: vec!["open the".to_string(), "settings page".to_string()],
             joined_text: "open the settings page".to_string(),
             stt_provider: "parakeet-tdt".to_string(),
+            utterance_duration_ms: 4_000,
+            preview_segment_count: 2,
+            preview_language_family: LanguageFamily::Latin,
+            preview_language_lock_confidence: LanguageLockConfidence::High,
+            mixed_script_detected: false,
+            final_pass_used: false,
+            final_pass_reason: "preview-only".to_string(),
+            final_pass_latency_ms: None,
         };
 
         let raw_segments_json = serde_json::to_string(&input.raw_segments).unwrap();
         assert_eq!(raw_segments_json, "[\"open the\",\"settings page\"]");
         assert_eq!(input.joined_text, "open the settings page");
     }
+
 }
