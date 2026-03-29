@@ -125,28 +125,46 @@ fn parse_chord(name: &str) -> Vec<Key> {
             let trimmed = part.trim();
             parse_key(trimmed).or_else(|| {
                 // Try letter keys: "A" → KeyA
-                if trimmed.len() == 1 && trimmed.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false) {
+                if trimmed.len() == 1
+                    && trimmed
+                        .chars()
+                        .next()
+                        .map(|c| c.is_ascii_alphabetic())
+                        .unwrap_or(false)
+                {
                     let upper = trimmed.to_uppercase();
-                    parse_key(&format!("Key{}", upper))
-                        .or_else(|| {
-                            // Direct letter matching via Unknown variant
-                            match upper.as_str() {
-                                "A" => Some(Key::KeyA), "B" => Some(Key::KeyB),
-                                "C" => Some(Key::KeyC), "D" => Some(Key::KeyD),
-                                "E" => Some(Key::KeyE), "F" => Some(Key::KeyF),
-                                "G" => Some(Key::KeyG), "H" => Some(Key::KeyH),
-                                "I" => Some(Key::KeyI), "J" => Some(Key::KeyJ),
-                                "K" => Some(Key::KeyK), "L" => Some(Key::KeyL),
-                                "M" => Some(Key::KeyM), "N" => Some(Key::KeyN),
-                                "O" => Some(Key::KeyO), "P" => Some(Key::KeyP),
-                                "Q" => Some(Key::KeyQ), "R" => Some(Key::KeyR),
-                                "S" => Some(Key::KeyS), "T" => Some(Key::KeyT),
-                                "U" => Some(Key::KeyU), "V" => Some(Key::KeyV),
-                                "W" => Some(Key::KeyW), "X" => Some(Key::KeyX),
-                                "Y" => Some(Key::KeyY), "Z" => Some(Key::KeyZ),
-                                _ => None,
-                            }
-                        })
+                    parse_key(&format!("Key{}", upper)).or_else(|| {
+                        // Direct letter matching via Unknown variant
+                        match upper.as_str() {
+                            "A" => Some(Key::KeyA),
+                            "B" => Some(Key::KeyB),
+                            "C" => Some(Key::KeyC),
+                            "D" => Some(Key::KeyD),
+                            "E" => Some(Key::KeyE),
+                            "F" => Some(Key::KeyF),
+                            "G" => Some(Key::KeyG),
+                            "H" => Some(Key::KeyH),
+                            "I" => Some(Key::KeyI),
+                            "J" => Some(Key::KeyJ),
+                            "K" => Some(Key::KeyK),
+                            "L" => Some(Key::KeyL),
+                            "M" => Some(Key::KeyM),
+                            "N" => Some(Key::KeyN),
+                            "O" => Some(Key::KeyO),
+                            "P" => Some(Key::KeyP),
+                            "Q" => Some(Key::KeyQ),
+                            "R" => Some(Key::KeyR),
+                            "S" => Some(Key::KeyS),
+                            "T" => Some(Key::KeyT),
+                            "U" => Some(Key::KeyU),
+                            "V" => Some(Key::KeyV),
+                            "W" => Some(Key::KeyW),
+                            "X" => Some(Key::KeyX),
+                            "Y" => Some(Key::KeyY),
+                            "Z" => Some(Key::KeyZ),
+                            _ => None,
+                        }
+                    })
                 } else {
                     None
                 }
@@ -316,8 +334,12 @@ pub fn start_hotkey_listener(app_handle: AppHandle, cache: HotkeyCache) {
         let callback = move |event: Event| {
             // Update held keys set
             match &event.event_type {
-                EventType::KeyPress(key) => { held_keys.insert(*key); }
-                EventType::KeyRelease(key) => { held_keys.remove(key); }
+                EventType::KeyPress(key) => {
+                    held_keys.insert(*key);
+                }
+                EventType::KeyRelease(key) => {
+                    held_keys.remove(key);
+                }
                 _ => {}
             }
 
@@ -455,12 +477,9 @@ pub fn start_hotkey_listener(app_handle: AppHandle, cache: HotkeyCache) {
                     }
                     EventType::KeyRelease(key) => {
                         // Any chord key released → stop recording
-                        if cmd_state == CommandState::Recording
-                            && cmd_chord.contains(&key)
-                        {
-                            let held_ms = cmd_press_time
-                                .map(|t| t.elapsed().as_millis())
-                                .unwrap_or(0);
+                        if cmd_state == CommandState::Recording && cmd_chord.contains(&key) {
+                            let held_ms =
+                                cmd_press_time.map(|t| t.elapsed().as_millis()).unwrap_or(0);
 
                             cmd_state = CommandState::Idle;
                             active = ActiveRecording::None;

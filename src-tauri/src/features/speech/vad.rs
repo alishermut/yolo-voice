@@ -39,6 +39,11 @@ pub struct SpeechSegment {
     pub samples: Vec<f32>,
 }
 
+pub struct CompactedSpeech {
+    pub compacted_samples_16k: Vec<f32>,
+    pub speech_region_count: usize,
+}
+
 /// Streaming VAD processor. Feed it raw 16 kHz mono f32 chunks.
 pub struct VadProcessor {
     session: Session,
@@ -149,7 +154,8 @@ impl VadProcessor {
         input_vec.extend_from_slice(&self.context);
         input_vec.extend_from_slice(chunk);
 
-        let input_tensor = match Tensor::from_array(([1usize, input_vec.len()], input_vec.clone())) {
+        let input_tensor = match Tensor::from_array(([1usize, input_vec.len()], input_vec.clone()))
+        {
             Ok(t) => t,
             Err(e) => {
                 eprintln!("[vad] input tensor error: {e}");
@@ -176,7 +182,10 @@ impl VadProcessor {
         };
 
         // Run inference
-        let outputs = match self.session.run(ort::inputs![input_tensor, state_tensor, sr_tensor]) {
+        let outputs = match self
+            .session
+            .run(ort::inputs![input_tensor, state_tensor, sr_tensor])
+        {
             Ok(o) => o,
             Err(e) => {
                 eprintln!("[vad] inference error: {e}");
@@ -203,7 +212,8 @@ impl VadProcessor {
         // Update context for next chunk
         let chunk_len = chunk.len();
         if chunk_len >= CONTEXT_SIZE {
-            self.context.copy_from_slice(&chunk[chunk_len - CONTEXT_SIZE..]);
+            self.context
+                .copy_from_slice(&chunk[chunk_len - CONTEXT_SIZE..]);
         }
 
         prob
@@ -278,5 +288,105 @@ impl VadProcessor {
         }
 
         None
+    }
+}
+
+pub fn compact_speech(
+    samples: &[f32],
+    input_sample_rate: u32,
+    input_channels: u16,
+    model_path: &Path,
+    silence_threshold_ms: u32,
+) -> Result<CompactedSpeech, String> {
+    let mut vad = VadProcessor::new(model_path, silence_threshold_ms)?;
+    let mono_samples_16k = resample_to_mono_16k(samples, input_sample_rate, input_channels);
+
+    let mut compacted_samples_16k = Vec::new();
+    let mut speech_region_count = 0usize;
+
+    let mut offset = 0usize;
+    while offset + CHUNK_SIZE <= mono_samples_16k.len() {
+        let chunk = &mono_samples_16k[offset..offset + CHUNK_SIZE];
+        let segments = vad.process(chunk);
+        for segment in segments {
+            speech_region_count += 1;
+            compacted_samples_16k.extend_from_slice(&segment.samples);
+        }
+        offset += CHUNK_SIZE;
+    }
+
+    if let Some(segment) = vad.flush() {
+        speech_region_count += 1;
+        compacted_samples_16k.extend_from_slice(&segment.samples);
+    }
+
+    Ok(CompactedSpeech {
+        compacted_samples_16k,
+        speech_region_count,
+    })
+}
+
+pub fn resample_to_mono_16k(samples: &[f32], input_sample_rate: u32, input_channels: u16) -> Vec<f32> {
+    if samples.is_empty() {
+        return Vec::new();
+    }
+
+    let ch = input_channels.max(1) as usize;
+    let mono: Vec<f32> = if ch > 1 {
+        let num_frames = samples.len() / ch;
+        (0..num_frames)
+            .map(|i| {
+                let mut sum = 0.0f32;
+                for c in 0..ch {
+                    sum += samples[i * ch + c];
+                }
+                sum / ch as f32
+            })
+            .collect()
+    } else {
+        samples.to_vec()
+    };
+
+    if input_sample_rate == VAD_SAMPLE_RATE as u32 {
+        return mono;
+    }
+
+    let ratio = VAD_SAMPLE_RATE as f64 / input_sample_rate.max(1) as f64;
+    let out_len = (mono.len() as f64 * ratio) as usize;
+    let mut out = Vec::with_capacity(out_len);
+    for i in 0..out_len {
+        let src_idx = i as f64 / ratio;
+        let idx0 = src_idx as usize;
+        let frac = (src_idx - idx0 as f64) as f32;
+        let s0 = mono.get(idx0).copied().unwrap_or(0.0);
+        let s1 = mono.get(idx0 + 1).copied().unwrap_or(s0);
+        out.push(s0 + (s1 - s0) * frac);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resample_to_mono_16k;
+
+    #[test]
+    fn resample_to_mono_16k_passthrough_for_matching_input() {
+        let samples = vec![0.1f32, -0.2, 0.3, -0.4];
+        let out = resample_to_mono_16k(&samples, 16_000, 1);
+        assert_eq!(out, samples);
+    }
+
+    #[test]
+    fn resample_to_mono_16k_downmixes_stereo() {
+        let stereo = vec![1.0f32, 0.0, 0.0, 1.0];
+        let out = resample_to_mono_16k(&stereo, 16_000, 2);
+        assert_eq!(out, vec![0.5f32, 0.5]);
+    }
+
+    #[test]
+    fn resample_to_mono_16k_resamples_when_needed() {
+        let samples = vec![0.0f32; 48_000];
+        let out = resample_to_mono_16k(&samples, 48_000, 1);
+        assert!((15_900..=16_100).contains(&out.len()));
     }
 }

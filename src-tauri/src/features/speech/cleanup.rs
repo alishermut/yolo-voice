@@ -19,29 +19,64 @@ static LEADING_DISCOURSE_MARKER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)^\s*(?:you know|i mean)\b,\s*").unwrap());
 
 static MULTI_SPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r" {2,}").unwrap());
-static SPACE_BEFORE_PUNCT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r" ([.,!?;:])").unwrap());
+static SPACE_BEFORE_PUNCT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r" ([.,!?;:])").unwrap());
 static DOUBLE_PUNCT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"([.,!?;:])\s*([.,!?;:])").unwrap());
-static SENTENCE_CAP: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"([.!?])\s+([a-z])").unwrap());
+static SENTENCE_CAP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"([.!?])\s+([a-z])").unwrap());
 
 static LOWERCASE_FIRST_WORD: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(\W*)([A-Z][A-Za-z']*)(.*)$").unwrap());
 
 static RESTART_WORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     HashSet::from([
-        "i", "the", "a", "an", "we", "you", "he", "she", "it", "they", "to", "of", "and",
-        "but",
+        "i", "the", "a", "an", "we", "you", "he", "she", "it", "they", "to", "of", "and", "but",
     ])
 });
 
 static CONTINUATION_FIRST_WORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     HashSet::from([
-        "and", "but", "so", "because", "if", "then", "or", "that", "which", "who", "whom",
-        "when", "while", "unless", "though", "although", "after", "before", "until", "as",
-        "whether", "to", "for", "with", "from", "of", "in", "on", "at", "by", "the", "a",
-        "an", "is", "are", "was", "were", "today", "tomorrow", "yesterday", "later", "now",
+        "and",
+        "but",
+        "so",
+        "because",
+        "if",
+        "then",
+        "or",
+        "that",
+        "which",
+        "who",
+        "whom",
+        "when",
+        "while",
+        "unless",
+        "though",
+        "although",
+        "after",
+        "before",
+        "until",
+        "as",
+        "whether",
+        "to",
+        "for",
+        "with",
+        "from",
+        "of",
+        "in",
+        "on",
+        "at",
+        "by",
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "today",
+        "tomorrow",
+        "yesterday",
+        "later",
+        "now",
         "soon",
     ])
 });
@@ -145,6 +180,17 @@ pub fn clean_final_text_for_language(input: &str, language_family: LanguageFamil
     finalize_text(&text)
 }
 
+pub fn normalize_text_light(input: &str) -> String {
+    if input.trim().is_empty() {
+        return String::new();
+    }
+
+    let collapsed = MULTI_SPACE.replace_all(input, " ").to_string();
+    normalize_spacing_and_punctuation(&collapsed)
+        .trim()
+        .to_string()
+}
+
 /// Heuristic segment joining for VAD output.
 #[allow(dead_code)]
 pub fn join_segments_heuristic(segments: &[String]) -> String {
@@ -195,7 +241,11 @@ pub fn join_segments_for_language(segments: &[String], language_family: Language
         }
 
         if prev_tokens.len() <= 2 && COMMA_LEAD_INS.contains(last.as_str()) {
-            result = format!("{} , {}", prev.trim_end_matches(','), lowercase_first_word_force(curr));
+            result = format!(
+                "{} , {}",
+                prev.trim_end_matches(','),
+                lowercase_first_word_force(curr)
+            );
             result = result.replace(" , ", ", ");
             continue;
         }
@@ -274,7 +324,9 @@ fn remove_restart_stutters(input: &str) -> String {
         let prev_norm = normalize_token(result.last().unwrap());
         let curr_norm = normalize_token(word);
 
-        if !prev_norm.is_empty() && prev_norm == curr_norm && RESTART_WORDS.contains(curr_norm.as_str())
+        if !prev_norm.is_empty()
+            && prev_norm == curr_norm
+            && RESTART_WORDS.contains(curr_norm.as_str())
         {
             continue;
         }
@@ -309,7 +361,9 @@ fn finalize_text(input: &str) -> String {
 }
 
 fn tokenize(text: &str) -> Vec<String> {
-    text.split_whitespace().map(|token| token.to_string()).collect()
+    text.split_whitespace()
+        .map(|token| token.to_string())
+        .collect()
 }
 
 fn normalize_token(token: &str) -> String {
@@ -397,16 +451,21 @@ static HALLUCINATION_PHRASES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
             // Match the phrase as a standalone sentence (possibly preceded/followed
             // by punctuation and whitespace) or as the entire input.
             let escaped = regex::escape(p);
-            Regex::new(&format!(r"(?i)(?:^|\.\s*|\!\s*|\?\s*){}\s*[.!?]*\s*", escaped))
-                .unwrap()
+            Regex::new(&format!(
+                r"(?i)(?:^|\.\s*|\!\s*|\?\s*){}\s*[.!?]*\s*",
+                escaped
+            ))
+            .unwrap()
         })
         .collect()
 });
 
 /// Bracketed / parenthesised audio labels produced by some models.
 static HALLUCINATION_LABELS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\s*[\[\(]\s*(?:music|applause|laughter|silence|inaudible|blank audio)\s*[\]\)]\s*")
-        .unwrap()
+    Regex::new(
+        r"(?i)\s*[\[\(]\s*(?:music|applause|laughter|silence|inaudible|blank audio)\s*[\]\)]\s*",
+    )
+    .unwrap()
 });
 
 /// Remove known hallucination phrases from the text.
@@ -428,7 +487,11 @@ pub fn filter_hallucination_phrases(input: &str) -> String {
     let result = MULTI_SPACE.replace_all(text.trim(), " ").to_string();
 
     // If only punctuation/whitespace remains, treat as fully hallucinated
-    if result.trim().chars().all(|c| c.is_ascii_punctuation() || c.is_whitespace()) {
+    if result
+        .trim()
+        .chars()
+        .all(|c| c.is_ascii_punctuation() || c.is_whitespace())
+    {
         return String::new();
     }
     result.trim().to_string()
@@ -458,8 +521,7 @@ pub fn filter_hallucination_loops(input: &str) -> String {
         while i < sentences.len() {
             let start = i;
             // Count how many consecutive identical sentences follow
-            while i + 1 < sentences.len()
-                && sentences[i + 1].eq_ignore_ascii_case(sentences[start])
+            while i + 1 < sentences.len() && sentences[i + 1].eq_ignore_ascii_case(sentences[start])
             {
                 i += 1;
             }
@@ -491,8 +553,7 @@ pub fn filter_hallucination_loops(input: &str) -> String {
 }
 
 /// Split on sentence-ending punctuation while keeping the structure.
-static SENTENCE_SPLIT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[.!?]+\s*").unwrap());
+static SENTENCE_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[.!?]+\s*").unwrap());
 
 /// Collapse word-level repetition: if a contiguous run of identical 2-5 word
 /// chunks repeats 3+ times, keep one occurrence.
@@ -510,8 +571,7 @@ fn filter_word_level_loops(input: &str) -> String {
         while i < result.len() {
             if i + phrase_len * 3 <= result.len() {
                 let phrase: Vec<&str> = result[i..i + phrase_len].to_vec();
-                let phrase_lower: Vec<String> =
-                    phrase.iter().map(|w| w.to_lowercase()).collect();
+                let phrase_lower: Vec<String> = phrase.iter().map(|w| w.to_lowercase()).collect();
                 let mut reps = 1usize;
                 let mut j = i + phrase_len;
                 while j + phrase_len <= result.len() {
@@ -701,7 +761,11 @@ struct NumberAcc {
 
 impl NumberAcc {
     fn new() -> Self {
-        Self { result: 0, group: 0, group_has_content: false }
+        Self {
+            result: 0,
+            group: 0,
+            group_has_content: false,
+        }
     }
 
     /// Try to incorporate `value` of `kind`. Returns false if it would start a
@@ -863,9 +927,15 @@ mod tests {
 
     #[test]
     fn removes_hard_fillers() {
-        assert_eq!(clean_final_text("I um think this is good"), "I think this is good");
+        assert_eq!(
+            clean_final_text("I um think this is good"),
+            "I think this is good"
+        );
         assert_eq!(clean_final_text("uh hello there"), "Hello there");
-        assert_eq!(clean_final_text("uh-huh yes that's correct"), "Yes that's correct");
+        assert_eq!(
+            clean_final_text("uh-huh yes that's correct"),
+            "Yes that's correct"
+        );
     }
 
     #[test]
@@ -890,7 +960,10 @@ mod tests {
 
     #[test]
     fn preserves_semantic_hedges() {
-        assert_eq!(clean_final_text("it's basically done"), "It's basically done");
+        assert_eq!(
+            clean_final_text("it's basically done"),
+            "It's basically done"
+        );
         assert_eq!(
             clean_final_text("I literally saw it happen"),
             "I literally saw it happen"
@@ -917,7 +990,10 @@ mod tests {
 
     #[test]
     fn removes_restart_stutters() {
-        assert_eq!(clean_final_text("I I think we should go"), "I think we should go");
+        assert_eq!(
+            clean_final_text("I I think we should go"),
+            "I think we should go"
+        );
         assert_eq!(
             clean_final_text("the the problem is the API key"),
             "The problem is the API key"
@@ -930,18 +1006,21 @@ mod tests {
 
     #[test]
     fn segment_cleanup_stays_lightweight() {
-        assert_eq!(clean_segment_text("uh open the settings menu"), "open the settings menu");
+        assert_eq!(
+            clean_segment_text("uh open the settings menu"),
+            "open the settings menu"
+        );
         assert_eq!(clean_segment_text("actually"), "actually");
-        assert_eq!(clean_segment_text("hello. how are you"), "hello. how are you");
+        assert_eq!(
+            clean_segment_text("hello. how are you"),
+            "hello. how are you"
+        );
     }
 
     #[test]
     fn cyrillic_text_bypasses_english_only_cleanup() {
         assert_eq!(
-            clean_final_text_for_language(
-                "ну period давай двадцать три",
-                LanguageFamily::Cyrillic
-            ),
+            clean_final_text_for_language("ну period давай двадцать три", LanguageFamily::Cyrillic),
             "ну period давай двадцать три"
         );
         assert_eq!(
@@ -955,7 +1034,10 @@ mod tests {
 
     #[test]
     fn english_continuation_rules_do_not_touch_cyrillic_segments() {
-        let segments = vec!["Для релиза".to_string(), "И нужно уведомить команду".to_string()];
+        let segments = vec![
+            "Для релиза".to_string(),
+            "И нужно уведомить команду".to_string(),
+        ];
         assert_eq!(
             join_segments_for_language(&segments, LanguageFamily::Cyrillic),
             "Для релиза И нужно уведомить команду"
@@ -965,12 +1047,18 @@ mod tests {
     #[test]
     fn heuristic_join_handles_incomplete_clauses() {
         let segments = vec!["the API endpoint".to_string(), "is down".to_string()];
-        assert_eq!(join_segments_heuristic(&segments), "the API endpoint is down");
+        assert_eq!(
+            join_segments_heuristic(&segments),
+            "the API endpoint is down"
+        );
     }
 
     #[test]
     fn heuristic_join_handles_comma_continuation() {
-        let segments = vec!["For the rollout,".to_string(), "We should notify support".to_string()];
+        let segments = vec![
+            "For the rollout,".to_string(),
+            "We should notify support".to_string(),
+        ];
         assert_eq!(
             join_segments_heuristic(&segments),
             "For the rollout, we should notify support"
@@ -979,7 +1067,10 @@ mod tests {
 
     #[test]
     fn heuristic_join_handles_short_lead_ins() {
-        let segments = vec!["Actually".to_string(), "I think the first version was better".to_string()];
+        let segments = vec![
+            "Actually".to_string(),
+            "I think the first version was better".to_string(),
+        ];
         assert_eq!(
             join_segments_heuristic(&segments),
             "Actually, I think the first version was better"
@@ -989,18 +1080,27 @@ mod tests {
     #[test]
     fn heuristic_join_handles_affirmations_without_sentence_breaks() {
         let segments = vec!["Yes".to_string(), "That matches my logs".to_string()];
-        assert_eq!(join_segments_heuristic(&segments), "Yes that matches my logs");
+        assert_eq!(
+            join_segments_heuristic(&segments),
+            "Yes that matches my logs"
+        );
     }
 
     #[test]
     fn heuristic_join_handles_time_adverb_continuations() {
         let segments = vec!["we were going to ship".to_string(), "today".to_string()];
-        assert_eq!(join_segments_heuristic(&segments), "we were going to ship today");
+        assert_eq!(
+            join_segments_heuristic(&segments),
+            "we were going to ship today"
+        );
     }
 
     #[test]
     fn minimal_join_preserves_rawish_text_when_cleanup_disabled() {
-        let segments = vec!["Actually".to_string(), "I Think The First Version Was Better".to_string()];
+        let segments = vec![
+            "Actually".to_string(),
+            "I Think The First Version Was Better".to_string(),
+        ];
         assert_eq!(
             join_segments_minimal(&segments),
             "Actually I Think The First Version Was Better"
@@ -1140,15 +1240,9 @@ mod tests {
             "Thank you."
         );
         // Two repetitions are preserved (not a loop of 3+)
-        assert_eq!(
-            filter_hallucinations("OK. OK."),
-            "OK. OK."
-        );
+        assert_eq!(filter_hallucinations("OK. OK."), "OK. OK.");
         // 3 repetitions → collapsed to 1
-        assert_eq!(
-            filter_hallucination_loops("Stop. Stop. Stop."),
-            "Stop."
-        );
+        assert_eq!(filter_hallucination_loops("Stop. Stop. Stop."), "Stop.");
     }
 
     #[test]
@@ -1175,6 +1269,14 @@ mod tests {
         assert_eq!(filter_hallucinations("..."), "");
     }
 
+    #[test]
+    fn light_normalization_preserves_raw_wording() {
+        assert_eq!(
+            normalize_text_light("um hello   ,   world"),
+            "um hello, world"
+        );
+    }
+
     // --- Spoken punctuation tests ---
 
     #[test]
@@ -1195,10 +1297,7 @@ mod tests {
             replace_spoken_punctuation("is that right question mark"),
             "is that right?"
         );
-        assert_eq!(
-            replace_spoken_punctuation("wow exclamation mark"),
-            "wow!"
-        );
+        assert_eq!(replace_spoken_punctuation("wow exclamation mark"), "wow!");
         assert_eq!(
             replace_spoken_punctuation("really exclamation point"),
             "really!"
@@ -1233,10 +1332,7 @@ mod tests {
 
     #[test]
     fn spoken_punctuation_passthrough() {
-        assert_eq!(
-            replace_spoken_punctuation("hello world"),
-            "hello world"
-        );
+        assert_eq!(replace_spoken_punctuation("hello world"), "hello world");
         assert_eq!(replace_spoken_punctuation(""), "");
     }
 }

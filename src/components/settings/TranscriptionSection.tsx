@@ -7,7 +7,7 @@ import {
 } from "../ui/styles";
 import { Select } from "../ui/Select";
 import { Switch } from "../ui/Switch";
-import { OfflineInfoCard, CloudInfoCard } from "./EngineInfoCard";
+import { CloudInfoCard } from "./EngineInfoCard";
 
 interface TranscriptionSectionProps {
   config: AppConfig;
@@ -67,18 +67,43 @@ export function TranscriptionSection({
           </label>
         </div>
 
-        {/* Info card for selected engine */}
-        <div className="mb-4">
-          {config.transcription_mode !== "cloud"
-            ? <OfflineInfoCard />
-            : <CloudInfoCard provider={config.cloud_stt_provider ?? "groq"} />
-          }
-        </div>
+        {config.transcription_mode === "cloud" && (
+          <div className="mb-4">
+            <CloudInfoCard provider={config.cloud_stt_provider ?? "groq"} />
+          </div>
+        )}
 
         {/* Offline settings */}
         {config.transcription_mode !== "cloud" && (
           <div className="space-y-4">
-            <ModelSelector />
+            <ModelSelector config={config} updateConfig={updateConfig} />
+
+            {config.offline_engine === "parakeet" && (
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-sm font-medium text-text-primary">
+                    {t("transcription.offline.parakeetSegmentedLabel", {
+                      defaultValue: "Fast segmented mode",
+                    })}
+                  </span>
+                  <p className="text-xs text-text-muted">
+                    {t("transcription.offline.parakeetSegmentedDescription", {
+                      defaultValue:
+                        "Uses VAD and segmented transcription for much faster response, but can reduce quality on natural dictation.",
+                    })}
+                  </p>
+                </div>
+                <Switch
+                  checked={config.parakeet_segmented_mode_enabled}
+                  onChange={(checked) =>
+                    updateConfig({ parakeet_segmented_mode_enabled: checked })
+                  }
+                  label={t("transcription.offline.parakeetSegmentedLabel", {
+                    defaultValue: "Fast segmented mode",
+                  })}
+                />
+              </div>
+            )}
 
             <div className="flex items-center justify-between">
               <div>
@@ -104,7 +129,12 @@ export function TranscriptionSection({
                   {t("transcription.offline.numeralsLabel")}
                 </span>
                 <p className="text-xs text-text-muted">
-                  {t("transcription.offline.numeralsDescription")}
+                  {config.offline_engine === "distil_whisper"
+                    ? t("transcription.offline.distilNumeralsDescription", {
+                        defaultValue:
+                          "Optional for Distil-Whisper. Leave it off to preserve raw wording, or enable it if you prefer digit-style output.",
+                      })
+                    : t("transcription.offline.numeralsDescription")}
                 </p>
               </div>
               <Switch
@@ -140,7 +170,12 @@ export function TranscriptionSection({
                   {t("transcription.offline.spokenPunctuationLabel")}
                 </span>
                 <p className="text-xs text-text-muted">
-                  {t("transcription.offline.spokenPunctuationDescription")}
+                  {config.offline_engine === "distil_whisper"
+                    ? t("transcription.offline.distilSpokenPunctuationDescription", {
+                        defaultValue:
+                          "Optional for Distil-Whisper. Leave it off for raw punctuation, or enable it if you explicitly dictate punctuation words like comma or period.",
+                      })
+                    : t("transcription.offline.spokenPunctuationDescription")}
                 </p>
               </div>
               <Switch

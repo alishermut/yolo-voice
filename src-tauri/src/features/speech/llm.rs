@@ -30,7 +30,11 @@ pub fn post_process_text(
         "ollama" => call_ollama(
             text,
             &system_prompt,
-            if model.is_empty() { "llama3.1:8b" } else { model },
+            if model.is_empty() {
+                "llama3.1:8b"
+            } else {
+                model
+            },
             if base_url.is_empty() {
                 "http://localhost:11434"
             } else {
@@ -40,7 +44,11 @@ pub fn post_process_text(
         "openai" => call_openai(
             text,
             &system_prompt,
-            if model.is_empty() { "gpt-4o-mini" } else { model },
+            if model.is_empty() {
+                "gpt-4o-mini"
+            } else {
+                model
+            },
             api_key,
             if base_url.is_empty() {
                 "https://api.openai.com"
@@ -98,7 +106,11 @@ pub fn command_llm_call(
         "ollama" => call_ollama(
             transcript,
             system_prompt,
-            if model.is_empty() { "llama3.1:8b" } else { model },
+            if model.is_empty() {
+                "llama3.1:8b"
+            } else {
+                model
+            },
             if base_url.is_empty() {
                 "http://localhost:11434"
             } else {
@@ -108,7 +120,11 @@ pub fn command_llm_call(
         "openai" => call_openai(
             transcript,
             system_prompt,
-            if model.is_empty() { "gpt-4o-mini" } else { model },
+            if model.is_empty() {
+                "gpt-4o-mini"
+            } else {
+                model
+            },
             api_key,
             if base_url.is_empty() {
                 "https://api.openai.com"
@@ -224,13 +240,22 @@ pub fn generate_misspelling_variants(term: &str, api_key: &str) -> Result<Vec<St
 
     // Parse the JSON array from the response
     let trimmed = response.trim();
-    let variants: Vec<String> = serde_json::from_str(trimmed)
-        .map_err(|e| format!("Failed to parse LLM response as JSON array: {}. Response: {}", e, trimmed))?;
+    let variants: Vec<String> = serde_json::from_str(trimmed).map_err(|e| {
+        format!(
+            "Failed to parse LLM response as JSON array: {}. Response: {}",
+            e, trimmed
+        )
+    })?;
 
     Ok(variants)
 }
 
-fn call_ollama(text: &str, system_prompt: &str, model: &str, base_url: &str) -> Result<String, String> {
+fn call_ollama(
+    text: &str,
+    system_prompt: &str,
+    model: &str,
+    base_url: &str,
+) -> Result<String, String> {
     let url = format!("{}/api/generate", base_url.trim_end_matches('/'));
     let payload = serde_json::json!({
         "model": model,
@@ -249,7 +274,9 @@ fn call_ollama(text: &str, system_prompt: &str, model: &str, base_url: &str) -> 
         return Err(format!("Ollama error: HTTP {}", resp.status()));
     }
 
-    let data: serde_json::Value = resp.json().map_err(|e| format!("Ollama response parse error: {}", e))?;
+    let data: serde_json::Value = resp
+        .json()
+        .map_err(|e| format!("Ollama response parse error: {}", e))?;
     Ok(data
         .get("response")
         .and_then(|r| r.as_str())
@@ -287,7 +314,9 @@ fn call_openai(
         return Err(format!("OpenAI error: HTTP {}", resp.status()));
     }
 
-    let data: serde_json::Value = resp.json().map_err(|e| format!("OpenAI response parse error: {}", e))?;
+    let data: serde_json::Value = resp
+        .json()
+        .map_err(|e| format!("OpenAI response parse error: {}", e))?;
     Ok(data["choices"][0]["message"]["content"]
         .as_str()
         .unwrap_or("")
@@ -295,7 +324,12 @@ fn call_openai(
         .to_string())
 }
 
-fn call_claude(text: &str, system_prompt: &str, model: &str, api_key: &str) -> Result<String, String> {
+fn call_claude(
+    text: &str,
+    system_prompt: &str,
+    model: &str,
+    api_key: &str,
+) -> Result<String, String> {
     let payload = serde_json::json!({
         "model": model,
         "max_tokens": 4096,
@@ -318,7 +352,9 @@ fn call_claude(text: &str, system_prompt: &str, model: &str, api_key: &str) -> R
         return Err(format!("Claude error: HTTP {}", resp.status()));
     }
 
-    let data: serde_json::Value = resp.json().map_err(|e| format!("Claude response parse error: {}", e))?;
+    let data: serde_json::Value = resp
+        .json()
+        .map_err(|e| format!("Claude response parse error: {}", e))?;
     let content = data
         .get("content")
         .and_then(|c| c.as_array())

@@ -26,7 +26,12 @@ impl InferenceSession {
         #[cfg(windows)]
         if use_gpu {
             match Self::try_create(model_dir, ExecutionProvider::DirectML) {
-                Ok(p) => return Ok(InferenceSession { parakeet: p, gpu_available: true }),
+                Ok(p) => {
+                    return Ok(InferenceSession {
+                        parakeet: p,
+                        gpu_available: true,
+                    })
+                }
                 Err(e) => {
                     eprintln!("[inference] DirectML failed ({}), falling back to CPU", e);
                 }
@@ -40,13 +45,15 @@ impl InferenceSession {
 
         let p = Self::try_create(model_dir, ExecutionProvider::Cpu)
             .map_err(|e| format!("Failed to initialize inference on CPU: {}", e))?;
-        Ok(InferenceSession { parakeet: p, gpu_available: false })
+        Ok(InferenceSession {
+            parakeet: p,
+            gpu_available: false,
+        })
     }
 
     fn try_create(model_dir: &Path, provider: ExecutionProvider) -> Result<ParakeetTDT, String> {
         let config = ExecutionConfig::new().with_execution_provider(provider);
-        ParakeetTDT::from_pretrained(model_dir, Some(config))
-            .map_err(|e| format!("{}", e))
+        ParakeetTDT::from_pretrained(model_dir, Some(config)).map_err(|e| format!("{}", e))
     }
 
     /// Transcribe raw audio samples.
@@ -113,8 +120,8 @@ fn prepare_audio(samples: &[f32], sample_rate: u32, channels: u16) -> Result<Vec
         sample_rate as usize,
         16000,
         mono.len().min(1024).max(1), // chunk size — must be ≥ 1
-        1,                     // sub chunks
-        1,                     // channels
+        1,                           // sub chunks
+        1,                           // channels
     )
     .map_err(|e| format!("Resampler init failed: {}", e))?;
 

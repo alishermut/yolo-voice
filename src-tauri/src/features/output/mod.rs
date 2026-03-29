@@ -224,8 +224,7 @@ pub fn insert_text(text: &str, target_hwnd: isize) -> Result<(), String> {
         return Ok(());
     }
 
-    let mut clipboard =
-        arboard::Clipboard::new().map_err(|e| format!("Clipboard error: {}", e))?;
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("Clipboard error: {}", e))?;
     clipboard
         .set_text(text)
         .map_err(|e| format!("Failed to set clipboard text: {}", e))?;
@@ -324,26 +323,26 @@ pub fn send_media_play_pause() {
 pub fn send_media_play_pause() {
     // macOS: use osascript to simulate media key
     let _ = std::process::Command::new("osascript")
-        .args([
-            "-e",
-            "tell application \"System Events\" to key code 16",
-        ])
+        .args(["-e", "tell application \"System Events\" to key code 16"])
         .output();
 }
 
 #[cfg(target_os = "macos")]
 fn send_paste_keystroke(_with_shift: bool) -> Result<(), String> {
     // On macOS, use enigo to send Cmd+V
-    use enigo::{Enigo, Keyboard, Settings, Key, Direction};
+    use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 
-    let mut enigo = Enigo::new(&Settings::default())
-        .map_err(|e| format!("Failed to create enigo: {}", e))?;
+    let mut enigo =
+        Enigo::new(&Settings::default()).map_err(|e| format!("Failed to create enigo: {}", e))?;
 
-    enigo.key(Key::Meta, Direction::Press)
+    enigo
+        .key(Key::Meta, Direction::Press)
         .map_err(|e| format!("Enigo key error: {}", e))?;
-    enigo.key(Key::Unicode('v'), Direction::Click)
+    enigo
+        .key(Key::Unicode('v'), Direction::Click)
         .map_err(|e| format!("Enigo key error: {}", e))?;
-    enigo.key(Key::Meta, Direction::Release)
+    enigo
+        .key(Key::Meta, Direction::Release)
         .map_err(|e| format!("Enigo key error: {}", e))?;
 
     Ok(())

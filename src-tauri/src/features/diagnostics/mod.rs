@@ -29,6 +29,52 @@ pub struct TranscriptDiagnosticsStatus {
     pub db_path: String,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct DistilWhisperDiagnosticsEvent {
+    pub created_at: i64,
+    pub session_id: String,
+    pub utterance_id: Option<String>,
+    pub event_type: String,
+    pub pipeline_mode: String,
+    pub input_source: String,
+    pub utterance_duration_ms: Option<u64>,
+    pub compacted_duration_ms: Option<u64>,
+    pub wav_bytes: Option<usize>,
+    pub compacted_wav_bytes: Option<usize>,
+    pub speech_region_count: Option<u32>,
+    pub fallback_to_raw_audio: Option<bool>,
+    pub requested_mode: Option<String>,
+    pub effective_mode: Option<String>,
+    pub device: Option<String>,
+    pub total_ms: Option<u64>,
+    pub text_len: Option<usize>,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ParakeetDiagnosticsEvent {
+    pub created_at: i64,
+    pub session_id: String,
+    pub utterance_id: Option<String>,
+    pub event_type: String,
+    pub pipeline_mode: String,
+    pub input_source: String,
+    pub utterance_duration_ms: Option<u64>,
+    pub preview_segment_count: Option<u32>,
+    pub raw_segment_count: Option<u32>,
+    pub gpu_available: Option<bool>,
+    pub vad_enabled: Option<bool>,
+    pub stop_ms: Option<u64>,
+    pub transcribe_ms: Option<u64>,
+    pub total_ms: Option<u64>,
+    pub text_len: Option<usize>,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptSample {
     pub created_at: i64,
@@ -62,19 +108,57 @@ pub struct TranscriptSample {
     pub insert_success: bool,
 }
 
+#[allow(dead_code)]
 enum DiagnosticsMsg {
     Write(TranscriptSample),
+    DistilWhisperEvent(DistilWhisperDiagnosticsEvent),
+    ParakeetEvent(ParakeetDiagnosticsEvent),
     Flush(mpsc::Sender<()>),
 }
 
 impl TranscriptDiagnosticsStore {
     pub fn new(app_handle: &AppHandle) -> Result<Self, String> {
         let db_path = diagnostics_db_path(app_handle)?;
-        Self::from_db_path(db_path)
+        let distil_whisper_events_path = distil_whisper_events_path(app_handle)?;
+        let parakeet_events_path = parakeet_events_path(app_handle)?;
+        let _ = fs::remove_file(&distil_whisper_events_path);
+        let _ = fs::remove_file(&parakeet_events_path);
+        Self::from_paths(
+            db_path,
+            distil_whisper_events_path,
+            parakeet_events_path,
+        )
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn from_db_path(db_path: PathBuf) -> Result<Self, String> {
+        let distil_whisper_events_path = db_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("distil_whisper_events.jsonl");
+        let parakeet_events_path = db_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("parakeet_events.jsonl");
+        Self::from_paths(
+            db_path,
+            distil_whisper_events_path,
+            parakeet_events_path,
+        )
+    }
+
+    pub fn from_paths(
+        db_path: PathBuf,
+        distil_whisper_events_path: PathBuf,
+        parakeet_events_path: PathBuf,
+    ) -> Result<Self, String> {
         if let Some(parent) = db_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        if let Some(parent) = distil_whisper_events_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        if let Some(parent) = parakeet_events_path.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
 
@@ -82,10 +166,19 @@ impl TranscriptDiagnosticsStore {
 
         let (tx, rx) = mpsc::channel::<DiagnosticsMsg>();
         let writer_path = db_path.clone();
+        let distil_whisper_writer_path = distil_whisper_events_path.clone();
+        let parakeet_writer_path = parakeet_events_path.clone();
 
         std::thread::Builder::new()
             .name("transcript-diagnostics-writer".into())
-            .spawn(move || writer_loop(writer_path, rx))
+            .spawn(move || {
+                writer_loop(
+                    writer_path,
+                    distil_whisper_writer_path,
+                    parakeet_writer_path,
+                    rx,
+                )
+            })
             .map_err(|e| format!("Failed to spawn transcript diagnostics writer: {e}"))?;
 
         Ok(Self {
@@ -125,6 +218,16 @@ impl TranscriptDiagnosticsStore {
         let _ = self.tx.send(DiagnosticsMsg::Write(sample));
     }
 
+    #[allow(dead_code)]
+    pub fn log_distil_whisper_event(&self, event: DistilWhisperDiagnosticsEvent) {
+        let _ = self.tx.send(DiagnosticsMsg::DistilWhisperEvent(event));
+    }
+
+    #[allow(dead_code)]
+    pub fn log_parakeet_event(&self, event: ParakeetDiagnosticsEvent) {
+        let _ = self.tx.send(DiagnosticsMsg::ParakeetEvent(event));
+    }
+
     fn flush_writer(&self) {
         let (reply_tx, reply_rx) = mpsc::channel();
         let _ = self.tx.send(DiagnosticsMsg::Flush(reply_tx));
@@ -138,11 +241,35 @@ impl TranscriptDiagnosticsStore {
 }
 
 pub fn diagnostics_db_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
     Ok(dir.join("diagnostics").join("transcript_samples.sqlite3"))
 }
 
-fn writer_loop(db_path: PathBuf, rx: mpsc::Receiver<DiagnosticsMsg>) {
+pub fn parakeet_events_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    Ok(dir.join("diagnostics").join("parakeet_events.jsonl"))
+}
+
+pub fn distil_whisper_events_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    Ok(dir.join("diagnostics").join("distil_whisper_events.jsonl"))
+}
+
+fn writer_loop(
+    db_path: PathBuf,
+    distil_whisper_events_path: PathBuf,
+    parakeet_events_path: PathBuf,
+    rx: mpsc::Receiver<DiagnosticsMsg>,
+) {
     let conn = match open_connection(&db_path) {
         Ok(conn) => conn,
         Err(err) => {
@@ -159,6 +286,20 @@ fn writer_loop(db_path: PathBuf, rx: mpsc::Receiver<DiagnosticsMsg>) {
             DiagnosticsMsg::Write(sample) => {
                 if let Err(err) = insert_sample(&conn, &sample) {
                     eprintln!("[diagnostics] Failed to write transcript sample: {}", err);
+                }
+            }
+            DiagnosticsMsg::DistilWhisperEvent(event) => {
+                if let Err(err) = append_distil_whisper_event(&distil_whisper_events_path, &event)
+                {
+                    eprintln!(
+                        "[diagnostics] Failed to write Distil-Whisper event: {}",
+                        err
+                    );
+                }
+            }
+            DiagnosticsMsg::ParakeetEvent(event) => {
+                if let Err(err) = append_parakeet_event(&parakeet_events_path, &event) {
+                    eprintln!("[diagnostics] Failed to write Parakeet event: {}", err);
                 }
             }
             DiagnosticsMsg::Flush(reply) => {
@@ -227,14 +368,13 @@ fn open_connection(db_path: &Path) -> Result<Connection, String> {
         "ALTER TABLE transcript_samples ADD COLUMN preview_segment_count INTEGER NOT NULL DEFAULT 0;"
     );
     let _ = conn.execute_batch(
-        "ALTER TABLE transcript_samples ADD COLUMN final_pass_used INTEGER NOT NULL DEFAULT 0;"
+        "ALTER TABLE transcript_samples ADD COLUMN final_pass_used INTEGER NOT NULL DEFAULT 0;",
     );
     let _ = conn.execute_batch(
         "ALTER TABLE transcript_samples ADD COLUMN final_pass_reason TEXT NOT NULL DEFAULT 'single-pass';"
     );
-    let _ = conn.execute_batch(
-        "ALTER TABLE transcript_samples ADD COLUMN final_pass_latency_ms INTEGER;"
-    );
+    let _ = conn
+        .execute_batch("ALTER TABLE transcript_samples ADD COLUMN final_pass_latency_ms INTEGER;");
     let _ = conn.execute_batch(
         "ALTER TABLE transcript_samples ADD COLUMN language_family TEXT NOT NULL DEFAULT 'unknown';"
     );
@@ -343,7 +483,9 @@ fn count_samples_at_path(db_path: &Path) -> Result<u64, String> {
 
 fn count_samples(conn: &Connection) -> Result<u64, String> {
     let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM transcript_samples", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM transcript_samples", [], |row| {
+            row.get(0)
+        })
         .map_err(|e| e.to_string())?;
     Ok(count.max(0) as u64)
 }
@@ -352,6 +494,31 @@ fn clear_samples(conn: &Connection) -> Result<(), String> {
     conn.execute("DELETE FROM transcript_samples", [])
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn append_distil_whisper_event(
+    path: &Path,
+    event: &DistilWhisperDiagnosticsEvent,
+) -> Result<(), String> {
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    use std::io::Write;
+    let line = serde_json::to_string(event).map_err(|e| e.to_string())?;
+    writeln!(file, "{}", line).map_err(|e| e.to_string())
+}
+
+fn append_parakeet_event(path: &Path, event: &ParakeetDiagnosticsEvent) -> Result<(), String> {
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    use std::io::Write;
+    let line = serde_json::to_string(event).map_err(|e| e.to_string())?;
+    writeln!(file, "{}", line).map_err(|e| e.to_string())
 }
 
 /// A lightweight transcript history entry for the user-facing history UI.
@@ -378,7 +545,10 @@ impl TranscriptDiagnosticsStore {
         self.flush_writer();
         let conn = open_connection(&self.db_path)?;
 
-        let (query, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(term) = search {
+        let (query, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(
+            term,
+        ) = search
+        {
             if term.trim().is_empty() {
                 (
                     "SELECT id, created_at, final_text, inserted_text, transcription_mode, stt_provider, pipeline_mode, insert_success \
@@ -402,7 +572,8 @@ impl TranscriptDiagnosticsStore {
             )
         };
 
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
         let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
         let entries = stmt
             .query_map(params_refs.as_slice(), |row| {
@@ -433,6 +604,12 @@ impl TranscriptDiagnosticsStore {
         Ok(())
     }
 
+    pub fn clear_history(&self) -> Result<(), String> {
+        self.flush_writer();
+        let conn = open_connection(&self.db_path)?;
+        clear_samples(&conn)
+    }
+
     /// Extract unique words from a transcript's final_text (for auto-learn dictionary).
     pub fn get_entry_words(&self, id: i64) -> Result<Vec<String>, String> {
         self.flush_writer();
@@ -448,7 +625,10 @@ impl TranscriptDiagnosticsStore {
         let words = text
             .unwrap_or_default()
             .split_whitespace()
-            .map(|w| w.trim_matches(|c: char| c.is_ascii_punctuation()).to_string())
+            .map(|w| {
+                w.trim_matches(|c: char| c.is_ascii_punctuation())
+                    .to_string()
+            })
             .filter(|w| !w.is_empty() && w.len() > 1)
             .collect::<std::collections::HashSet<String>>()
             .into_iter()
@@ -456,6 +636,7 @@ impl TranscriptDiagnosticsStore {
 
         Ok(words)
     }
+
 }
 
 pub fn current_timestamp_ms() -> i64 {
@@ -466,11 +647,7 @@ pub fn current_timestamp_ms() -> i64 {
 }
 
 fn generate_session_id() -> String {
-    format!(
-        "session-{}-{}",
-        std::process::id(),
-        current_timestamp_ms()
-    )
+    format!("session-{}-{}", std::process::id(), current_timestamp_ms())
 }
 
 #[cfg(test)]
@@ -482,12 +659,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or_default();
-        let unique = format!(
-            "{}-{}-{}.sqlite3",
-            label,
-            std::process::id(),
-            nanos
-        );
+        let unique = format!("{}-{}-{}.sqlite3", label, std::process::id(), nanos);
         std::env::temp_dir().join(unique)
     }
 
@@ -550,6 +722,53 @@ mod tests {
         assert_eq!(status.sample_count, 1);
 
         let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn writes_distil_whisper_events_to_jsonl() {
+        let dir = std::env::temp_dir().join(format!(
+            "yolo_voice_distil_events_{}_{}",
+            std::process::id(),
+            current_timestamp_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("samples.sqlite3");
+        let jsonl_path = dir.join("distil_whisper_events.jsonl");
+        let parakeet_jsonl_path = dir.join("parakeet_events.jsonl");
+        let store = TranscriptDiagnosticsStore::from_paths(
+            db_path.clone(),
+            jsonl_path.clone(),
+            parakeet_jsonl_path,
+        )
+        .unwrap();
+
+        store.log_distil_whisper_event(DistilWhisperDiagnosticsEvent {
+            created_at: 1,
+            session_id: "session-a".to_string(),
+            utterance_id: Some("utt-1".to_string()),
+            event_type: "transcribe_success".to_string(),
+            pipeline_mode: "dictation".to_string(),
+            input_source: "dictation".to_string(),
+            utterance_duration_ms: Some(1200),
+            compacted_duration_ms: Some(900),
+            wav_bytes: Some(1234),
+            compacted_wav_bytes: Some(900),
+            speech_region_count: Some(2),
+            fallback_to_raw_audio: Some(false),
+            requested_mode: Some("single_pass".to_string()),
+            effective_mode: Some("single_pass".to_string()),
+            device: Some("cuda:0".to_string()),
+            total_ms: Some(500),
+            text_len: Some(42),
+            success: true,
+            error: None,
+        });
+        store.flush_for_tests();
+
+        let contents = fs::read_to_string(&jsonl_path).unwrap();
+        assert!(contents.contains("\"event_type\":\"transcribe_success\""));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -144,10 +144,7 @@ pub fn load_user_dictionary(app_handle: &AppHandle) -> LoadUserDictionaryResult 
     })
 }
 
-pub fn save_user_dictionary(
-    app_handle: &AppHandle,
-    dict: &UserDictionary,
-) -> Result<(), String> {
+pub fn save_user_dictionary(app_handle: &AppHandle, dict: &UserDictionary) -> Result<(), String> {
     let path = dictionary_path(app_handle)?;
     save_user_dictionary_to_path(&path, dict)
 }
@@ -302,7 +299,10 @@ pub fn load_industry_pack(app_handle: &AppHandle, id: &str) -> Result<IndustryPa
     if let Err(e) = std::fs::create_dir_all(&user_packs_dir) {
         eprintln!("[vocabulary] Failed to create user packs dir: {}", e);
     } else if let Err(e) = std::fs::write(&user_path, &contents) {
-        eprintln!("[vocabulary] Failed to copy bundled pack to user dir: {}", e);
+        eprintln!(
+            "[vocabulary] Failed to copy bundled pack to user dir: {}",
+            e
+        );
     }
 
     Ok(pack)
@@ -469,7 +469,10 @@ fn next_backup_path(path: &Path) -> PathBuf {
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("global_dictionary");
-    let extension = path.extension().and_then(|value| value.to_str()).unwrap_or("json");
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("json");
 
     let primary = parent.join(format!("{stem}.v1.backup.{extension}"));
     if !primary.exists() {
@@ -603,9 +606,8 @@ fn split_camel_piece(piece: &str) -> Vec<String> {
         let acronym_boundary = previous.is_uppercase()
             && current.is_uppercase()
             && next.is_some_and(|next_char| next_char.is_lowercase());
-        let digit_boundary =
-            (previous.is_ascii_digit() && current.is_ascii_alphabetic())
-                || (previous.is_ascii_alphabetic() && current.is_ascii_digit());
+        let digit_boundary = (previous.is_ascii_digit() && current.is_ascii_alphabetic())
+            || (previous.is_ascii_alphabetic() && current.is_ascii_digit());
 
         if camel_boundary || acronym_boundary || digit_boundary {
             boundaries.push(offset);
@@ -668,10 +670,11 @@ fn sort_rules_for_application(rules: Vec<ReplacementRule>) -> Vec<ReplacementRul
     let mut groups: Vec<Vec<ReplacementRule>> = grouped.into_values().collect();
     for group in &mut groups {
         group.sort_by(|a, b| {
-            b.find
-                .len()
-                .cmp(&a.find.len())
-                .then_with(|| a.find.to_ascii_lowercase().cmp(&b.find.to_ascii_lowercase()))
+            b.find.len().cmp(&a.find.len()).then_with(|| {
+                a.find
+                    .to_ascii_lowercase()
+                    .cmp(&b.find.to_ascii_lowercase())
+            })
         });
     }
 
@@ -849,12 +852,22 @@ mod tests {
         let software_runtime = resolve_runtime_dictionary(&general, Some(&software_pack));
         let medical_runtime = resolve_runtime_dictionary(&general, Some(&medical_pack));
 
-        assert!(software_runtime.vocabulary.contains(&"AlishTerm".to_string()));
-        assert!(software_runtime.vocabulary.contains(&"TypeScript".to_string()));
-        assert!(!software_runtime.vocabulary.contains(&"Cardiology".to_string()));
+        assert!(software_runtime
+            .vocabulary
+            .contains(&"AlishTerm".to_string()));
+        assert!(software_runtime
+            .vocabulary
+            .contains(&"TypeScript".to_string()));
+        assert!(!software_runtime
+            .vocabulary
+            .contains(&"Cardiology".to_string()));
 
-        assert!(medical_runtime.vocabulary.contains(&"Cardiology".to_string()));
-        assert!(!medical_runtime.vocabulary.contains(&"TypeScript".to_string()));
+        assert!(medical_runtime
+            .vocabulary
+            .contains(&"Cardiology".to_string()));
+        assert!(!medical_runtime
+            .vocabulary
+            .contains(&"TypeScript".to_string()));
     }
 
     #[test]

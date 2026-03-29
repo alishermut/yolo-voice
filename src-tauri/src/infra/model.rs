@@ -5,6 +5,7 @@ use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager};
 
 const REPO_ID: &str = "istupakov/parakeet-tdt-0.6b-v3-onnx";
+const DISTIL_WHISPER_MODEL_DIR: &str = "distil-whisper";
 const MODEL_FILES: &[(&str, bool)] = &[
     ("encoder-model.onnx", true),        // ~41MB graph, required
     ("encoder-model.onnx.data", true),   // ~2.3GB weights (external data), required
@@ -26,6 +27,50 @@ pub fn get_models_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
     Ok(models_dir)
 }
 
+pub fn get_distil_whisper_models_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    migrate_legacy_distil_whisper_dir(&dir)?;
+    let models_dir = dir.join("models").join(DISTIL_WHISPER_MODEL_DIR);
+    std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
+    Ok(models_dir)
+}
+
+fn migrate_legacy_distil_whisper_dir(app_data_dir: &Path) -> Result<(), String> {
+    let models_root = app_data_dir.join("models");
+    let legacy_dir = models_root.join("asr-benchmark").join("distil_whisper");
+    let target_dir = models_root.join(DISTIL_WHISPER_MODEL_DIR);
+
+    if target_dir.exists() || !legacy_dir.exists() {
+        return Ok(());
+    }
+
+    if let Some(parent) = target_dir.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    std::fs::rename(&legacy_dir, &target_dir).map_err(|e| {
+        format!(
+            "Failed to migrate Distil-Whisper from benchmark storage: {}",
+            e
+        )
+    })?;
+
+    let legacy_root = models_root.join("asr-benchmark");
+    if legacy_root.exists() {
+        let is_empty = std::fs::read_dir(&legacy_root)
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(false);
+        if is_empty {
+            let _ = std::fs::remove_dir(&legacy_root);
+        }
+    }
+
+    Ok(())
+}
+
 /// Check if the required model files are downloaded.
 pub fn is_model_downloaded(models_dir: &Path) -> bool {
     MODEL_FILES
@@ -35,6 +80,20 @@ pub fn is_model_downloaded(models_dir: &Path) -> bool {
             let path = models_dir.join(name);
             path.exists() && path.metadata().map(|m| m.len() > 0).unwrap_or(false)
         })
+}
+
+pub fn is_distil_whisper_model_downloaded(models_dir: &Path) -> bool {
+    let required = [
+        "model.safetensors",
+        "config.json",
+        "preprocessor_config.json",
+        "tokenizer.json",
+    ];
+
+    required.iter().all(|name| {
+        let path = models_dir.join(name);
+        path.exists() && path.metadata().map(|m| m.len() > 0).unwrap_or(false)
+    })
 }
 
 /// Download Parakeet model files from HuggingFace with progress reporting.
@@ -168,8 +227,15 @@ fn download_hf_files(
         let temp_dest = dest_dir.join(format!("{}.tmp", name.replace('/', "_")));
 
         emit_progress(
-            app_handle, progress_event, "downloading", name,
-            file_index, file_count, downloaded_bytes, total_bytes, start_time,
+            app_handle,
+            progress_event,
+            "downloading",
+            name,
+            file_index,
+            file_count,
+            downloaded_bytes,
+            total_bytes,
+            start_time,
         );
 
         let mut response = client
@@ -184,7 +250,11 @@ fn download_hf_files(
                 .map(|(_, r)| *r)
                 .unwrap_or(false);
             if is_required {
-                return Err(format!("Failed to download {}: HTTP {}", name, response.status()));
+                return Err(format!(
+                    "Failed to download {}: HTTP {}",
+                    name,
+                    response.status()
+                ));
             }
             continue;
         }
@@ -218,8 +288,15 @@ fn download_hf_files(
             // Throttle progress events to every 250ms
             if last_emit.elapsed() >= std::time::Duration::from_millis(250) {
                 emit_progress(
-                    app_handle, progress_event, "downloading", name,
-                    file_index, file_count, downloaded_bytes, total_bytes, start_time,
+                    app_handle,
+                    progress_event,
+                    "downloading",
+                    name,
+                    file_index,
+                    file_count,
+                    downloaded_bytes,
+                    total_bytes,
+                    start_time,
                 );
                 last_emit = Instant::now();
             }
@@ -231,8 +308,15 @@ fn download_hf_files(
 
         // Emit progress after each file completes
         emit_progress(
-            app_handle, progress_event, "downloading", name,
-            file_index, file_count, downloaded_bytes, total_bytes, start_time,
+            app_handle,
+            progress_event,
+            "downloading",
+            name,
+            file_index,
+            file_count,
+            downloaded_bytes,
+            total_bytes,
+            start_time,
         );
     }
 
@@ -258,6 +342,14 @@ pub fn delete_model_files(models_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+pub fn delete_distil_whisper_model_files(models_dir: &Path) -> Result<(), String> {
+    if models_dir.exists() {
+        std::fs::remove_dir_all(models_dir)
+            .map_err(|e| format!("Failed to delete Distil-Whisper model files: {}", e))?;
+    }
+    Ok(())
+}
+
 /// Clean up old whisper models from previous versions.
 pub fn cleanup_old_models(app_handle: &AppHandle) -> Result<(), String> {
     let dir = app_handle
@@ -266,6 +358,8 @@ pub fn cleanup_old_models(app_handle: &AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let models_dir = dir.join("models");
 
+    let _ = migrate_legacy_distil_whisper_dir(&dir);
+
     if !models_dir.exists() {
         return Ok(());
     }
@@ -273,9 +367,16 @@ pub fn cleanup_old_models(app_handle: &AppHandle) -> Result<(), String> {
     if let Ok(entries) = std::fs::read_dir(&models_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            // Remove old faster-whisper model directories
-            if entry.path().is_dir() && name.contains("whisper") {
-                let _ = std::fs::remove_dir_all(entry.path());
+            if entry.path().is_dir() {
+                match name.as_str() {
+                    "faster-whisper" | "whisper-tiny" | "whisper-base" | "whisper-small" => {
+                        let _ = std::fs::remove_dir_all(entry.path());
+                    }
+                    "asr-benchmark" => {
+                        let _ = std::fs::remove_dir_all(entry.path());
+                    }
+                    _ => {}
+                }
             }
         }
     }

@@ -21,9 +21,12 @@ pub fn ensure_profiles_dir(profiles_dir: &Path, app_handle: &AppHandle) -> Resul
     // Check if any profiles exist
     let has_profiles = std::fs::read_dir(profiles_dir)
         .map(|entries| {
-            entries
-                .flatten()
-                .any(|e| e.path().extension().map(|ext| ext == "json").unwrap_or(false))
+            entries.flatten().any(|e| {
+                e.path()
+                    .extension()
+                    .map(|ext| ext == "json")
+                    .unwrap_or(false)
+            })
         })
         .unwrap_or(false);
 
@@ -104,17 +107,9 @@ pub fn list_profiles(profiles_dir: &Path) -> Result<Vec<Profile>, String> {
             match std::fs::read_to_string(&path) {
                 Ok(contents) => match serde_json::from_str::<Profile>(&contents) {
                     Ok(profile) => profiles.push(profile),
-                    Err(e) => eprintln!(
-                        "[profiles] Failed to parse {}: {}",
-                        path.display(),
-                        e
-                    ),
+                    Err(e) => eprintln!("[profiles] Failed to parse {}: {}", path.display(), e),
                 },
-                Err(e) => eprintln!(
-                    "[profiles] Failed to read {}: {}",
-                    path.display(),
-                    e
-                ),
+                Err(e) => eprintln!("[profiles] Failed to read {}: {}", path.display(), e),
             }
         }
     }
@@ -144,8 +139,7 @@ pub fn save_profile(profiles_dir: &Path, profile: &Profile) -> Result<(), String
     let path = profiles_dir.join(format!("{}.json", profile.id));
     let json = serde_json::to_string_pretty(profile)
         .map_err(|e| format!("Failed to serialize profile: {}", e))?;
-    std::fs::write(&path, json)
-        .map_err(|e| format!("Failed to write profile: {}", e))?;
+    std::fs::write(&path, json).map_err(|e| format!("Failed to write profile: {}", e))?;
     // Ensure the write is flushed to disk (prevents data loss on crash/close)
     if let Ok(file) = std::fs::File::open(&path) {
         let _ = file.sync_all();

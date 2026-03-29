@@ -1,6 +1,6 @@
 [package]
 name = "yolo-voice"
-version = "0.9.5"
+version = "0.9.6"
 description = "Offline voice dictation app"
 authors = ["Alish Ermo Talif"]
 edition = "2021"
@@ -32,10 +32,12 @@ ndarray = "0.17"
 ort = { version = "2.0.0-rc.12", default-features = false }
 rodio = "0.19"
 enigo = "0.3"
+base64 = "0.22"
 
 # ---- Windows-only dependencies ----
 [target.'cfg(windows)'.dependencies]
 parakeet-rs = { version = "0.3", features = ["directml"] }
+keyring = { version = "3.6.3", features = ["windows-native"] }
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.58"
@@ -58,3 +60,4 @@ features = [
 parakeet-rs = { version = "0.3" }
 cocoa = "0.26"
 objc = "0.2"
+keyring = { version = "3.6.3", features = ["apple-native"] }

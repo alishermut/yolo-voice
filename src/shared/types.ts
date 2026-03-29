@@ -8,6 +8,8 @@ export interface AppConfig {
   device: string;
   compute_type: string;
   language: string;
+  offline_engine: string;
+  parakeet_segmented_mode_enabled: boolean;
   post_processing_enabled: boolean;
   active_profile_id: string;
   llm_provider: string;
@@ -50,6 +52,15 @@ export interface AppConfig {
 export interface GpuInfo {
   available: boolean;
   execution_provider: string;
+}
+
+export interface DistilWhisperModelStatus {
+  status: string;
+  downloaded: boolean;
+  ready: boolean;
+  device?: string | null;
+  runtime: string;
+  message?: string | null;
 }
 
 export interface SegmentTranscribed {

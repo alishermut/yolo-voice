@@ -46,7 +46,10 @@ unsafe extern "system" fn win_event_proc(
         let _ = SetWindowPos(
             pill,
             HWND_TOPMOST,
-            0, 0, 0, 0,
+            0,
+            0,
+            0,
+            0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
         );
     }
@@ -77,9 +80,10 @@ pub fn install(hwnd: *mut core::ffi::c_void) {
             SetWinEventHook(
                 event,
                 event,
-                None,                 // no DLL — OUTOFCONTEXT runs in our process
+                None, // no DLL — OUTOFCONTEXT runs in our process
                 Some(win_event_proc),
-                0, 0,                 // monitor all processes and threads
+                0,
+                0, // monitor all processes and threads
                 WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
             );
         }

@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use tauri::{Emitter, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 
 use crate::features::capture::hotkey::HotkeyCache;
 use crate::features::capture::recorder::{self, RecordingState};
@@ -10,6 +11,9 @@ use crate::features::diagnostics::{TranscriptDiagnosticsState, TranscriptDiagnos
 use crate::features::output;
 use crate::features::settings::{self, AppConfig, ConfigState};
 use crate::features::speech;
+use crate::features::speech::distil_whisper::{
+    maybe_prepare_in_background, DistilWhisperState, DistilWhisperStatus,
+};
 use crate::features::speech::inference::InferenceState;
 use crate::features::speech::vocabulary::{IndustryPack, IndustryPackInfo};
 use crate::infra::platform::{self, AudioStream, DeviceInfo};
@@ -67,9 +71,14 @@ pub fn save_config_cmd(
     state: State<'_, ConfigState>,
     hotkey_cache: State<'_, HotkeyCache>,
 ) -> Result<(), String> {
-    let (old_lang, old_pill_pinned, old_device_index) = {
+    let (old_lang, old_pill_pinned, old_device_index, old_offline_engine) = {
         let guard = state.0.lock().map_err(|e| e.to_string())?;
-        (guard.ui_language.clone(), guard.pill_pinned, guard.device_index)
+        (
+            guard.ui_language.clone(),
+            guard.pill_pinned,
+            guard.device_index,
+            guard.offline_engine.clone(),
+        )
     };
 
     settings::save_config(&app_handle, &new_config)?;
@@ -86,7 +95,7 @@ pub fn save_config_cmd(
     }
     // Re-warm audio device if microphone changed
     if new_config.device_index != old_device_index {
-        use crate::features::capture::recorder::{WarmDeviceState, spawn_warm_device};
+        use crate::features::capture::recorder::{spawn_warm_device, WarmDeviceState};
         if let Some(warm) = app_handle.try_state::<WarmDeviceState>() {
             if let Ok(mut g) = warm.0.lock() {
                 *g = None;
@@ -97,6 +106,14 @@ pub fn save_config_cmd(
 
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     *guard = new_config;
+    let should_prepare_distil = guard.transcription_mode == "offline"
+        && guard.offline_engine == "distil_whisper"
+        && old_offline_engine != "distil_whisper";
+    drop(guard);
+
+    if should_prepare_distil {
+        let _ = maybe_prepare_in_background(&app_handle);
+    }
     Ok(())
 }
 
@@ -131,9 +148,7 @@ static DOWNLOAD_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static DOWNLOAD_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
-pub fn download_model_cmd(
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
+pub fn download_model_cmd(app_handle: tauri::AppHandle) -> Result<(), String> {
     // Prevent duplicate concurrent downloads
     if DOWNLOAD_IN_PROGRESS
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -217,9 +232,7 @@ pub fn delete_model_cmd(
 }
 
 #[tauri::command]
-pub fn get_gpu_available(
-    state: State<'_, InferenceState>,
-) -> Result<bool, String> {
+pub fn get_gpu_available(state: State<'_, InferenceState>) -> Result<bool, String> {
     Ok(speech::get_gpu_available(&state))
 }
 
@@ -294,27 +307,134 @@ pub fn get_model_status(
     let guard = state.0.lock().map_err(|e| e.to_string())?;
     match guard.as_ref() {
         Some(_) => Ok("ready".to_string()),
-        None => {
-            match crate::infra::model::get_models_dir(&app_handle) {
-                Ok(models_dir) => {
-                    if crate::infra::model::is_model_downloaded(&models_dir) {
-                        Ok("error".to_string())
-                    } else {
-                        Ok("not-downloaded".to_string())
-                    }
+        None => match crate::infra::model::get_models_dir(&app_handle) {
+            Ok(models_dir) => {
+                if crate::infra::model::is_model_downloaded(&models_dir) {
+                    Ok("error".to_string())
+                } else {
+                    Ok("not-downloaded".to_string())
                 }
-                Err(_) => Ok("not-downloaded".to_string()),
             }
+            Err(_) => Ok("not-downloaded".to_string()),
+        },
+    }
+}
+
+#[tauri::command]
+pub fn open_distil_whisper_model_page_cmd(app_handle: tauri::AppHandle) -> Result<(), String> {
+    app_handle
+        .opener()
+        .open_url(
+            crate::features::speech::distil_whisper::DISTIL_WHISPER_URL,
+            None::<&str>,
+        )
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub fn get_distil_whisper_model_status(
+    app_handle: tauri::AppHandle,
+    state: State<'_, DistilWhisperState>,
+) -> Result<DistilWhisperStatus, String> {
+    match state.0.try_lock() {
+        Ok(mut guard) => Ok(guard.status(&app_handle)),
+        Err(_) => Ok(DistilWhisperStatus {
+            status: "preparing".to_string(),
+            downloaded: crate::infra::model::get_distil_whisper_models_dir(&app_handle)
+                .map(|dir| crate::infra::model::is_distil_whisper_model_downloaded(&dir))
+                .unwrap_or(false),
+            ready: false,
+            device: None,
+            runtime: "transformers-distil-whisper".to_string(),
+            message: None,
+        }),
+    }
+}
+
+#[tauri::command]
+pub fn download_distil_whisper_model_cmd(
+    app_handle: tauri::AppHandle,
+    state: State<'_, DistilWhisperState>,
+) -> Result<DistilWhisperStatus, String> {
+    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    guard.download_model(&app_handle)
+}
+
+#[tauri::command]
+pub fn prepare_distil_whisper_model_cmd(
+    app_handle: tauri::AppHandle,
+    state: State<'_, DistilWhisperState>,
+) -> Result<DistilWhisperStatus, String> {
+    {
+        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+        let status = guard.status(&app_handle);
+        if !status.downloaded {
+            return Err("Download Distil-Whisper first.".to_string());
+        }
+        if status.ready {
+            return Ok(status);
         }
     }
+
+    maybe_prepare_in_background(&app_handle)?;
+
+    match state.0.try_lock() {
+        Ok(mut guard) => Ok(guard.status(&app_handle)),
+        Err(_) => Ok(DistilWhisperStatus {
+            status: "preparing".to_string(),
+            downloaded: true,
+            ready: false,
+            device: None,
+            runtime: "transformers-distil-whisper".to_string(),
+            message: None,
+        }),
+    }
+}
+
+#[tauri::command]
+pub fn reload_distil_whisper_model_cmd(
+    use_gpu: bool,
+    app_handle: tauri::AppHandle,
+    state: State<'_, DistilWhisperState>,
+) -> Result<DistilWhisperStatus, String> {
+    {
+        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+        let status = guard.status(&app_handle);
+        if !status.downloaded {
+            return Err("Download Distil-Whisper first.".to_string());
+        }
+        guard.set_preferred_device(use_gpu);
+        guard.shutdown()?;
+    }
+
+    maybe_prepare_in_background(&app_handle)?;
+
+    match state.0.try_lock() {
+        Ok(mut guard) => Ok(guard.status(&app_handle)),
+        Err(_) => Ok(DistilWhisperStatus {
+            status: "preparing".to_string(),
+            downloaded: true,
+            ready: false,
+            device: None,
+            runtime: "transformers-distil-whisper".to_string(),
+            message: None,
+        }),
+    }
+}
+
+#[tauri::command]
+pub fn delete_distil_whisper_model_cmd(
+    app_handle: tauri::AppHandle,
+    state: State<'_, DistilWhisperState>,
+) -> Result<DistilWhisperStatus, String> {
+    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    guard.delete_model(&app_handle)
 }
 
 // ---- Profiles ----
 
 #[tauri::command]
-pub fn get_profiles(
-    app_handle: tauri::AppHandle,
-) -> Result<Vec<speech::Profile>, String> {
+pub fn get_profiles(app_handle: tauri::AppHandle) -> Result<Vec<speech::Profile>, String> {
     let profiles_dir = speech::get_profiles_dir(&app_handle)?;
     speech::list_profiles(&profiles_dir)
 }
@@ -329,19 +449,13 @@ pub fn save_profile_cmd(
 }
 
 #[tauri::command]
-pub fn delete_profile_cmd(
-    id: String,
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
+pub fn delete_profile_cmd(id: String, app_handle: tauri::AppHandle) -> Result<(), String> {
     let profiles_dir = speech::get_profiles_dir(&app_handle)?;
     speech::delete_profile(&profiles_dir, &id)
 }
 
 #[tauri::command]
-pub fn reset_profile_to_default(
-    id: String,
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
+pub fn reset_profile_to_default(id: String, app_handle: tauri::AppHandle) -> Result<(), String> {
     let profiles_dir = speech::get_profiles_dir(&app_handle)?;
     speech::reset_profile_to_default(&profiles_dir, &id, &app_handle)
 }
@@ -477,9 +591,7 @@ pub fn load_industry_pack_cmd(
 }
 
 #[tauri::command]
-pub fn get_general_vocabulary(
-    app_handle: tauri::AppHandle,
-) -> Result<IndustryPack, String> {
+pub fn get_general_vocabulary(app_handle: tauri::AppHandle) -> Result<IndustryPack, String> {
     speech::vocabulary::load_general_vocabulary(&app_handle)
 }
 
@@ -504,10 +616,7 @@ pub fn save_industry_pack_cmd(
 }
 
 #[tauri::command]
-pub fn reset_industry_pack_cmd(
-    id: String,
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
+pub fn reset_industry_pack_cmd(id: String, app_handle: tauri::AppHandle) -> Result<(), String> {
     speech::vocabulary::reset_industry_pack(&app_handle, &id)?;
     invalidate_vocabulary_caches(&app_handle);
     Ok(())
@@ -575,6 +684,13 @@ pub fn delete_transcript_entry(
     diagnostics_state: State<'_, TranscriptDiagnosticsState>,
 ) -> Result<(), String> {
     diagnostics_state.0.delete_entry(id)
+}
+
+#[tauri::command]
+pub fn clear_transcript_history(
+    diagnostics_state: State<'_, TranscriptDiagnosticsState>,
+) -> Result<(), String> {
+    diagnostics_state.0.clear_history()
 }
 
 #[tauri::command]

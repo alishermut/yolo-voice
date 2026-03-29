@@ -8,6 +8,7 @@ use features::capture::{ActiveStyleKey, ContinuousGeneration, RuntimeDictionaryC
 use features::diagnostics::TranscriptDiagnosticsState;
 use features::output::FocusedWindowState;
 use features::settings::ConfigState;
+use features::speech::distil_whisper::DistilWhisperState;
 use features::speech::inference::InferenceState;
 use features::speech::vocabulary::{UserDictionaryMigration, UserDictionaryState};
 use std::sync::Mutex;
@@ -29,6 +30,9 @@ pub fn run() {
         .manage(WarmDeviceState(Mutex::new(None)))
         .manage(FocusedWindowState(Mutex::new(0)))
         .manage(InferenceState(Mutex::new(None)))
+        .manage(DistilWhisperState(Mutex::new(
+            features::speech::distil_whisper::DistilWhisperManager::default(),
+        )))
         .manage(RuntimeDictionaryCache(Mutex::new(None)))
         .manage(ActiveStyleKey(Mutex::new(None)))
         .manage(ContinuousGeneration(std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0))))
@@ -50,6 +54,12 @@ pub fn run() {
             app::commands::get_gpu_info,
             app::commands::reload_model_cmd,
             app::commands::get_model_status,
+            app::commands::open_distil_whisper_model_page_cmd,
+            app::commands::get_distil_whisper_model_status,
+            app::commands::download_distil_whisper_model_cmd,
+            app::commands::prepare_distil_whisper_model_cmd,
+            app::commands::reload_distil_whisper_model_cmd,
+            app::commands::delete_distil_whisper_model_cmd,
             app::commands::get_profiles,
             app::commands::save_profile_cmd,
             app::commands::delete_profile_cmd,
@@ -72,6 +82,7 @@ pub fn run() {
             app::commands::reset_industry_pack_cmd,
             app::commands::generate_vocab_variants,
             app::commands::get_transcript_history,
+            app::commands::clear_transcript_history,
             app::commands::delete_transcript_entry,
             app::commands::get_transcript_entry_words,
             app::commands::add_words_to_dictionary,
@@ -255,6 +266,11 @@ pub fn run() {
             });
 
             // Set up the hotkey-action event handler (record → transcribe → insert pipeline)
+            if saved_config.transcription_mode == "offline"
+                && saved_config.offline_engine == "distil_whisper"
+            {
+                let _ = features::speech::distil_whisper::maybe_prepare_in_background(&app.handle());
+            }
             features::capture::setup_hotkey_handler(&app.handle());
 
             // Set up the command-hotkey-action event handler (command pipeline)

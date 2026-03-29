@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { TranscriptHistoryEntry } from "../../shared/types";
 import {
   getTranscriptHistory,
+  clearTranscriptHistory,
   deleteTranscriptEntry,
   getTranscriptEntryWords,
   addWordsToDictionary,
@@ -20,6 +21,7 @@ export function HistorySection() {
   const [wordPickerId, setWordPickerId] = useState<number | null>(null);
   const [words, setWords] = useState<string[]>([]);
   const [selectedWords, setSelectedWords] = useState<Set<string>>(new Set());
+  const [clearing, setClearing] = useState(false);
 
   const load = useCallback(
     async (offset: number, append: boolean) => {
@@ -47,6 +49,22 @@ export function HistorySection() {
   const handleDelete = async (id: number) => {
     await deleteTranscriptEntry(id);
     setEntries((prev) => prev.filter((e) => e.id !== id));
+  };
+
+  const handleClearAll = async () => {
+    if (!window.confirm(t("history.clear.confirm"))) return;
+    setClearing(true);
+    try {
+      await clearTranscriptHistory();
+      setEntries([]);
+      setHasMore(false);
+      setExpandedId(null);
+      setWordPickerId(null);
+      setWords([]);
+      setSelectedWords(new Set());
+    } finally {
+      setClearing(false);
+    }
   };
 
   const handleCopy = (text: string) => {
@@ -88,6 +106,16 @@ export function HistorySection() {
 
   return (
     <div className="space-y-6">
+      <div className="flex items-center justify-end">
+        <button
+          onClick={handleClearAll}
+          disabled={entries.length === 0 || clearing}
+          className="text-sm text-text-muted hover:text-error disabled:opacity-40 transition-colors"
+        >
+          {clearing ? t("history.clear.clearing") : t("history.clear.button")}
+        </button>
+      </div>
+
       {/* Search */}
       <div>
         <input

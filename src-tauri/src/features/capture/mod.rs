@@ -3,6 +3,7 @@ pub mod recorder;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use serde_json;
 use tauri::{AppHandle, Listener, Manager};
@@ -61,10 +62,7 @@ pub fn setup_hotkey_handler(app: &AppHandle) {
     });
 }
 
-fn handle_start(
-    app: &AppHandle,
-    config: &crate::features::settings::AppConfig,
-) {
+fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) {
     // Capture the foreground window before recording
     let hwnd = output::capture_foreground_window();
     if let Ok(mut g) = app.state::<FocusedWindowState>().0.lock() {
@@ -83,30 +81,33 @@ fn handle_start(
     *guard = None;
 
     // Build VAD config if offline mode is active and inference is ready
-    let vad_config = if config.transcription_mode == "offline" {
-        let inference_state = app.state::<InferenceState>();
-        let inference_ready = inference_state
-            .0
-            .lock()
-            .map(|g| g.is_some())
-            .unwrap_or(false);
+    let vad_config = if config.transcription_mode == "offline"
+        && config.offline_engine == "parakeet"
+        && config.parakeet_segmented_mode_enabled
+    {
+            let inference_state = app.state::<InferenceState>();
+            let inference_ready = inference_state
+                .0
+                .lock()
+                .map(|g| g.is_some())
+                .unwrap_or(false);
 
-        if inference_ready {
-            match resolve_vad_model_path(app) {
-                Ok(model_path) => Some(VadConfig {
-                    silence_threshold_ms: config.vad_silence_threshold_ms,
-                    model_path,
-                    text_cleanup_enabled: config.text_cleanup_enabled,
-                }),
-                Err(e) => {
-                    eprintln!("[capture] VAD model not found, falling back to non-VAD: {e}");
-                    None
+            if inference_ready {
+                match resolve_vad_model_path(app) {
+                    Ok(model_path) => Some(VadConfig {
+                        silence_threshold_ms: config.vad_silence_threshold_ms,
+                        model_path,
+                        text_cleanup_enabled: config.text_cleanup_enabled,
+                    }),
+                    Err(e) => {
+                        eprintln!("[capture] VAD model not found, falling back to non-VAD: {e}");
+                        None
+                    }
                 }
+            } else {
+                eprintln!("[capture] Inference not ready, falling back to non-VAD");
+                None
             }
-        } else {
-            eprintln!("[capture] Inference not ready, falling back to non-VAD");
-            None
-        }
     } else {
         None
     };
@@ -127,10 +128,6 @@ fn handle_start(
     if config.auto_pause_media_enabled {
         output::send_media_play_pause();
     }
-    if config.sounds_enabled {
-        output::play_start_sound(&config.start_sound);
-    }
-
     let warm_state = app.try_state::<recorder::WarmDeviceState>();
     match recorder::start_recording(
         config.device_index,
@@ -140,10 +137,61 @@ fn handle_start(
     ) {
         Ok(stream) => {
             *guard = Some(stream);
+            if config.sounds_enabled {
+                output::play_start_sound(&config.start_sound);
+            }
         }
         Err(e) => {
             // Rollback: audio init failed after we already showed "recording"
             eprintln!("Failed to start recording: {}", e);
+            if config.transcription_mode == "offline" && config.offline_engine == "distil_whisper" {
+                log_distil_whisper_event(
+                    app,
+                    DistilWhisperEventContext {
+                        event_type: "recording_start_error",
+                        pipeline_mode: "dictation",
+                        input_source: "dictation",
+                        utterance_id: None,
+                        utterance_duration_ms: None,
+                        compacted_duration_ms: None,
+                        wav_bytes: None,
+                        compacted_wav_bytes: None,
+                        speech_region_count: None,
+                        fallback_to_raw_audio: None,
+                        requested_mode: None,
+                        effective_mode: None,
+                        device: None,
+                        total_ms: None,
+                        text_len: None,
+                        success: false,
+                        error: Some(e.clone()),
+                    },
+                );
+            } else if config.transcription_mode == "offline" && config.offline_engine == "parakeet"
+            {
+                log_parakeet_event(
+                    app,
+                    ParakeetEventContext {
+                        event_type: "recording_start_error",
+                        pipeline_mode: "dictation",
+                        input_source: "dictation",
+                        utterance_id: None,
+                        utterance_duration_ms: None,
+                        preview_segment_count: None,
+                        raw_segment_count: None,
+                        gpu_available: Some(speech::get_gpu_available(
+                            &app.state::<InferenceState>(),
+                        )),
+                        vad_enabled: Some(false),
+                        stop_ms: None,
+                        transcribe_ms: None,
+                        total_ms: None,
+                        text_len: None,
+                        success: false,
+                        error: Some(e.clone()),
+                    },
+                );
+            }
             emit_all(app, "recording-state", "idle");
             emit_all(app, "transcription-error", format!("Recording failed: {e}"));
         }
@@ -153,10 +201,7 @@ fn handle_start(
     recorder::spawn_warm_device(app, config.device_index);
 }
 
-fn handle_stop(
-    app: &AppHandle,
-    config: &crate::features::settings::AppConfig,
-) {
+fn handle_stop(app: &AppHandle, config: &crate::features::settings::AppConfig) {
     // Break continuous recording cycle — user explicitly pressed stop
     app.state::<ContinuousGeneration>()
         .0
@@ -200,57 +245,126 @@ fn handle_stop(
 
             let app = app.clone();
             let config = config.clone();
-            let hwnd = app.state::<FocusedWindowState>().0.lock().map(|g| *g).unwrap_or(0);
+            let hwnd = app
+                .state::<FocusedWindowState>()
+                .0
+                .lock()
+                .map(|g| *g)
+                .unwrap_or(0);
             let style_id = style_profile_id.clone();
+            let stop_started = Instant::now();
 
-            std::thread::spawn(move || {
-                match recorder::stop_vad_recording(stream) {
-                    Ok(recording) => {
-                        let runtime_dict = resolve_runtime_dictionary(&app, &config);
-                        let preview_analysis =
-                            language::analyze_preview_segments(&recording.transcript.raw_segments);
-                        let preview_segment_count = preview_analysis.non_empty_segments;
-
-                        finalize_and_insert(
+            std::thread::spawn(move || match recorder::stop_vad_recording(stream) {
+                Ok(recording) => {
+                    let stop_elapsed = stop_started.elapsed();
+                    let runtime_dict = resolve_runtime_dictionary(&app, &config);
+                    let preview_analysis =
+                        language::analyze_preview_segments(&recording.transcript.raw_segments);
+                    let preview_segment_count = preview_analysis.non_empty_segments;
+                    if config.transcription_mode == "offline" && config.offline_engine == "parakeet"
+                    {
+                        log_parakeet_event(
                             &app,
-                            &config,
-                            hwnd,
-                            TranscriptPipelineInput {
-                                raw_segments: recording.transcript.raw_segments,
-                                joined_text: recording.transcript.joined_text,
-                                stt_provider: "parakeet-tdt".to_string(),
-                                utterance_duration_ms: recording.utterance_duration_ms,
-                                preview_segment_count,
-                                preview_language_family: preview_analysis.family,
-                                preview_language_lock_confidence: preview_analysis.confidence,
-                                mixed_script_detected: preview_analysis.mixed_script_detected,
-                                final_pass_used: false,
-                                final_pass_reason: "disabled".to_string(),
-                                final_pass_latency_ms: None,
+                            ParakeetEventContext {
+                                event_type: "vad_finalize_success",
+                                pipeline_mode: "dictation",
+                                input_source: "dictation",
+                                utterance_id: None,
+                                utterance_duration_ms: Some(recording.utterance_duration_ms),
+                                preview_segment_count: Some(preview_segment_count as u32),
+                                raw_segment_count: Some(recording.transcript.raw_segments.len() as u32),
+                                gpu_available: Some(speech::get_gpu_available(
+                                    &app.state::<InferenceState>(),
+                                )),
+                                vad_enabled: Some(true),
+                                stop_ms: Some(stop_elapsed.as_millis() as u64),
+                                transcribe_ms: None,
+                                total_ms: Some(stop_elapsed.as_millis() as u64),
+                                text_len: Some(recording.transcript.joined_text.len()),
+                                success: true,
+                                error: None,
                             },
-                            &runtime_dict,
-                            style_id,
                         );
                     }
-                    Err(e) => {
-                        eprintln!("VAD recording stop failed: {}", e);
-                        emit_all(&app, "transcription-error", e);
-                        emit_all(&app, "recording-state", "idle");
+
+                    finalize_and_insert(
+                        &app,
+                        &config,
+                        hwnd,
+                        TranscriptPipelineInput {
+                            raw_segments: recording.transcript.raw_segments,
+                            joined_text: recording.transcript.joined_text,
+                            stt_provider: "parakeet-tdt".to_string(),
+                            utterance_duration_ms: recording.utterance_duration_ms,
+                            preview_segment_count,
+                            preview_language_family: preview_analysis.family,
+                            preview_language_lock_confidence: preview_analysis.confidence,
+                            mixed_script_detected: preview_analysis.mixed_script_detected,
+                            final_pass_used: false,
+                            final_pass_reason: "disabled".to_string(),
+                            final_pass_latency_ms: None,
+                        },
+                        &runtime_dict,
+                        style_id,
+                    );
+                }
+                Err(e) => {
+                    eprintln!("VAD recording stop failed: {}", e);
+                    if config.transcription_mode == "offline" && config.offline_engine == "parakeet"
+                    {
+                        log_parakeet_event(
+                            &app,
+                            ParakeetEventContext {
+                                event_type: "vad_finalize_error",
+                                pipeline_mode: "dictation",
+                                input_source: "dictation",
+                                utterance_id: None,
+                                utterance_duration_ms: None,
+                                preview_segment_count: None,
+                                raw_segment_count: None,
+                                gpu_available: Some(speech::get_gpu_available(
+                                    &app.state::<InferenceState>(),
+                                )),
+                                vad_enabled: Some(true),
+                                stop_ms: Some(stop_started.elapsed().as_millis() as u64),
+                                transcribe_ms: None,
+                                total_ms: Some(stop_started.elapsed().as_millis() as u64),
+                                text_len: None,
+                                success: false,
+                                error: Some(e.clone()),
+                            },
+                        );
                     }
+                    emit_all(&app, "transcription-error", e);
+                    emit_all(&app, "recording-state", "idle");
                 }
             });
         } else {
             // ── Legacy single-shot path (cloud or offline without VAD)
+            let use_distil_offline =
+                config.transcription_mode == "offline" && config.offline_engine == "distil_whisper";
             let audio_result: Result<AudioData, String> = if use_cloud {
                 recorder::stop_and_save(stream)
                     .map(|path| AudioData::WavFile(path.to_string_lossy().to_string()))
-            } else {
-                recorder::stop_and_get_raw_samples(stream)
-                    .map(|(samples, rate, channels)| AudioData::RawSamples {
+            } else if use_distil_offline {
+                let diagnostics_utterance_id =
+                    app.state::<TranscriptDiagnosticsState>().0.next_utterance_id();
+                recorder::stop_and_get_raw_samples(stream).map(|(samples, rate, channels)| {
+                    AudioData::DistilWhisperSamples {
                         samples,
                         sample_rate: rate,
                         channels,
-                    })
+                        diagnostics_utterance_id: Some(diagnostics_utterance_id.clone()),
+                    }
+                })
+            } else {
+                recorder::stop_and_get_raw_samples(stream).map(|(samples, rate, channels)| {
+                    AudioData::RawSamples {
+                        samples,
+                        sample_rate: rate,
+                        channels,
+                    }
+                })
             };
 
             match audio_result {
@@ -270,11 +384,67 @@ fn handle_stop(
 
                     std::thread::spawn(move || {
                         let runtime_dict = resolve_runtime_dictionary(&app, &config);
-                        transcribe_and_insert(&app, &config, hwnd, audio_data, &runtime_dict, style_id);
+                        transcribe_and_insert(
+                            &app,
+                            &config,
+                            hwnd,
+                            audio_data,
+                            &runtime_dict,
+                            style_id,
+                        );
                     });
                 }
                 Err(e) => {
                     eprintln!("Failed to capture recording: {}", e);
+                    if use_distil_offline {
+                        log_distil_whisper_event(
+                            app,
+                            DistilWhisperEventContext {
+                                event_type: "capture_stop_error",
+                                pipeline_mode: "dictation",
+                                input_source: "dictation",
+                                utterance_id: None,
+                                utterance_duration_ms: None,
+                                compacted_duration_ms: None,
+                                wav_bytes: None,
+                                compacted_wav_bytes: None,
+                                speech_region_count: None,
+                                fallback_to_raw_audio: None,
+                                requested_mode: None,
+                                effective_mode: None,
+                                device: None,
+                                total_ms: None,
+                                text_len: None,
+                                success: false,
+                                error: Some(e.clone()),
+                            },
+                        );
+                    } else if config.transcription_mode == "offline"
+                        && config.offline_engine == "parakeet"
+                    {
+                        log_parakeet_event(
+                            app,
+                            ParakeetEventContext {
+                                event_type: "capture_stop_error",
+                                pipeline_mode: "dictation",
+                                input_source: "dictation",
+                                utterance_id: None,
+                                utterance_duration_ms: None,
+                                preview_segment_count: None,
+                                raw_segment_count: None,
+                                gpu_available: Some(speech::get_gpu_available(
+                                    &app.state::<InferenceState>(),
+                                )),
+                                vad_enabled: Some(false),
+                                stop_ms: None,
+                                transcribe_ms: None,
+                                total_ms: None,
+                                text_len: None,
+                                success: false,
+                                error: Some(e.clone()),
+                            },
+                        );
+                    }
                     emit_all(app, "transcription-error", e.to_string());
                     emit_all(app, "recording-state", "idle");
                 }
@@ -321,11 +491,61 @@ fn resolve_vad_model_path(app: &AppHandle) -> Result<std::path::PathBuf, String>
 
 enum AudioData {
     WavFile(String),
+    DistilWhisperSamples {
+        samples: Vec<f32>,
+        sample_rate: u32,
+        channels: u16,
+        diagnostics_utterance_id: Option<String>,
+    },
     RawSamples {
         samples: Vec<f32>,
         sample_rate: u32,
         channels: u16,
     },
+}
+
+struct PreparedSpeechAudio {
+    effective_wav_bytes: Vec<u8>,
+}
+
+#[allow(dead_code)]
+struct DistilWhisperEventContext<'a> {
+    event_type: &'a str,
+    pipeline_mode: &'a str,
+    input_source: &'a str,
+    utterance_id: Option<String>,
+    utterance_duration_ms: Option<u64>,
+    compacted_duration_ms: Option<u64>,
+    wav_bytes: Option<usize>,
+    compacted_wav_bytes: Option<usize>,
+    speech_region_count: Option<u32>,
+    fallback_to_raw_audio: Option<bool>,
+    requested_mode: Option<String>,
+    effective_mode: Option<String>,
+    device: Option<String>,
+    total_ms: Option<u64>,
+    text_len: Option<usize>,
+    success: bool,
+    error: Option<String>,
+}
+
+#[allow(dead_code)]
+struct ParakeetEventContext<'a> {
+    event_type: &'a str,
+    pipeline_mode: &'a str,
+    input_source: &'a str,
+    utterance_id: Option<String>,
+    utterance_duration_ms: Option<u64>,
+    preview_segment_count: Option<u32>,
+    raw_segment_count: Option<u32>,
+    gpu_available: Option<bool>,
+    vad_enabled: Option<bool>,
+    stop_ms: Option<u64>,
+    transcribe_ms: Option<u64>,
+    total_ms: Option<u64>,
+    text_len: Option<usize>,
+    success: bool,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -356,10 +576,7 @@ fn finalize_and_insert(
     style_profile_id: Option<String>,
 ) {
     // Capture continuous recording generation at pipeline start
-    let continuous_gen = app
-        .state::<ContinuousGeneration>()
-        .0
-        .load(Ordering::SeqCst);
+    let continuous_gen = app.state::<ContinuousGeneration>().0.load(Ordering::SeqCst);
 
     if transcript.raw_segments.is_empty() && transcript.joined_text.trim().is_empty() {
         eprintln!("[capture] Transcription produced empty text");
@@ -376,10 +593,15 @@ fn finalize_and_insert(
     );
     let cleanup_language = effective_cleanup_language(&transcript, &normalized_text);
     let allow_english_shaped_transforms = !matches!(cleanup_language, LanguageFamily::Cyrillic);
+    let use_distil_light_cleanup =
+        config.transcription_mode == "offline" && config.offline_engine == "distil_whisper";
 
     // Spoken punctuation: "period" → ".", "comma" → "," etc.
     // Runs BEFORE cleanup so inserted periods trigger sentence capitalization.
-    let normalized_text = if config.spoken_punctuation_enabled && allow_english_shaped_transforms {
+    let normalized_text = if config.spoken_punctuation_enabled
+        && allow_english_shaped_transforms
+        && !use_distil_light_cleanup
+    {
         speech::cleanup::replace_spoken_punctuation(&normalized_text)
     } else {
         normalized_text
@@ -387,20 +609,31 @@ fn finalize_and_insert(
 
     // Final deterministic cleanup happens once after full assembly.
     let cleaned_text = if config.text_cleanup_enabled {
-        speech::cleanup::clean_final_text_for_language(&normalized_text, cleanup_language)
+        if use_distil_light_cleanup {
+            speech::cleanup::normalize_text_light(&normalized_text)
+        } else {
+            speech::cleanup::clean_final_text_for_language(&normalized_text, cleanup_language)
+        }
     } else {
         normalized_text.clone()
     };
 
     // Hallucination filtering: remove known phantom phrases and repetition loops.
     let cleaned_text = if config.hallucination_filter_enabled {
-        speech::cleanup::filter_hallucinations(&cleaned_text)
+        if use_distil_light_cleanup {
+            speech::cleanup::filter_hallucination_loops(&cleaned_text)
+        } else {
+            speech::cleanup::filter_hallucinations(&cleaned_text)
+        }
     } else {
         cleaned_text
     };
 
     // Number-word → digit conversion (e.g. "twenty three" → "23").
-    let cleaned_text = if config.numerals_enabled && allow_english_shaped_transforms {
+    let cleaned_text = if config.numerals_enabled
+        && allow_english_shaped_transforms
+        && !use_distil_light_cleanup
+    {
         speech::cleanup::convert_number_words(&cleaned_text)
     } else {
         cleaned_text
@@ -437,7 +670,10 @@ fn finalize_and_insert(
                     }
                 }
             } else {
-                eprintln!("[capture] Style profile '{}' not found, skipping LLM", profile_id);
+                eprintln!(
+                    "[capture] Style profile '{}' not found, skipping LLM",
+                    profile_id
+                );
                 None
             }
         }
@@ -484,9 +720,7 @@ fn finalize_and_insert(
         } else {
             None
         },
-        post_processed_text
-            .as_deref()
-            .and_then(option_if_not_empty),
+        post_processed_text.as_deref().and_then(option_if_not_empty),
         option_if_not_empty(&final_text),
         inserted_text,
         insert_success,
@@ -502,10 +736,7 @@ fn finalize_and_insert(
 
     // Auto-restart if continuous recording is still active (generation unchanged)
     if config.continuous_recording_enabled && continuous_gen > 0 {
-        let current = app
-            .state::<ContinuousGeneration>()
-            .0
-            .load(Ordering::SeqCst);
+        let current = app.state::<ContinuousGeneration>().0.load(Ordering::SeqCst);
         if current == continuous_gen {
             let app_clone = app.clone();
             std::thread::spawn(move || {
@@ -525,19 +756,33 @@ fn transcribe_and_insert(
     runtime_dict: &RuntimeDictionary,
     style_profile_id: Option<String>,
 ) {
+    let pipeline_started = Instant::now();
     let utterance_duration_ms = match &audio_data {
         AudioData::WavFile(_) => 0,
+        AudioData::DistilWhisperSamples {
+            samples,
+            sample_rate,
+            channels,
+            ..
+        } => duration_ms_from_samples(samples.len(), *sample_rate, *channels),
         AudioData::RawSamples {
             samples,
             sample_rate,
             channels,
         } => {
-            let channel_count = u64::from((*channels).max(1));
-            let sample_rate = u64::from((*sample_rate).max(1));
-            let frames = samples.len() as u64 / channel_count;
-            (frames * 1000) / sample_rate
+            duration_ms_from_samples(samples.len(), *sample_rate, *channels)
         }
     };
+    let diagnostics_utterance_id = match &audio_data {
+        AudioData::DistilWhisperSamples {
+            diagnostics_utterance_id,
+            ..
+        } => diagnostics_utterance_id.clone(),
+        _ => None,
+    };
+    let parakeet_gpu_available =
+        config.transcription_mode == "offline" && config.offline_engine == "parakeet"
+            && speech::get_gpu_available(&app.state::<InferenceState>());
 
     let transcribe_result = match audio_data {
         AudioData::WavFile(wav_path) => speech::cloud_transcribe(
@@ -546,6 +791,27 @@ fn transcribe_and_insert(
             &config.cloud_stt_api_key,
             &config.language,
         ),
+        AudioData::DistilWhisperSamples {
+            samples,
+            sample_rate,
+            channels,
+            ..
+        } => {
+            let prepared = prepare_compacted_audio(app, config, &samples, sample_rate, channels);
+            match prepared {
+                Ok(prepared) => match app
+                    .state::<crate::features::speech::distil_whisper::DistilWhisperState>()
+                    .0
+                    .lock()
+                {
+                    Ok(mut guard) => guard
+                        .transcribe_local_wav_bytes(app, &prepared.effective_wav_bytes)
+                        .map(|result| result.text),
+                    Err(err) => Err(err.to_string()),
+                },
+                Err(err) => Err(err),
+            }
+        }
         AudioData::RawSamples {
             samples,
             sample_rate,
@@ -559,7 +825,66 @@ fn transcribe_and_insert(
                 &samples
             };
             let inference_state = app.state::<InferenceState>();
-            speech::transcribe_audio(&inference_state, capped, sample_rate, channels)
+            let transcribe_started = Instant::now();
+            let result =
+                speech::transcribe_audio(&inference_state, capped, sample_rate, channels);
+            if config.transcription_mode == "offline" && config.offline_engine == "parakeet" {
+                match &result {
+                    Ok(text) => {
+                        eprintln!(
+                            "[capture][parakeet-dictation] raw_ms={} vad=false gpu_available={} transcribe_s={:.2} total_s={:.2} text_len={}",
+                            utterance_duration_ms,
+                            parakeet_gpu_available,
+                            transcribe_started.elapsed().as_secs_f32(),
+                            pipeline_started.elapsed().as_secs_f32(),
+                            text.len(),
+                        );
+                        log_parakeet_event(
+                            app,
+                            ParakeetEventContext {
+                                event_type: "transcribe_success",
+                                pipeline_mode: "dictation",
+                                input_source: "dictation",
+                                utterance_id: None,
+                                utterance_duration_ms: Some(utterance_duration_ms),
+                                preview_segment_count: Some(1),
+                                raw_segment_count: Some(1),
+                                gpu_available: Some(parakeet_gpu_available),
+                                vad_enabled: Some(false),
+                                stop_ms: None,
+                                transcribe_ms: Some(transcribe_started.elapsed().as_millis() as u64),
+                                total_ms: Some(pipeline_started.elapsed().as_millis() as u64),
+                                text_len: Some(text.len()),
+                                success: true,
+                                error: None,
+                            },
+                        );
+                    }
+                    Err(err) => {
+                        log_parakeet_event(
+                            app,
+                            ParakeetEventContext {
+                                event_type: "transcribe_error",
+                                pipeline_mode: "dictation",
+                                input_source: "dictation",
+                                utterance_id: None,
+                                utterance_duration_ms: Some(utterance_duration_ms),
+                                preview_segment_count: None,
+                                raw_segment_count: None,
+                                gpu_available: Some(parakeet_gpu_available),
+                                vad_enabled: Some(false),
+                                stop_ms: None,
+                                transcribe_ms: Some(transcribe_started.elapsed().as_millis() as u64),
+                                total_ms: Some(pipeline_started.elapsed().as_millis() as u64),
+                                text_len: None,
+                                success: false,
+                                error: Some(err.clone()),
+                            },
+                        );
+                    }
+                }
+            }
+            result
         }
     };
 
@@ -590,6 +915,30 @@ fn transcribe_and_insert(
         }
         Err(e) => {
             eprintln!("Transcription error: {}", e);
+            if config.transcription_mode == "offline" && config.offline_engine == "distil_whisper" {
+                log_distil_whisper_event(
+                    app,
+                    DistilWhisperEventContext {
+                        event_type: "transcribe_error",
+                        pipeline_mode: "dictation",
+                        input_source: "dictation",
+                        utterance_id: diagnostics_utterance_id,
+                        utterance_duration_ms: Some(utterance_duration_ms),
+                        compacted_duration_ms: None,
+                        wav_bytes: None,
+                        compacted_wav_bytes: None,
+                        speech_region_count: None,
+                        fallback_to_raw_audio: None,
+                        requested_mode: None,
+                        effective_mode: None,
+                        device: None,
+                        total_ms: None,
+                        text_len: None,
+                        success: false,
+                        error: Some(e.clone()),
+                    },
+                );
+            }
             emit_all(app, "transcription-error", e);
             emit_all(app, "recording-state", "idle");
         }
@@ -652,9 +1001,81 @@ fn resolve_runtime_dictionary(
 fn resolve_stt_provider(config: &crate::features::settings::AppConfig) -> String {
     if config.transcription_mode == "cloud" {
         config.cloud_stt_provider.clone()
+    } else if config.offline_engine == "distil_whisper" {
+        "distil-whisper".to_string()
     } else {
         "parakeet-tdt".to_string()
     }
+}
+
+fn log_distil_whisper_event(app: &AppHandle, event: DistilWhisperEventContext<'_>) {
+    let _ = app;
+    let _ = event;
+}
+
+fn log_parakeet_event(app: &AppHandle, event: ParakeetEventContext<'_>) {
+    let _ = app;
+    let _ = event;
+}
+
+fn prepare_compacted_audio(
+    app: &AppHandle,
+    config: &crate::features::settings::AppConfig,
+    samples: &[f32],
+    sample_rate: u32,
+    channels: u16,
+) -> Result<PreparedSpeechAudio, String> {
+    let raw_wav_bytes = recorder::encode_wav_bytes(samples, sample_rate, channels);
+
+    let model_path = resolve_vad_model_path(app)?;
+    let compacted = speech::vad::compact_speech(
+        samples,
+        sample_rate,
+        channels,
+        &model_path,
+        config.vad_silence_threshold_ms,
+    )?;
+
+    let compacted_duration_ms = duration_ms_from_samples(compacted.compacted_samples_16k.len(), 16_000, 1);
+    let compacted_wav_bytes = if !compacted.compacted_samples_16k.is_empty() {
+        Some(recorder::encode_wav_bytes(
+            &compacted.compacted_samples_16k,
+            16_000,
+            1,
+        ))
+    } else {
+        None
+    };
+
+    let use_compacted_audio = should_use_compacted_audio(
+        compacted.speech_region_count,
+        compacted_duration_ms,
+        compacted_wav_bytes.is_some(),
+    );
+
+    let effective_wav_bytes = compacted_wav_bytes
+        .clone()
+        .filter(|_| use_compacted_audio)
+        .unwrap_or_else(|| raw_wav_bytes.clone());
+
+    Ok(PreparedSpeechAudio {
+        effective_wav_bytes,
+    })
+}
+
+fn duration_ms_from_samples(sample_count: usize, sample_rate: u32, channels: u16) -> u64 {
+    let channel_count = u64::from(channels.max(1));
+    let sample_rate = u64::from(sample_rate.max(1));
+    let frames = sample_count as u64 / channel_count;
+    (frames * 1000) / sample_rate
+}
+
+fn should_use_compacted_audio(
+    speech_region_count: usize,
+    compacted_duration_ms: u64,
+    has_compacted_wav: bool,
+) -> bool {
+    speech_region_count > 0 && compacted_duration_ms >= 200 && has_compacted_wav
 }
 
 fn maybe_log_transcript_sample(
@@ -769,7 +1190,10 @@ pub fn setup_style_switch_handler(app: &AppHandle) {
                 config.post_processing_enabled = true;
                 let _ = crate::features::settings::save_config(&app_handle, &config);
             }
-            eprintln!("[capture] Style switched to '{}' (key: {})", profile.name, key_name);
+            eprintln!(
+                "[capture] Style switched to '{}' (key: {})",
+                profile.name, key_name
+            );
             emit_all(&app_handle, "style-switched", &profile.name);
         } else {
             eprintln!("[capture] No profile with shortcut_key '{}'", key_name);
@@ -829,10 +1253,7 @@ fn handle_command_cancel(app: &AppHandle) {
     emit_all(app, "recording-state", "idle");
 }
 
-fn handle_command_start(
-    app: &AppHandle,
-    config: &crate::features::settings::AppConfig,
-) {
+fn handle_command_start(app: &AppHandle, config: &crate::features::settings::AppConfig) {
     // Capture the foreground window before recording
     let hwnd = output::capture_foreground_window();
     if let Ok(mut g) = app.state::<FocusedWindowState>().0.lock() {
@@ -856,15 +1277,19 @@ fn handle_command_start(
     // Emit events BEFORE audio init so the pill reacts instantly.
     emit_all(app, "active-mode", "command");
     emit_all(app, "recording-state", "recording");
-    if config.sounds_enabled {
-        output::play_start_sound(&config.start_sound);
-    }
-
     // Command mode: always record without VAD (commands are short utterances)
     let warm_state = app.try_state::<recorder::WarmDeviceState>();
-    match recorder::start_recording(config.device_index, app.clone(), None, warm_state.as_deref()) {
+    match recorder::start_recording(
+        config.device_index,
+        app.clone(),
+        None,
+        warm_state.as_deref(),
+    ) {
         Ok(stream) => {
             *guard = Some(stream);
+            if config.sounds_enabled {
+                output::play_start_sound(&config.start_sound);
+            }
         }
         Err(e) => {
             eprintln!("[capture] Failed to start command recording: {}", e);
@@ -876,10 +1301,7 @@ fn handle_command_start(
     recorder::spawn_warm_device(app, config.device_index);
 }
 
-fn handle_command_stop(
-    app: &AppHandle,
-    config: &crate::features::settings::AppConfig,
-) {
+fn handle_command_stop(app: &AppHandle, config: &crate::features::settings::AppConfig) {
     let recording_state = app.state::<RecordingState>();
     let mut guard = match recording_state.0.lock() {
         Ok(g) => g,
@@ -899,6 +1321,8 @@ fn handle_command_stop(
 
         std::thread::spawn(move || {
             // Step 1: Get audio data and transcribe
+            let use_distil_offline =
+                config.transcription_mode == "offline" && config.offline_engine == "distil_whisper";
             let transcribe_result = if use_cloud {
                 recorder::stop_and_save(stream).and_then(|path| {
                     speech::cloud_transcribe(
@@ -908,6 +1332,19 @@ fn handle_command_stop(
                         &config.language,
                     )
                 })
+            } else if use_distil_offline {
+                recorder::stop_and_get_raw_samples(stream).and_then(
+                    |(samples, sample_rate, channels)| {
+                        let prepared =
+                            prepare_compacted_audio(&app, &config, &samples, sample_rate, channels)?;
+                        let distil_state =
+                            app.state::<crate::features::speech::distil_whisper::DistilWhisperState>();
+                        let mut guard = distil_state.0.lock().map_err(|e| e.to_string())?;
+                        guard
+                            .transcribe_local_wav_bytes(&app, &prepared.effective_wav_bytes)
+                            .map(|result| result.text)
+                    },
+                )
             } else {
                 recorder::stop_and_get_raw_samples(stream).and_then(
                     |(samples, sample_rate, channels)| {
@@ -925,11 +1362,40 @@ fn handle_command_stop(
 
             match transcribe_result {
                 Ok(transcript) => {
-                    let hwnd = app.state::<FocusedWindowState>().0.lock().map(|g| *g).unwrap_or(0);
+                    let hwnd = app
+                        .state::<FocusedWindowState>()
+                        .0
+                        .lock()
+                        .map(|g| *g)
+                        .unwrap_or(0);
                     command_finalize(&app, &config, hwnd, transcript);
                 }
                 Err(e) => {
                     eprintln!("[capture] Command transcription error: {}", e);
+                    if use_distil_offline {
+                        log_distil_whisper_event(
+                            &app,
+                            DistilWhisperEventContext {
+                                event_type: "transcribe_error",
+                                pipeline_mode: "command",
+                                input_source: "command",
+                                utterance_id: None,
+                                utterance_duration_ms: None,
+                                compacted_duration_ms: None,
+                                wav_bytes: None,
+                                compacted_wav_bytes: None,
+                                speech_region_count: None,
+                                fallback_to_raw_audio: None,
+                                requested_mode: None,
+                                effective_mode: None,
+                                device: None,
+                                total_ms: None,
+                                text_len: None,
+                                success: false,
+                                error: Some(e.clone()),
+                            },
+                        );
+                    }
                     emit_all(&app, "transcription-error", e);
                     emit_all(&app, "recording-state", "idle");
                 }
@@ -975,7 +1441,11 @@ fn command_finalize(
             }
             Err(e) => {
                 eprintln!("[capture] Failed to add vocab term: {}", e);
-                emit_all(app, "transcription-error", format!("Vocab add failed: {}", e));
+                emit_all(
+                    app,
+                    "transcription-error",
+                    format!("Vocab add failed: {}", e),
+                );
             }
         }
         if config.sounds_enabled {
@@ -1004,11 +1474,7 @@ fn command_finalize(
         }
         Err(e) => {
             eprintln!("[capture] Command error: {}", e);
-            emit_all(
-                app,
-                "transcription-error",
-                format!("Command error: {}", e),
-            );
+            emit_all(app, "transcription-error", format!("Command error: {}", e));
         }
     }
 
@@ -1043,7 +1509,11 @@ fn add_term_to_general_vocabulary(
 
     // Add term to vocabulary list if not already present
     let term = vocab_cmd.term.trim().to_string();
-    if !general.vocabulary.iter().any(|v| v.eq_ignore_ascii_case(&term)) {
+    if !general
+        .vocabulary
+        .iter()
+        .any(|v| v.eq_ignore_ascii_case(&term))
+    {
         general.vocabulary.push(term.clone());
     }
 
@@ -1107,6 +1577,9 @@ mod tests {
         let mut config = AppConfig::default();
         assert_eq!(resolve_stt_provider(&config), "parakeet-tdt");
 
+        config.offline_engine = "distil_whisper".to_string();
+        assert_eq!(resolve_stt_provider(&config), "distil-whisper");
+
         config.transcription_mode = "cloud".to_string();
         config.cloud_stt_provider = "deepgram".to_string();
         assert_eq!(resolve_stt_provider(&config), "deepgram");
@@ -1117,6 +1590,14 @@ mod tests {
         assert_eq!(option_if_not_empty(""), None);
         assert_eq!(option_if_not_empty("   "), None);
         assert_eq!(option_if_not_empty(" hello "), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn compacted_audio_fallback_requires_regions_and_min_duration() {
+        assert!(!should_use_compacted_audio(0, 1_500, true));
+        assert!(!should_use_compacted_audio(2, 150, true));
+        assert!(!should_use_compacted_audio(2, 900, false));
+        assert!(should_use_compacted_audio(2, 900, true));
     }
 
     #[test]
@@ -1160,5 +1641,4 @@ mod tests {
         assert_eq!(raw_segments_json, "[\"open the\",\"settings page\"]");
         assert_eq!(input.joined_text, "open the settings page");
     }
-
 }

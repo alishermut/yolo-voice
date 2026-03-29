@@ -113,7 +113,9 @@ pub fn analyze_preview_segments(segments: &[String]) -> PreviewLanguageAnalysis 
         let eligible_to_lock = non_empty_segments >= 2 || alpha >= 12;
         let cumulative_family = dominant_family_from_counts(cumulative);
 
-        if confidence == LanguageLockConfidence::None && eligible_to_lock && cumulative_family != LanguageFamily::Unknown
+        if confidence == LanguageLockConfidence::None
+            && eligible_to_lock
+            && cumulative_family != LanguageFamily::Unknown
         {
             confidence = LanguageLockConfidence::High;
             family = cumulative_family;
@@ -165,13 +167,22 @@ mod tests {
 
     #[test]
     fn detects_dominant_latin_and_cyrillic_scripts() {
-        assert_eq!(detect_language_family("hello deploy today"), LanguageFamily::Latin);
-        assert_eq!(detect_language_family("привет как дела сегодня"), LanguageFamily::Cyrillic);
+        assert_eq!(
+            detect_language_family("hello deploy today"),
+            LanguageFamily::Latin
+        );
+        assert_eq!(
+            detect_language_family("привет как дела сегодня"),
+            LanguageFamily::Cyrillic
+        );
     }
 
     #[test]
     fn mixed_script_text_stays_unknown() {
-        assert_eq!(detect_language_family("hello привет"), LanguageFamily::Unknown);
+        assert_eq!(
+            detect_language_family("hello привет"),
+            LanguageFamily::Unknown
+        );
     }
 
     #[test]

@@ -30,6 +30,10 @@ pub struct AppConfig {
     pub compute_type: String,
     #[serde(default = "default_language")]
     pub language: String,
+    #[serde(default = "default_offline_engine")]
+    pub offline_engine: String,
+    #[serde(default = "default_parakeet_segmented_mode_enabled")]
+    pub parakeet_segmented_mode_enabled: bool,
     #[serde(default)]
     pub post_processing_enabled: bool,
     #[serde(default = "default_active_profile")]
@@ -100,7 +104,6 @@ pub struct AppConfig {
     pub command_base_url: String,
     #[serde(default = "default_command_system_prompt")]
     pub command_system_prompt: String,
-
 }
 
 fn default_text_cleanup() -> bool {
@@ -132,6 +135,12 @@ fn default_compute_type() -> String {
 }
 fn default_language() -> String {
     "en".to_string()
+}
+fn default_offline_engine() -> String {
+    "parakeet".to_string()
+}
+fn default_parakeet_segmented_mode_enabled() -> bool {
+    true
 }
 fn default_active_profile() -> String {
     "general".to_string()
@@ -191,6 +200,8 @@ impl Default for AppConfig {
             device: default_device(),
             compute_type: default_compute_type(),
             language: default_language(),
+            offline_engine: default_offline_engine(),
+            parakeet_segmented_mode_enabled: default_parakeet_segmented_mode_enabled(),
             post_processing_enabled: false,
             active_profile_id: default_active_profile(),
             llm_provider: default_llm_provider(),
@@ -229,6 +240,32 @@ impl Default for AppConfig {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::AppConfig;
+
+    #[test]
+    fn defaults_include_distil_and_parakeet_segmented_settings() {
+        let config = AppConfig::default();
+        assert_eq!(config.offline_engine, "parakeet");
+        assert!(config.parakeet_segmented_mode_enabled);
+    }
+
+    #[test]
+    fn older_config_without_new_fields_still_deserializes() {
+        let json = r#"{
+            "hotkey":"CapsLock",
+            "device_index":0,
+            "language":"en",
+            "transcription_mode":"offline"
+        }"#;
+
+        let config: AppConfig = serde_json::from_str(json).expect("config should deserialize");
+        assert_eq!(config.offline_engine, "parakeet");
+        assert!(config.parakeet_segmented_mode_enabled);
+    }
+}
+
 pub struct ConfigState(pub Mutex<AppConfig>);
 
 fn config_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
@@ -246,9 +283,19 @@ pub fn load_config(app_handle: &AppHandle) -> AppConfig {
     };
 
     match fs::read_to_string(&path) {
-        Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
+        Ok(contents) => normalize_config(serde_json::from_str(&contents).unwrap_or_default()),
         Err(_) => AppConfig::default(),
     }
+}
+
+fn normalize_config(mut config: AppConfig) -> AppConfig {
+    config.offline_engine = match config.offline_engine.as_str() {
+        "parakeet" => "parakeet".to_string(),
+        "distil_whisper" => "distil_whisper".to_string(),
+        "cohere" => "distil_whisper".to_string(),
+        _ => default_offline_engine(),
+    };
+    config
 }
 
 pub fn save_config(app_handle: &AppHandle, config: &AppConfig) -> Result<(), String> {
@@ -281,8 +328,7 @@ fn to_wide(s: &str) -> Vec<u16> {
 
 #[cfg(windows)]
 pub fn set_launch_on_startup(enable: bool) -> Result<(), String> {
-    let exe_path =
-        std::env::current_exe().map_err(|e| format!("Failed to get exe path: {}", e))?;
+    let exe_path = std::env::current_exe().map_err(|e| format!("Failed to get exe path: {}", e))?;
     let exe_str = exe_path.to_string_lossy().to_string();
 
     unsafe {
@@ -305,10 +351,8 @@ pub fn set_launch_on_startup(enable: bool) -> Result<(), String> {
 
         if enable {
             let value_data = to_wide(&format!("\"{}\"", exe_str));
-            let data_bytes = std::slice::from_raw_parts(
-                value_data.as_ptr() as *const u8,
-                value_data.len() * 2,
-            );
+            let data_bytes =
+                std::slice::from_raw_parts(value_data.as_ptr() as *const u8, value_data.len() * 2);
 
             let result = RegSetValueExW(
                 key,
@@ -373,17 +417,20 @@ const LAUNCH_AGENT_LABEL: &str = "com.alish.yolo-voice";
 
 #[cfg(not(windows))]
 fn launch_agent_path() -> Option<std::path::PathBuf> {
-    dirs_next::home_dir().map(|h| h.join("Library/LaunchAgents").join(format!("{}.plist", LAUNCH_AGENT_LABEL)))
+    dirs_next::home_dir().map(|h| {
+        h.join("Library/LaunchAgents")
+            .join(format!("{}.plist", LAUNCH_AGENT_LABEL))
+    })
 }
 
 #[cfg(not(windows))]
 pub fn set_launch_on_startup(enable: bool) -> Result<(), String> {
-    let plist_path = launch_agent_path()
-        .ok_or_else(|| "Could not determine home directory".to_string())?;
+    let plist_path =
+        launch_agent_path().ok_or_else(|| "Could not determine home directory".to_string())?;
 
     if enable {
-        let exe_path = std::env::current_exe()
-            .map_err(|e| format!("Failed to get exe path: {}", e))?;
+        let exe_path =
+            std::env::current_exe().map_err(|e| format!("Failed to get exe path: {}", e))?;
         let exe_str = exe_path.to_string_lossy();
 
         let plist_content = format!(

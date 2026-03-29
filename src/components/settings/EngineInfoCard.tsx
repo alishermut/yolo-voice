@@ -9,14 +9,7 @@ const PARAKEET_LANGUAGES: Record<string, string> = {
   sk: "Slovak", sl: "Slovenian", es: "Spanish", sv: "Swedish", uk: "Ukrainian",
 };
 
-const WHISPER_EXTRA_LANGUAGES = [
-  "Afrikaans", "Arabic", "Armenian", "Azerbaijani", "Belarusian", "Bosnian",
-  "Catalan", "Chinese", "Estonian", "Galician", "Georgian", "Hebrew", "Hindi",
-  "Icelandic", "Indonesian", "Japanese", "Kannada", "Kazakh", "Korean", "Latvian",
-  "Lithuanian", "Macedonian", "Malay", "Marathi", "Maori", "Nepali", "Norwegian",
-  "Persian", "Swahili", "Tagalog", "Tamil", "Thai", "Turkish", "Urdu",
-  "Vietnamese", "Welsh",
-];
+const DISTIL_PRIMARY_LANGUAGES = ["English"];
 
 function LanguageChip({ name }: { name: string }) {
   return (
@@ -35,10 +28,11 @@ function SpeedRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function OfflineInfoCard() {
+export function OfflineInfoCard({ engine }: { engine: "parakeet" | "distil_whisper" }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const langs = Object.values(PARAKEET_LANGUAGES);
+  const isDistil = engine === "distil_whisper";
+  const langs = isDistil ? DISTIL_PRIMARY_LANGUAGES : Object.values(PARAKEET_LANGUAGES);
 
   return (
     <div>
@@ -56,23 +50,59 @@ export function OfflineInfoCard() {
         <div className="mt-2 p-3 bg-bg-raised border border-border-default rounded-lg space-y-3">
           <div>
             <p className="text-[10px] font-medium text-text-primary mb-1.5">
-              {t("engine.offline.languageCount")}
+              {isDistil
+                ? t("engine.offline.distilLanguageCount", {
+                    defaultValue: "Primary language: English",
+                  })
+                : t("engine.offline.languageCount")}
             </p>
             <div className="flex flex-wrap gap-1">
               {langs.map((l) => <LanguageChip key={l} name={l} />)}
             </div>
+            {isDistil && (
+              <p className="text-[10px] text-text-muted mt-2">
+                {t("engine.offline.distilLanguageNote", {
+                  defaultValue:
+                    "This exact Distil-Whisper model is tuned for English dictation. It comes from the Whisper family, but it should be presented as English-focused in the app.",
+                })}
+              </p>
+            )}
           </div>
 
           <div className="border-t border-border-default pt-2">
             <p className="text-[10px] font-medium text-text-primary mb-1">
               {t("engine.offline.speedHeading")}
             </p>
-            <SpeedRow label={t("engine.offline.speedGpuLabel")} value={t("engine.offline.speedGpu")} />
-            <SpeedRow label={t("engine.offline.speedCpuLabel")} value={t("engine.offline.speedCpu")} />
+            {isDistil ? (
+              <>
+                <SpeedRow
+                  label={t("engine.offline.speedGpuLabel")}
+                  value={t("engine.offline.distilSpeedGpu", {
+                    defaultValue: "Best on GPU. Strong long-form English dictation performance with much lower latency than heavier quality-first models.",
+                  })}
+                />
+                <SpeedRow
+                  label={t("engine.offline.speedCpuLabel")}
+                  value={t("engine.offline.distilSpeedCpu", {
+                    defaultValue: "Works on CPU, but expect significantly slower whole-clip processing.",
+                  })}
+                />
+              </>
+            ) : (
+              <>
+                <SpeedRow label={t("engine.offline.speedGpuLabel")} value={t("engine.offline.speedGpu")} />
+                <SpeedRow label={t("engine.offline.speedCpuLabel")} value={t("engine.offline.speedCpu")} />
+              </>
+            )}
           </div>
 
-          <p className="text-[10px] text-text-muted">
-            {t("engine.offline.privacyNote")}
+              <p className="text-[10px] text-text-muted">
+            {isDistil
+              ? t("engine.offline.distilNote", {
+                  defaultValue:
+                    "Uses whole-clip transcription with external speech compaction first. Slower than Parakeet, but usually stronger on long-form English dictation.",
+                })
+              : t("engine.offline.privacyNote")}
           </p>
         </div>
       )}
@@ -88,9 +118,9 @@ export function CloudInfoCard({ provider }: { provider: string }) {
   const name = isGroq ? t("engine.cloud.nameGroq") : t("engine.cloud.nameDeepgram");
   const langCount = isGroq ? t("engine.cloud.languageCountGroq") : t("engine.cloud.languageCountDeepgram");
 
-  // Combine Parakeet langs + Whisper extras for the cloud list
   const allLangs = isGroq
-    ? [...Object.values(PARAKEET_LANGUAGES), ...WHISPER_EXTRA_LANGUAGES].sort()
+    ? [...Object.values(PARAKEET_LANGUAGES), "Arabic", "Chinese", "Hindi", "Indonesian",
+       "Japanese", "Korean", "Malay", "Norwegian", "Thai", "Turkish", "Vietnamese"].sort()
     : [...Object.values(PARAKEET_LANGUAGES), "Arabic", "Chinese", "Hindi", "Indonesian",
        "Japanese", "Korean", "Malay", "Norwegian", "Thai", "Turkish", "Vietnamese"].sort();
 

@@ -1,6 +1,7 @@
 pub mod accumulator;
 pub mod cleanup;
 pub mod cloud;
+pub mod distil_whisper;
 pub mod inference;
 pub mod language;
 pub mod llm;
@@ -119,7 +120,14 @@ pub fn command_llm_call(
     api_key: &str,
     base_url: &str,
 ) -> Result<String, String> {
-    llm::command_llm_call(transcript, system_prompt, provider, model, api_key, base_url)
+    llm::command_llm_call(
+        transcript,
+        system_prompt,
+        provider,
+        model,
+        api_key,
+        base_url,
+    )
 }
 
 /// Get the profiles directory path.
@@ -133,10 +141,7 @@ pub fn list_profiles(profiles_dir: &std::path::Path) -> Result<Vec<Profile>, Str
 }
 
 /// Save a profile to disk.
-pub fn save_profile(
-    profiles_dir: &std::path::Path,
-    profile: &Profile,
-) -> Result<(), String> {
+pub fn save_profile(profiles_dir: &std::path::Path, profile: &Profile) -> Result<(), String> {
     profiles::save_profile(profiles_dir, profile)
 }
 

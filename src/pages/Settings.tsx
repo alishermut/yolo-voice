@@ -26,25 +26,33 @@ type SettingsSection =
   | "history"
   | "about";
 
-const SECTIONS: { key: SettingsSection; labelKey: string; icon: string }[] = [
-  { key: "general", labelKey: "settings.sidebar.section.general", icon: "\u2699" },
-  { key: "hotkeys", labelKey: "settings.sidebar.section.hotkeys", icon: "\u2328" },
-  { key: "transcription", labelKey: "settings.sidebar.section.transcription", icon: "\uD83C\uDFA4" },
-  { key: "command", labelKey: "settings.sidebar.section.commandMode", icon: "\u26A1" },
-  { key: "vocabulary", labelKey: "settings.sidebar.section.vocabulary", icon: "\uD83D\uDCD6" },
-  { key: "profiles", labelKey: "settings.sidebar.section.dictationStyles", icon: "\uD83C\uDFA8" },
-  { key: "history", labelKey: "settings.sidebar.section.history", icon: "\uD83D\uDCCB" },
+const SECTIONS: {
+  key: SettingsSection;
+  labelKey: string;
+  defaultLabel: string;
+  icon: string;
+}[] = [
+  { key: "general", labelKey: "settings.sidebar.section.general", defaultLabel: "General", icon: "\u2699" },
+  { key: "hotkeys", labelKey: "settings.sidebar.section.hotkeys", defaultLabel: "Hotkeys", icon: "\u2328" },
+  { key: "transcription", labelKey: "settings.sidebar.section.transcription", defaultLabel: "Transcription", icon: "\uD83C\uDFA4" },
+  { key: "command", labelKey: "settings.sidebar.section.commandMode", defaultLabel: "Command Mode", icon: "\u26A1" },
+  { key: "vocabulary", labelKey: "settings.sidebar.section.vocabulary", defaultLabel: "Vocabulary", icon: "\uD83D\uDCD6" },
+  { key: "profiles", labelKey: "settings.sidebar.section.dictationStyles", defaultLabel: "Dictation Styles", icon: "\uD83C\uDFA8" },
+  { key: "history", labelKey: "settings.sidebar.section.history", defaultLabel: "History", icon: "\uD83D\uDCCB" },
 ];
 
-const SECTION_TITLE_KEYS: Record<SettingsSection, string> = {
-  general: "settings.sectionTitle.general",
-  hotkeys: "settings.sectionTitle.hotkeys",
-  transcription: "settings.sectionTitle.transcription",
-  command: "settings.sectionTitle.command",
-  vocabulary: "settings.sectionTitle.vocabulary",
-  profiles: "settings.sectionTitle.profiles",
-  history: "settings.sectionTitle.history",
-  about: "settings.sectionTitle.about",
+const SECTION_TITLE_KEYS: Record<
+  SettingsSection,
+  { key: string; defaultValue: string }
+> = {
+  general: { key: "settings.sectionTitle.general", defaultValue: "General" },
+  hotkeys: { key: "settings.sectionTitle.hotkeys", defaultValue: "Hotkeys" },
+  transcription: { key: "settings.sectionTitle.transcription", defaultValue: "Transcription Engine" },
+  command: { key: "settings.sectionTitle.command", defaultValue: "Command Mode" },
+  vocabulary: { key: "settings.sectionTitle.vocabulary", defaultValue: "Vocabulary" },
+  profiles: { key: "settings.sectionTitle.profiles", defaultValue: "Dictation Styles" },
+  history: { key: "settings.sectionTitle.history", defaultValue: "Transcription History" },
+  about: { key: "settings.sectionTitle.about", defaultValue: "About" },
 };
 
 export function Settings() {
@@ -132,7 +140,7 @@ export function Settings() {
 
         {/* Sections */}
         <div className="flex-1 overflow-y-auto px-2 space-y-0.5">
-          {SECTIONS.map(({ key, labelKey, icon }) => (
+          {SECTIONS.map(({ key, labelKey, defaultLabel, icon }) => (
             <button
               key={key}
               onClick={() => setActiveSection(key)}
@@ -143,7 +151,7 @@ export function Settings() {
               }`}
             >
               <span className="text-base w-5 text-center opacity-70">{icon}</span>
-              {t(labelKey)}
+              {t(labelKey, { defaultValue: defaultLabel })}
             </button>
           ))}
 
@@ -158,7 +166,7 @@ export function Settings() {
             }`}
           >
             <span className="text-base w-5 text-center opacity-70">&#9432;</span>
-            {t("settings.sidebar.section.about")}
+            {t("settings.sidebar.section.about", { defaultValue: "About" })}
             {(updateStatus === "ready" || updateStatus === "downloading") && (
               <span className="ml-auto w-2 h-2 rounded-full bg-success animate-pulse" />
             )}
@@ -255,7 +263,9 @@ export function Settings() {
 
           {/* Section title */}
           <h2 className="text-lg font-semibold text-text-primary mb-6">
-            {t(SECTION_TITLE_KEYS[activeSection])}
+            {t(SECTION_TITLE_KEYS[activeSection].key, {
+              defaultValue: SECTION_TITLE_KEYS[activeSection].defaultValue,
+            })}
           </h2>
 
           {/* Active section */}

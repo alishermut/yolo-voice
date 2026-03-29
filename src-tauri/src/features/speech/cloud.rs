@@ -25,8 +25,8 @@ pub fn cloud_transcribe(
 
 /// Transcribe via Groq Whisper API (OpenAI-compatible multipart).
 fn cloud_groq(wav_path: &str, api_key: &str, language: &str) -> Result<String, String> {
-    let file_bytes = std::fs::read(wav_path)
-        .map_err(|e| format!("Failed to read WAV file: {}", e))?;
+    let file_bytes =
+        std::fs::read(wav_path).map_err(|e| format!("Failed to read WAV file: {}", e))?;
 
     let file_part = reqwest::blocking::multipart::Part::bytes(file_bytes)
         .file_name("recording.wav")
@@ -53,7 +53,9 @@ fn cloud_groq(wav_path: &str, api_key: &str, language: &str) -> Result<String, S
         return Err(format!("Groq error: HTTP {}", resp.status()));
     }
 
-    let data: serde_json::Value = resp.json().map_err(|e| format!("Groq response parse error: {}", e))?;
+    let data: serde_json::Value = resp
+        .json()
+        .map_err(|e| format!("Groq response parse error: {}", e))?;
     Ok(data
         .get("text")
         .and_then(|t| t.as_str())
@@ -63,8 +65,8 @@ fn cloud_groq(wav_path: &str, api_key: &str, language: &str) -> Result<String, S
 
 /// Transcribe via Deepgram API (raw WAV body POST).
 fn cloud_deepgram(wav_path: &str, api_key: &str, language: &str) -> Result<String, String> {
-    let file_bytes = std::fs::read(wav_path)
-        .map_err(|e| format!("Failed to read WAV file: {}", e))?;
+    let file_bytes =
+        std::fs::read(wav_path).map_err(|e| format!("Failed to read WAV file: {}", e))?;
 
     let lang = if language.is_empty() || language == "auto" {
         "en"
@@ -89,11 +91,15 @@ fn cloud_deepgram(wav_path: &str, api_key: &str, language: &str) -> Result<Strin
         return Err(format!("Deepgram error: HTTP {}", resp.status()));
     }
 
-    let data: serde_json::Value = resp.json().map_err(|e| format!("Deepgram response parse error: {}", e))?;
+    let data: serde_json::Value = resp
+        .json()
+        .map_err(|e| format!("Deepgram response parse error: {}", e))?;
 
     // Extract transcript from Deepgram response structure
-    Ok(data["results"]["channels"][0]["alternatives"][0]["transcript"]
-        .as_str()
-        .unwrap_or("")
-        .to_string())
+    Ok(
+        data["results"]["channels"][0]["alternatives"][0]["transcript"]
+            .as_str()
+            .unwrap_or("")
+            .to_string(),
+    )
 }

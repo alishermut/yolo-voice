@@ -8,6 +8,7 @@ import type {
   AppConfig,
   AppInfo,
   DeviceInfo,
+  DistilWhisperModelStatus,
   GpuInfo,
   IndustryPack,
   IndustryPackInfo,
@@ -81,6 +82,40 @@ export function getGpuInfo(): Promise<GpuInfo> {
 
 export function getModelStatus(): Promise<string> {
   return invoke<string>("get_model_status");
+}
+
+export function openDistilWhisperModelPage(): Promise<void> {
+  return invoke("open_distil_whisper_model_page_cmd");
+}
+
+export function getDistilWhisperModelStatus(): Promise<DistilWhisperModelStatus> {
+  return invoke<DistilWhisperModelStatus>("get_distil_whisper_model_status");
+}
+
+export function downloadDistilWhisperModel(): Promise<DistilWhisperModelStatus> {
+  return invoke<DistilWhisperModelStatus>("download_distil_whisper_model_cmd");
+}
+
+export function prepareDistilWhisperModel(): Promise<DistilWhisperModelStatus> {
+  return invoke<DistilWhisperModelStatus>("prepare_distil_whisper_model_cmd");
+}
+
+export function reloadDistilWhisperModel(
+  useGpu: boolean,
+): Promise<DistilWhisperModelStatus> {
+  return invoke<DistilWhisperModelStatus>("reload_distil_whisper_model_cmd", { useGpu });
+}
+
+export function deleteDistilWhisperModel(): Promise<DistilWhisperModelStatus> {
+  return invoke<DistilWhisperModelStatus>("delete_distil_whisper_model_cmd");
+}
+
+export function onDistilWhisperStatus(
+  handler: (status: string) => void,
+): Promise<UnlistenFn> {
+  return listen<string>("distil-whisper-status", (event) => {
+    handler(event.payload);
+  });
 }
 
 
@@ -215,6 +250,10 @@ export function getTranscriptHistory(
     offset,
     search: search || null,
   });
+}
+
+export function clearTranscriptHistory(): Promise<void> {
+  return invoke("clear_transcript_history");
 }
 
 export function deleteTranscriptEntry(id: number): Promise<void> {

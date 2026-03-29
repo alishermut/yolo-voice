@@ -66,7 +66,11 @@ pub fn spawn_warm_device(app_handle: &tauri::AppHandle, device_index: usize) {
                 if let Ok(config) = device.default_input_config() {
                     if let Some(state) = handle.try_state::<WarmDeviceState>() {
                         if let Ok(mut guard) = state.0.lock() {
-                            *guard = Some(WarmDevice { device, config, device_index });
+                            *guard = Some(WarmDevice {
+                                device,
+                                config,
+                                device_index,
+                            });
                         }
                     }
                 }
@@ -129,8 +133,8 @@ pub fn start_recording(
     vad_config: Option<VadConfig>,
     warm_state: Option<&WarmDeviceState>,
 ) -> Result<RecordingStream, String> {
-    let (device, supported_config) = resolve_device(device_index, warm_state)
-        .or_else(|first_err| {
+    let (device, supported_config) =
+        resolve_device(device_index, warm_state).or_else(|first_err| {
             // If warm device failed, retry cold
             eprintln!("[recorder] Warm device failed ({first_err}), retrying cold");
             resolve_device(device_index, None)
@@ -150,51 +154,50 @@ pub fn start_recording(
     let stop_reader = stop_flag.clone();
 
     // ── VAD setup (optional) ─────────────────────────────────────────────
-    let (vad_audio_tx, accumulator, vad_mono_samples_16k, vad_done_rx) = if let Some(cfg) = vad_config {
-        let (accumulator, segment_sender) = SegmentAccumulator::new(
-            app_handle.clone(),
-            cfg.text_cleanup_enabled,
-        );
-        let utterance_samples_16k = Arc::new(Mutex::new(Vec::new()));
+    let (vad_audio_tx, accumulator, vad_mono_samples_16k, vad_done_rx) =
+        if let Some(cfg) = vad_config {
+            let (accumulator, segment_sender) =
+                SegmentAccumulator::new(app_handle.clone(), cfg.text_cleanup_enabled);
+            let utterance_samples_16k = Arc::new(Mutex::new(Vec::new()));
 
-        // Channel for raw audio: callback → VAD thread
-        let (audio_tx, audio_rx) = std::sync::mpsc::channel::<Vec<f32>>();
-        // Channel for VAD thread to signal it has fully flushed
-        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+            // Channel for raw audio: callback → VAD thread
+            let (audio_tx, audio_rx) = std::sync::mpsc::channel::<Vec<f32>>();
+            // Channel for VAD thread to signal it has fully flushed
+            let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
 
-        let vad_stop = stop_flag.clone();
-        let model_path = cfg.model_path;
-        let silence_ms = cfg.silence_threshold_ms;
-        let dev_rate = sample_rate;
-        let dev_ch = channels;
-        let utterance_samples = utterance_samples_16k.clone();
+            let vad_stop = stop_flag.clone();
+            let model_path = cfg.model_path;
+            let silence_ms = cfg.silence_threshold_ms;
+            let dev_rate = sample_rate;
+            let dev_ch = channels;
+            let utterance_samples = utterance_samples_16k.clone();
 
-        std::thread::Builder::new()
-            .name("vad-processor".into())
-            .spawn(move || {
-                vad_thread(
-                    audio_rx,
-                    vad_stop,
-                    &model_path,
-                    silence_ms,
-                    segment_sender,
-                    utterance_samples,
-                    dev_rate,
-                    dev_ch,
-                );
-                let _ = done_tx.send(());
-            })
-            .map_err(|e| format!("Failed to spawn VAD thread: {e}"))?;
+            std::thread::Builder::new()
+                .name("vad-processor".into())
+                .spawn(move || {
+                    vad_thread(
+                        audio_rx,
+                        vad_stop,
+                        &model_path,
+                        silence_ms,
+                        segment_sender,
+                        utterance_samples,
+                        dev_rate,
+                        dev_ch,
+                    );
+                    let _ = done_tx.send(());
+                })
+                .map_err(|e| format!("Failed to spawn VAD thread: {e}"))?;
 
-        (
-            Some(audio_tx),
-            Some(accumulator),
-            Some(utterance_samples_16k),
-            Some(done_rx),
-        )
-    } else {
-        (None, None, None, None)
-    };
+            (
+                Some(audio_tx),
+                Some(accumulator),
+                Some(utterance_samples_16k),
+                Some(done_rx),
+            )
+        } else {
+            (None, None, None, None)
+        };
 
     let vad_tx = vad_audio_tx;
 
@@ -290,9 +293,7 @@ pub fn start_recording(
 pub fn stop_and_save(recording: RecordingStream) -> Result<PathBuf, String> {
     recording.stop_flag.store(true, Ordering::Relaxed);
 
-    let samples = std::mem::take(
-        &mut *recording.samples.lock().map_err(|e| e.to_string())?,
-    );
+    let samples = std::mem::take(&mut *recording.samples.lock().map_err(|e| e.to_string())?);
 
     let path = std::env::temp_dir().join("yolo_voice_recording.wav");
 
@@ -320,9 +321,7 @@ pub fn stop_and_get_raw_samples(
 ) -> Result<(Vec<f32>, u32, u16), String> {
     recording.stop_flag.store(true, Ordering::Relaxed);
 
-    let samples = std::mem::take(
-        &mut *recording.samples.lock().map_err(|e| e.to_string())?,
-    );
+    let samples = std::mem::take(&mut *recording.samples.lock().map_err(|e| e.to_string())?);
 
     Ok((samples, recording.sample_rate, recording.channels))
 }
@@ -368,16 +367,22 @@ pub fn has_vad(recording: &RecordingStream) -> bool {
 /// Stop recording and return WAV bytes in memory (no disk I/O).
 #[allow(dead_code)]
 pub fn stop_and_get_wav_bytes(recording: RecordingStream) -> Result<Vec<u8>, String> {
+    stop_and_get_wav_bytes_with_metadata(recording).map(|(wav_bytes, _, _, _)| wav_bytes)
+}
+
+pub fn stop_and_get_wav_bytes_with_metadata(
+    recording: RecordingStream,
+) -> Result<(Vec<u8>, u32, u16, usize), String> {
     recording.stop_flag.store(true, Ordering::Relaxed);
 
-    let samples = recording
-        .samples
-        .lock()
-        .map_err(|e| e.to_string())?
-        .clone();
+    let samples = recording.samples.lock().map_err(|e| e.to_string())?.clone();
+    let wav_bytes = encode_wav_bytes(&samples, recording.sample_rate, recording.channels);
 
-    let num_channels = recording.channels as u32;
-    let sample_rate = recording.sample_rate;
+    Ok((wav_bytes, recording.sample_rate, recording.channels, samples.len()))
+}
+
+pub fn encode_wav_bytes(samples: &[f32], sample_rate: u32, channels: u16) -> Vec<u8> {
+    let num_channels = channels as u32;
     let bits_per_sample: u32 = 32;
     let byte_rate = sample_rate * num_channels * bits_per_sample / 8;
     let block_align = (num_channels * bits_per_sample / 8) as u16;
@@ -401,11 +406,11 @@ pub fn stop_and_get_wav_bytes(recording: RecordingStream) -> Result<Vec<u8>, Str
 
     buf.extend_from_slice(b"data");
     buf.extend_from_slice(&data_size.to_le_bytes());
-    for sample in &samples {
+    for sample in samples {
         buf.extend_from_slice(&sample.to_le_bytes());
     }
 
-    Ok(buf)
+    buf
 }
 
 // ── VAD thread ───────────────────────────────────────────────────────────────
@@ -505,5 +510,4 @@ fn vad_thread(
     if let Some(seg) = vad.flush() {
         segment_sender.submit(seg);
     }
-
 }

@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { focusRing } from "./styles";
 
-interface SelectOption {
+export interface SelectOption {
   value: string;
   label: string;
+  disabled?: boolean;
 }
 
 interface SelectProps {
@@ -74,8 +75,11 @@ export function Select({ value, onChange, options, placeholder = "Select...", cl
       case " ":
         e.preventDefault();
         if (focusedIndex >= 0 && focusedIndex < options.length) {
-          onChange(options[focusedIndex].value);
-          setOpen(false);
+          const option = options[focusedIndex];
+          if (!option.disabled) {
+            onChange(option.value);
+            setOpen(false);
+          }
         }
         break;
     }
@@ -122,16 +126,19 @@ export function Select({ value, onChange, options, placeholder = "Select...", cl
                 role="option"
                 aria-selected={isSelected}
                 onClick={() => {
+                  if (option.disabled) return;
                   onChange(option.value);
                   setOpen(false);
                 }}
                 onMouseEnter={() => setFocusedIndex(i)}
-                className={`flex items-center justify-between px-3 py-2 text-sm cursor-pointer transition-colors ${
-                  isFocused ? "bg-bg-hover" : ""
-                } ${isSelected ? "text-accent font-medium" : "text-text-primary"}`}
+                className={`flex items-center justify-between px-3 py-2 text-sm transition-colors ${
+                  option.disabled ? "cursor-not-allowed text-text-muted opacity-60" : "cursor-pointer"
+                } ${isFocused && !option.disabled ? "bg-bg-hover" : ""} ${
+                  isSelected ? "text-accent font-medium" : option.disabled ? "text-text-muted" : "text-text-primary"
+                }`}
               >
                 <span>{option.label}</span>
-                {isSelected && (
+                {isSelected && !option.disabled && (
                   <svg className="h-4 w-4 text-accent shrink-0" viewBox="0 0 20 20" fill="currentColor">
                     <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
                   </svg>
