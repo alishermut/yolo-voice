@@ -13,8 +13,8 @@ use features::speech::inference::InferenceState;
 use features::speech::vocabulary::{UserDictionaryMigration, UserDictionaryState};
 use std::sync::Mutex;
 use tauri::{
-    menu::{Menu, MenuItem},
-    tray::TrayIconBuilder,
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, WindowEvent,
 };
 
@@ -115,9 +115,25 @@ pub fn run() {
             app.manage(TranscriptDiagnosticsState(diagnostics_store));
 
             // Build tray menu
-            let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
+            let show_item = MenuItem::with_id(app, "show", "Show app", true, None::<&str>)?;
+            let transcriptions_item =
+                MenuItem::with_id(app, "transcriptions", "Transcriptions", true, None::<&str>)?;
+            let settings_item =
+                MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
+            let separator = PredefinedMenuItem::separator(app)?;
+            let history_item = MenuItem::with_id(app, "history", "History", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &show_item,
+                    &transcriptions_item,
+                    &settings_item,
+                    &separator,
+                    &history_item,
+                    &quit_item,
+                ],
+            )?;
 
             // Build tray icon
             TrayIconBuilder::new()
@@ -131,16 +147,44 @@ pub fn run() {
                             let _ = w.set_focus();
                         }
                     }
+                    "transcriptions" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                        let _ = app.emit("open-settings-section", "transcription");
+                    }
+                    "settings" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                        let _ = app.emit("open-settings-section", "general");
+                    }
+                    "history" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                        let _ = app.emit("open-settings-section", "history");
+                    }
                     "quit" => {
                         app.exit(0);
                     }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
-                    if let tauri::tray::TrayIconEvent::Click { .. } = event {
-                        if let Some(w) = tray.app_handle().get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
+                    if let TrayIconEvent::Click {
+                        button,
+                        button_state,
+                        ..
+                    } = event
+                    {
+                        if button == MouseButton::Left && button_state == MouseButtonState::Up {
+                            if let Some(w) = tray.app_handle().get_webview_window("main") {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
                         }
                     }
                 })

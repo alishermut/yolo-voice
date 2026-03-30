@@ -3,11 +3,7 @@ use std::thread;
 use std::time::Duration;
 
 #[cfg(windows)]
-use windows::core::PCWSTR;
-#[cfg(windows)]
 use windows::Win32::Foundation::HWND;
-#[cfg(windows)]
-use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY};
 #[cfg(windows)]
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -41,6 +37,14 @@ const SOUND_RADIO_START: &[u8] = include_bytes!("../../../sounds/radio_start.wav
 const SOUND_RADIO_DONE: &[u8] = include_bytes!("../../../sounds/radio_done.wav");
 const SOUND_RETRO_START: &[u8] = include_bytes!("../../../sounds/retro_start.wav");
 const SOUND_RETRO_DONE: &[u8] = include_bytes!("../../../sounds/retro_done.wav");
+const SOUND_BEGIN: &[u8] = include_bytes!("../../../sounds/begin.mp3");
+const SOUND_BACK_002: &[u8] = include_bytes!("../../../sounds/back_002.mp3");
+const SOUND_CLICK_SOFT: &[u8] = include_bytes!("../../../sounds/click_soft.mp3");
+const SOUND_NOTIFICATION_POP: &[u8] = include_bytes!("../../../sounds/notification_pop.mp3");
+const SOUND_SUCCESS_CHIME: &[u8] = include_bytes!("../../../sounds/success_chime.mp3");
+const SOUND_ZAP_TWO_TONE: &[u8] = include_bytes!("../../../sounds/zap_two_tone.mp3");
+const SOUND_ZAP_THREE_TONE_UP: &[u8] = include_bytes!("../../../sounds/zap_three_tone_up.mp3");
+const SOUND_ZAP_THREE_TONE_DOWN: &[u8] = include_bytes!("../../../sounds/zap_three_tone_down.mp3");
 
 pub const AVAILABLE_SOUNDS: &[&str] = &[
     "chime",
@@ -59,6 +63,14 @@ pub const AVAILABLE_SOUNDS: &[&str] = &[
     "radio_done",
     "retro_start",
     "retro_done",
+    "begin",
+    "back_002",
+    "click_soft",
+    "notification_pop",
+    "success_chime",
+    "zap_two_tone",
+    "zap_three_tone_up",
+    "zap_three_tone_down",
 ];
 
 fn get_sound_bytes(name: &str) -> &'static [u8] {
@@ -79,6 +91,14 @@ fn get_sound_bytes(name: &str) -> &'static [u8] {
         "radio_done" => SOUND_RADIO_DONE,
         "retro_start" => SOUND_RETRO_START,
         "retro_done" => SOUND_RETRO_DONE,
+        "begin" => SOUND_BEGIN,
+        "back_002" => SOUND_BACK_002,
+        "click_soft" => SOUND_CLICK_SOFT,
+        "notification_pop" => SOUND_NOTIFICATION_POP,
+        "success_chime" => SOUND_SUCCESS_CHIME,
+        "zap_two_tone" => SOUND_ZAP_TWO_TONE,
+        "zap_three_tone_up" => SOUND_ZAP_THREE_TONE_UP,
+        "zap_three_tone_down" => SOUND_ZAP_THREE_TONE_DOWN,
         _ => SOUND_CHIME,
     }
 }
@@ -353,7 +373,7 @@ fn send_paste_keystroke(_with_shift: bool) -> Result<(), String> {
 pub fn play_sound(name: &str) {
     let sound_data: &'static [u8] = get_sound_bytes(name);
     thread::spawn(move || {
-        play_wav_from_memory(sound_data);
+        play_audio_from_memory(sound_data);
     });
 }
 
@@ -365,16 +385,7 @@ pub fn play_done_sound(sound_name: &str) {
     play_sound(sound_name);
 }
 
-#[cfg(windows)]
-fn play_wav_from_memory(data: &[u8]) {
-    unsafe {
-        let ptr = data.as_ptr() as *const u16;
-        let _ = PlaySoundW(PCWSTR(ptr), None, SND_MEMORY | SND_ASYNC);
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn play_wav_from_memory(data: &[u8]) {
+fn play_audio_from_memory(data: &[u8]) {
     use rodio::{Decoder, OutputStream, Sink};
     use std::io::Cursor;
 
@@ -386,11 +397,11 @@ fn play_wav_from_memory(data: &[u8]) {
         }
     };
 
-    let cursor = Cursor::new(data);
+    let cursor = Cursor::new(data.to_vec());
     let source = match Decoder::new(cursor) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[sound] Failed to decode WAV: {}", e);
+            eprintln!("[sound] Failed to decode audio: {}", e);
             return;
         }
     };

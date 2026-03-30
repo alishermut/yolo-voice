@@ -90,7 +90,7 @@ export function GeneralSection({
                   onChange={(v) => updateConfig({ start_sound: v })}
                   options={availableSounds.map((s) => ({
                     value: s,
-                    label: s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+                    label: s.replace(/[_-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
                   }))}
                   className="flex-1"
                 />
@@ -111,7 +111,7 @@ export function GeneralSection({
                   onChange={(v) => updateConfig({ stop_sound: v })}
                   options={availableSounds.map((s) => ({
                     value: s,
-                    label: s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+                    label: s.replace(/[_-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
                   }))}
                   className="flex-1"
                 />

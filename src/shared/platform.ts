@@ -179,6 +179,8 @@ export function quitApp(): Promise<void> {
   return invoke("quit_app");
 }
 
+export type SettingsNavigationTarget = "general" | "transcription" | "history";
+
 // ---- Sounds ----
 
 export function previewSound(soundName: string): Promise<void> {
@@ -331,6 +333,14 @@ export function onStyleSwitched(
   handler: (profileName: string) => void,
 ): Promise<UnlistenFn> {
   return listen<string>("style-switched", (event) => {
+    handler(event.payload);
+  });
+}
+
+export function onOpenSettingsSection(
+  handler: (section: SettingsNavigationTarget) => void,
+): Promise<UnlistenFn> {
+  return listen<SettingsNavigationTarget>("open-settings-section", (event) => {
     handler(event.payload);
   });
 }

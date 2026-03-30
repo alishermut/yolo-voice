@@ -185,10 +185,10 @@ fn default_sounds_enabled() -> bool {
     true
 }
 fn default_start_sound() -> String {
-    "chime".to_string()
+    "click_soft".to_string()
 }
 fn default_stop_sound() -> String {
-    "ding".to_string()
+    "success_chime".to_string()
 }
 
 impl Default for AppConfig {

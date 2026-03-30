@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AppConfig } from "../shared/types";
-import { getConfig, saveConfig, quitApp, getAppInfo } from "../shared/platform";
+import { getConfig, saveConfig, quitApp, getAppInfo, onOpenSettingsSection } from "../shared/platform";
 import type { AppInfo } from "../shared/types";
 import { useToast, ToastContainer } from "../components/Toast";
 import { focusRing } from "../components/ui/styles";
@@ -110,6 +110,21 @@ export function Settings() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const unlistenPromise = onOpenSettingsSection((section) => {
+      if (mounted) {
+        setActiveSection(section);
+      }
+    });
+
+    return () => {
+      mounted = false;
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
 
   if (!config) {
     return (
