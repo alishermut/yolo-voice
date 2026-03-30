@@ -8,6 +8,7 @@ offline product flow.
 import base64
 import io
 import json
+import os
 import sys
 import time
 from typing import Optional
@@ -87,10 +88,10 @@ def download_model(target_dir: str) -> dict:
     from huggingface_hub import snapshot_download
 
     started = time.time()
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
     local_dir = snapshot_download(
         repo_id=DISTIL_WHISPER_REPO,
         local_dir=target_dir,
-        local_dir_use_symlinks=False,
     )
     total_time = time.time() - started
     log(f"Downloaded {DISTIL_WHISPER_REPO} to {local_dir} in {total_time:.2f}s")

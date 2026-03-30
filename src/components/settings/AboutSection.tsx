@@ -5,17 +5,89 @@ import type { AppInfo } from "../../shared/types";
 import { focusRing } from "../ui/styles";
 import { useUpdaterContext } from "../../contexts/UpdaterContext";
 
+const releaseNoteFiles = import.meta.glob("../../../docs/releases/*.md", {
+  eager: true,
+  import: "default",
+  query: "?raw",
+}) as Record<string, string>;
+
+type ReleaseNotesSection = {
+  heading: string;
+  paragraphs: string[];
+  bullets: string[];
+};
+
+function parseReleaseNotes(markdown: string) {
+  const lines = markdown.split(/\r?\n/);
+  let title = "";
+  const sections: ReleaseNotesSection[] = [];
+  let currentSection: ReleaseNotesSection | null = null;
+
+  const ensureSection = () => {
+    if (!currentSection) {
+      currentSection = { heading: "", paragraphs: [], bullets: [] };
+      sections.push(currentSection);
+    }
+    return currentSection;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      continue;
+    }
+
+    if (line.startsWith("# ")) {
+      title = line.slice(2).trim();
+      continue;
+    }
+
+    if (line.startsWith("## ")) {
+      currentSection = {
+        heading: line.slice(3).trim(),
+        paragraphs: [],
+        bullets: [],
+      };
+      sections.push(currentSection);
+      continue;
+    }
+
+    if (line.startsWith("- ")) {
+      ensureSection().bullets.push(line.slice(2).trim());
+      continue;
+    }
+
+    ensureSection().paragraphs.push(line);
+  }
+
+  return { title, sections };
+}
+
+function getReleaseNotes(version?: string) {
+  if (!version) {
+    return null;
+  }
+
+  const normalizedVersion = version.startsWith("v") ? version : `v${version}`;
+  const match = Object.entries(releaseNoteFiles).find(([path]) =>
+    path.endsWith(`${normalizedVersion}.md`),
+  );
+
+  return match ? parseReleaseNotes(match[1]) : null;
+}
+
 export function AboutSection() {
   const { t } = useTranslation();
   const [info, setInfo] = useState<AppInfo | null>(null);
   const { status, version, error, checkForUpdates, installUpdate, dismissError } = useUpdaterContext();
+  const releaseNotes = getReleaseNotes(info?.version);
 
   useEffect(() => {
     getAppInfo().then(setInfo).catch(console.error);
   }, []);
 
   return (
-    <div className="space-y-6 max-w-md">
+    <div className="space-y-6 max-w-2xl">
       <div className="space-y-1">
         <h3 className="text-xl font-bold text-text-primary">
           {info?.name ?? t("about.appName")}
@@ -23,27 +95,6 @@ export function AboutSection() {
         <p className="text-sm text-text-muted">
           {t("about.version", { version: info?.version ?? "..." })}
         </p>
-      </div>
-
-      <div className="p-4 bg-bg-raised border border-border-default rounded-lg space-y-3">
-        <p className="text-sm text-text-secondary">
-          {t("about.description")}
-        </p>
-
-        <div className="space-y-2 text-sm">
-          <div className="flex justify-between">
-            <span className="text-text-muted">{t("about.transcriptionLabel")}</span>
-            <span className="text-text-secondary">{t("about.transcriptionValue")}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-text-muted">{t("about.postProcessingLabel")}</span>
-            <span className="text-text-secondary">{t("about.postProcessingValue")}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-text-muted">{t("about.frameworkLabel")}</span>
-            <span className="text-text-secondary">{t("about.frameworkValue")}</span>
-          </div>
-        </div>
       </div>
 
       {/* Updates */}
@@ -112,18 +163,54 @@ export function AboutSection() {
         )}
       </div>
 
-      <div className="p-4 bg-bg-raised border border-border-default rounded-lg space-y-2">
-        <h3 className="text-sm font-semibold text-text-primary">{t("about.keyboardShortcuts.heading")}</h3>
-        <div className="text-sm space-y-1">
-          <div className="flex justify-between">
-            <span className="text-text-muted">{t("about.keyboardShortcuts.holdLabel")}</span>
-            <span className="text-text-secondary">{t("about.keyboardShortcuts.holdValue")}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-text-muted">{t("about.keyboardShortcuts.toggleLabel")}</span>
-            <span className="text-text-secondary">{t("about.keyboardShortcuts.toggleValue")}</span>
-          </div>
+      <div className="p-4 bg-bg-raised border border-border-default rounded-lg space-y-4">
+        <div className="space-y-1">
+          <h3 className="text-sm font-semibold text-text-primary">
+            {t("about.releaseNotes.heading", { defaultValue: "Latest release notes" })}
+          </h3>
+          <p className="text-xs text-text-muted">
+            {releaseNotes?.title ||
+              t("about.releaseNotes.currentVersion", {
+                defaultValue: "Release notes for v{{version}}",
+                version: info?.version ?? "...",
+              })}
+          </p>
         </div>
+
+        {releaseNotes ? (
+          <div className="space-y-4 text-sm">
+            {releaseNotes.sections.map((section, index) => (
+              <div key={`${section.heading || "section"}-${index}`} className="space-y-2">
+                {section.heading && (
+                  <h4 className="font-medium text-text-primary">{section.heading}</h4>
+                )}
+                {section.paragraphs.map((paragraph, paragraphIndex) => (
+                  <p
+                    key={`${section.heading || "section"}-paragraph-${paragraphIndex}`}
+                    className="text-text-secondary"
+                  >
+                    {paragraph}
+                  </p>
+                ))}
+                {section.bullets.length > 0 && (
+                  <ul className="list-disc pl-5 space-y-1 text-text-secondary">
+                    {section.bullets.map((bullet, bulletIndex) => (
+                      <li key={`${section.heading || "section"}-bullet-${bulletIndex}`}>
+                        {bullet}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-text-muted">
+            {t("about.releaseNotes.unavailable", {
+              defaultValue: "Release notes for this version are not bundled yet.",
+            })}
+          </p>
+        )}
       </div>
 
       <p className="text-xs text-text-disabled text-center">

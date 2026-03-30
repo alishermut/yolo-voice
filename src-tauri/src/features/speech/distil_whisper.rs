@@ -3,11 +3,14 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::Emitter;
 use tauri::{AppHandle, Manager};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 use crate::infra::model;
 
@@ -287,7 +290,11 @@ impl DistilWhisperProcess {
             .arg(&launcher.script_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::piped())
+            .env("HF_HUB_DISABLE_PROGRESS_BARS", "1");
+
+        #[cfg(windows)]
+        command.creation_flags(0x08000000);
 
         let mut child = command.spawn().map_err(|e| {
             format!(
@@ -295,6 +302,10 @@ impl DistilWhisperProcess {
                 launcher.display, e
             )
         })?;
+
+        if let Some(stderr) = child.stderr.take() {
+            spawn_stderr_forwarder(stderr);
+        }
 
         let stdin = child
             .stdin
@@ -344,6 +355,24 @@ impl DistilWhisperProcess {
         serde_json::from_str(response.trim())
             .map_err(|e| format!("Invalid Distil-Whisper sidecar response: {}", e))
     }
+}
+
+fn spawn_stderr_forwarder(stderr: ChildStderr) {
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines() {
+            match line {
+                Ok(line) if !line.trim().is_empty() => {
+                    eprintln!("[distil-whisper] {}", line);
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    eprintln!("[distil-whisper] Failed to read sidecar stderr: {}", err);
+                    break;
+                }
+            }
+        }
+    });
 }
 
 fn ensure_ok_response(cmd: &str, response: &Value) -> Result<(), String> {
