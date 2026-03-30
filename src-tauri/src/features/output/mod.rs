@@ -45,6 +45,29 @@ const SOUND_SUCCESS_CHIME: &[u8] = include_bytes!("../../../sounds/success_chime
 const SOUND_ZAP_TWO_TONE: &[u8] = include_bytes!("../../../sounds/zap_two_tone.mp3");
 const SOUND_ZAP_THREE_TONE_UP: &[u8] = include_bytes!("../../../sounds/zap_three_tone_up.mp3");
 const SOUND_ZAP_THREE_TONE_DOWN: &[u8] = include_bytes!("../../../sounds/zap_three_tone_down.mp3");
+const SOUND_CHIME_CANCEL: &[u8] = include_bytes!("../../../sounds/chime_cancel.mp3");
+const SOUND_CHIME_CONFIRM: &[u8] = include_bytes!("../../../sounds/chime_confirm.mp3");
+const SOUND_CHIME_EXIT: &[u8] = include_bytes!("../../../sounds/chime_exit.mp3");
+const SOUND_CHIME_LEVEL_UP: &[u8] = include_bytes!("../../../sounds/chime_level_up.mp3");
+const SOUND_CHIME_LOAD: &[u8] = include_bytes!("../../../sounds/chime_load.mp3");
+const SOUND_CHIME_SAVE: &[u8] = include_bytes!("../../../sounds/chime_save.mp3");
+const SOUND_CHIME_SLEEP: &[u8] = include_bytes!("../../../sounds/chime_sleep.mp3");
+const SOUND_UI_BUTTON_1: &[u8] = include_bytes!("../../../sounds/ui_button_1.ogg");
+const SOUND_UI_BUTTON_2: &[u8] = include_bytes!("../../../sounds/ui_button_2.ogg");
+const SOUND_UI_COMPLETE: &[u8] = include_bytes!("../../../sounds/ui_complete.ogg");
+const SOUND_UI_OFF: &[u8] = include_bytes!("../../../sounds/ui_off.ogg");
+const SOUND_UI_ON: &[u8] = include_bytes!("../../../sounds/ui_on.ogg");
+const SOUND_UI_PACK_0: &[u8] = include_bytes!("../../../sounds/ui_pack_0.wav");
+const SOUND_UI_PACK_1: &[u8] = include_bytes!("../../../sounds/ui_pack_1.wav");
+const SOUND_UI_PACK_2: &[u8] = include_bytes!("../../../sounds/ui_pack_2.wav");
+const SOUND_UI_PACK_3: &[u8] = include_bytes!("../../../sounds/ui_pack_3.wav");
+const SOUND_UI_PACK_4: &[u8] = include_bytes!("../../../sounds/ui_pack_4.wav");
+const SOUND_UI_PACK_5: &[u8] = include_bytes!("../../../sounds/ui_pack_5.wav");
+const SOUND_UI_PACK_6: &[u8] = include_bytes!("../../../sounds/ui_pack_6.wav");
+const SOUND_UI_PACK_7: &[u8] = include_bytes!("../../../sounds/ui_pack_7.wav");
+const SOUND_UI_PACK_8: &[u8] = include_bytes!("../../../sounds/ui_pack_8.wav");
+const SOUND_UI_PACK_9: &[u8] = include_bytes!("../../../sounds/ui_pack_9.wav");
+const SOUND_UI_WRONG_ERROR: &[u8] = include_bytes!("../../../sounds/ui_wrong_error.wav");
 
 pub const AVAILABLE_SOUNDS: &[&str] = &[
     "chime",
@@ -71,6 +94,29 @@ pub const AVAILABLE_SOUNDS: &[&str] = &[
     "zap_two_tone",
     "zap_three_tone_up",
     "zap_three_tone_down",
+    "chime_cancel",
+    "chime_confirm",
+    "chime_exit",
+    "chime_level_up",
+    "chime_load",
+    "chime_save",
+    "chime_sleep",
+    "ui_button_1",
+    "ui_button_2",
+    "ui_complete",
+    "ui_off",
+    "ui_on",
+    "ui_pack_0",
+    "ui_pack_1",
+    "ui_pack_2",
+    "ui_pack_3",
+    "ui_pack_4",
+    "ui_pack_5",
+    "ui_pack_6",
+    "ui_pack_7",
+    "ui_pack_8",
+    "ui_pack_9",
+    "ui_wrong_error",
 ];
 
 fn get_sound_bytes(name: &str) -> &'static [u8] {
@@ -99,6 +145,29 @@ fn get_sound_bytes(name: &str) -> &'static [u8] {
         "zap_two_tone" => SOUND_ZAP_TWO_TONE,
         "zap_three_tone_up" => SOUND_ZAP_THREE_TONE_UP,
         "zap_three_tone_down" => SOUND_ZAP_THREE_TONE_DOWN,
+        "chime_cancel" => SOUND_CHIME_CANCEL,
+        "chime_confirm" => SOUND_CHIME_CONFIRM,
+        "chime_exit" => SOUND_CHIME_EXIT,
+        "chime_level_up" => SOUND_CHIME_LEVEL_UP,
+        "chime_load" => SOUND_CHIME_LOAD,
+        "chime_save" => SOUND_CHIME_SAVE,
+        "chime_sleep" => SOUND_CHIME_SLEEP,
+        "ui_button_1" => SOUND_UI_BUTTON_1,
+        "ui_button_2" => SOUND_UI_BUTTON_2,
+        "ui_complete" => SOUND_UI_COMPLETE,
+        "ui_off" => SOUND_UI_OFF,
+        "ui_on" => SOUND_UI_ON,
+        "ui_pack_0" => SOUND_UI_PACK_0,
+        "ui_pack_1" => SOUND_UI_PACK_1,
+        "ui_pack_2" => SOUND_UI_PACK_2,
+        "ui_pack_3" => SOUND_UI_PACK_3,
+        "ui_pack_4" => SOUND_UI_PACK_4,
+        "ui_pack_5" => SOUND_UI_PACK_5,
+        "ui_pack_6" => SOUND_UI_PACK_6,
+        "ui_pack_7" => SOUND_UI_PACK_7,
+        "ui_pack_8" => SOUND_UI_PACK_8,
+        "ui_pack_9" => SOUND_UI_PACK_9,
+        "ui_wrong_error" => SOUND_UI_WRONG_ERROR,
         _ => SOUND_CHIME,
     }
 }

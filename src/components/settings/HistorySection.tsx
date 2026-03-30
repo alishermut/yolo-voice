@@ -16,6 +16,7 @@ export function HistorySection() {
   const { t } = useTranslation();
   const [entries, setEntries] = useState<TranscriptHistoryEntry[]>([]);
   const [search, setSearch] = useState("");
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [wordPickerId, setWordPickerId] = useState<number | null>(null);
@@ -35,11 +36,17 @@ export function HistorySection() {
         const page = hasNext ? result.slice(0, PAGE_SIZE) : result;
         setEntries((prev) => (append ? [...prev, ...page] : page));
         setHasMore(hasNext);
+        setLoadError(null);
       } catch {
+        setLoadError(
+          t("history.error.load", {
+            defaultValue: "Couldn't load transcription history.",
+          }),
+        );
         // Silently fail — diagnostics may not be available
       }
     },
-    [search],
+    [search, t],
   );
 
   useEffect(() => {
@@ -126,6 +133,12 @@ export function HistorySection() {
           className={`w-full ${inputStyles}`}
         />
       </div>
+
+      {loadError && (
+        <div className="px-3 py-2 bg-error-muted border border-error rounded-lg text-error text-sm">
+          {loadError}
+        </div>
+      )}
 
       {/* Entries */}
       {entries.length === 0 ? (

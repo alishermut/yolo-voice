@@ -1,7 +1,7 @@
 pub mod hotkey;
 pub mod recorder;
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -34,6 +34,65 @@ pub struct ActiveStyleKey(pub Mutex<Option<String>>);
 /// Set to 0 on explicit user stop or cancel.  `finalize_and_insert` captures
 /// the generation at pipeline start and only auto-restarts if it still matches.
 pub struct ContinuousGeneration(pub Arc<AtomicU64>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HotkeyRecordingMode {
+    None = 0,
+    Dictation = 1,
+    Command = 2,
+}
+
+impl HotkeyRecordingMode {
+    fn from_raw(value: u8) -> Self {
+        match value {
+            1 => Self::Dictation,
+            2 => Self::Command,
+            _ => Self::None,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct HotkeyRuntimeState {
+    pub recording_mode: Arc<AtomicU8>,
+    pub dictation_stop_token: Arc<AtomicU64>,
+    pub reset_generation: Arc<AtomicU64>,
+}
+
+impl HotkeyRuntimeState {
+    pub fn new() -> Self {
+        Self {
+            recording_mode: Arc::new(AtomicU8::new(HotkeyRecordingMode::None as u8)),
+            dictation_stop_token: Arc::new(AtomicU64::new(0)),
+            reset_generation: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub fn recording_mode(&self) -> HotkeyRecordingMode {
+        HotkeyRecordingMode::from_raw(self.recording_mode.load(Ordering::SeqCst))
+    }
+
+    pub fn set_recording_mode(&self, mode: HotkeyRecordingMode) {
+        self.recording_mode.store(mode as u8, Ordering::SeqCst);
+    }
+
+    pub fn cancel_pending_dictation_stop(&self) {
+        self.dictation_stop_token.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn reset_listener_state(&self) {
+        self.cancel_pending_dictation_stop();
+        self.reset_generation.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn set_hotkey_recording_mode(app: &AppHandle, mode: HotkeyRecordingMode) {
+    app.state::<HotkeyRuntimeState>().set_recording_mode(mode);
+}
+
+fn reset_hotkey_runtime(app: &AppHandle) {
+    app.state::<HotkeyRuntimeState>().reset_listener_state();
+}
 
 const DEFAULT_COMMAND_SYSTEM_PROMPT: &str =
     "You are a voice command assistant. The user speaks a command and you produce \
@@ -74,6 +133,8 @@ fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) 
         Ok(g) => g,
         Err(e) => {
             eprintln!("[capture] RecordingState mutex poisoned: {}", e);
+            set_hotkey_recording_mode(app, HotkeyRecordingMode::None);
+            reset_hotkey_runtime(app);
             return;
         }
     };
@@ -137,6 +198,7 @@ fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) 
     ) {
         Ok(stream) => {
             *guard = Some(stream);
+            set_hotkey_recording_mode(app, HotkeyRecordingMode::Dictation);
             if config.sounds_enabled {
                 output::play_start_sound(&config.start_sound);
             }
@@ -192,6 +254,8 @@ fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) 
                     },
                 );
             }
+            set_hotkey_recording_mode(app, HotkeyRecordingMode::None);
+            reset_hotkey_runtime(app);
             emit_all(app, "recording-state", "idle");
             emit_all(app, "transcription-error", format!("Recording failed: {e}"));
         }
@@ -207,6 +271,8 @@ fn handle_stop(app: &AppHandle, config: &crate::features::settings::AppConfig) {
         .0
         .store(0, Ordering::SeqCst);
     emit_all(app, "continuous-active", "false");
+    set_hotkey_recording_mode(app, HotkeyRecordingMode::None);
+    reset_hotkey_runtime(app);
 
     // Read and clear the active style key (set by hotkey listener if style key was held)
     let style_key = app
@@ -1089,10 +1155,6 @@ fn maybe_log_transcript_sample(
     inserted_text: Option<String>,
     insert_success: bool,
 ) {
-    if !config.transcript_diagnostics_enabled {
-        return;
-    }
-
     let diagnostics_state = app.state::<TranscriptDiagnosticsState>();
     let raw_segments_json = match serde_json::to_string(&transcript.raw_segments) {
         Ok(json) => json,
@@ -1135,6 +1197,57 @@ fn maybe_log_transcript_sample(
         cleaned_text,
         post_processed_text,
         final_text,
+        inserted_text,
+        insert_success,
+    });
+}
+
+fn log_command_history_sample(
+    app: &AppHandle,
+    config: &crate::features::settings::AppConfig,
+    raw_transcript: &str,
+    inserted_text: Option<String>,
+    insert_success: bool,
+) {
+    let diagnostics_state = app.state::<TranscriptDiagnosticsState>();
+    let raw_segments_json = match serde_json::to_string(&vec![raw_transcript.to_string()]) {
+        Ok(json) => json,
+        Err(err) => {
+            eprintln!(
+                "[capture] Failed to serialize command transcript history: {}",
+                err
+            );
+            return;
+        }
+    };
+
+    diagnostics_state.0.log_sample(TranscriptSample {
+        created_at: current_timestamp_ms(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        session_id: diagnostics_state.0.session_id().to_string(),
+        utterance_id: diagnostics_state.0.next_utterance_id(),
+        pipeline_mode: "command".to_string(),
+        transcription_mode: config.transcription_mode.clone(),
+        stt_provider: resolve_stt_provider(config),
+        active_industry_pack: config.active_industry_pack.clone(),
+        active_profile_id: config.active_profile_id.clone(),
+        cleanup_enabled: false,
+        post_processing_enabled: true,
+        vad_silence_threshold_ms: config.vad_silence_threshold_ms,
+        utterance_duration_ms: 0,
+        preview_segment_count: 1,
+        final_pass_used: false,
+        final_pass_reason: "command".to_string(),
+        final_pass_latency_ms: None,
+        language_family: "unknown".to_string(),
+        language_lock_confidence: "none".to_string(),
+        mixed_script_detected: false,
+        raw_segments_json,
+        joined_text: option_if_not_empty(raw_transcript),
+        normalized_text: None,
+        cleaned_text: None,
+        post_processed_text: None,
+        final_text: inserted_text.clone(),
         inserted_text,
         insert_success,
     });
@@ -1231,6 +1344,12 @@ fn handle_dictation_cancel(app: &AppHandle) {
         .0
         .store(0, Ordering::SeqCst);
     emit_all(app, "continuous-active", "false");
+    set_hotkey_recording_mode(app, HotkeyRecordingMode::None);
+    reset_hotkey_runtime(app);
+
+    if let Ok(mut style_key) = app.state::<ActiveStyleKey>().0.lock() {
+        *style_key = None;
+    }
 
     // Silently discard any in-progress dictation recording (e.g., style switch)
     let recording_state = app.state::<RecordingState>();
@@ -1244,6 +1363,8 @@ fn handle_dictation_cancel(app: &AppHandle) {
 
 fn handle_command_cancel(app: &AppHandle) {
     // Silently discard any in-progress command recording
+    set_hotkey_recording_mode(app, HotkeyRecordingMode::None);
+    reset_hotkey_runtime(app);
     let recording_state = app.state::<RecordingState>();
     if let Ok(mut guard) = recording_state.0.lock() {
         if guard.take().is_some() {
@@ -1265,6 +1386,8 @@ fn handle_command_start(app: &AppHandle, config: &crate::features::settings::App
         Ok(g) => g,
         Err(e) => {
             eprintln!("[capture] RecordingState mutex poisoned: {}", e);
+            set_hotkey_recording_mode(app, HotkeyRecordingMode::None);
+            reset_hotkey_runtime(app);
             return;
         }
     };
@@ -1287,12 +1410,15 @@ fn handle_command_start(app: &AppHandle, config: &crate::features::settings::App
     ) {
         Ok(stream) => {
             *guard = Some(stream);
+            set_hotkey_recording_mode(app, HotkeyRecordingMode::Command);
             if config.sounds_enabled {
                 output::play_start_sound(&config.start_sound);
             }
         }
         Err(e) => {
             eprintln!("[capture] Failed to start command recording: {}", e);
+            set_hotkey_recording_mode(app, HotkeyRecordingMode::None);
+            reset_hotkey_runtime(app);
             emit_all(app, "recording-state", "idle");
             emit_all(app, "transcription-error", format!("Recording failed: {e}"));
         }
@@ -1302,6 +1428,8 @@ fn handle_command_start(app: &AppHandle, config: &crate::features::settings::App
 }
 
 fn handle_command_stop(app: &AppHandle, config: &crate::features::settings::AppConfig) {
+    set_hotkey_recording_mode(app, HotkeyRecordingMode::None);
+    reset_hotkey_runtime(app);
     let recording_state = app.state::<RecordingState>();
     let mut guard = match recording_state.0.lock() {
         Ok(g) => g,
@@ -1465,12 +1593,17 @@ fn command_finalize(
 
     match result {
         Ok(text) => {
+            let inserted_text = option_if_not_empty(&text);
+            let mut insert_success = false;
             if !text.is_empty() {
                 if let Err(e) = output::insert_text(&text, hwnd) {
                     eprintln!("[capture] Command text insertion error: {}", e);
                     emit_all(app, "transcription-error", e);
+                } else {
+                    insert_success = true;
                 }
             }
+            log_command_history_sample(app, config, transcript, inserted_text, insert_success);
         }
         Err(e) => {
             eprintln!("[capture] Command error: {}", e);

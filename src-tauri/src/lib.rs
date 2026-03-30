@@ -4,7 +4,9 @@ mod infra;
 
 use app::commands::AudioState;
 use features::capture::recorder::{RecordingState, WarmDeviceState};
-use features::capture::{ActiveStyleKey, ContinuousGeneration, RuntimeDictionaryCache};
+use features::capture::{
+    ActiveStyleKey, ContinuousGeneration, HotkeyRuntimeState, RuntimeDictionaryCache,
+};
 use features::diagnostics::TranscriptDiagnosticsState;
 use features::output::FocusedWindowState;
 use features::settings::ConfigState;
@@ -35,6 +37,7 @@ pub fn run() {
         )))
         .manage(RuntimeDictionaryCache(Mutex::new(None)))
         .manage(ActiveStyleKey(Mutex::new(None)))
+        .manage(HotkeyRuntimeState::new())
         .manage(ContinuousGeneration(std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0))))
         .manage(UserDictionaryState(Mutex::new(
             features::speech::vocabulary::UserDictionary::default(),

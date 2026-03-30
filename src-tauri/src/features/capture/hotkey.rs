@@ -1,12 +1,14 @@
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use rdev::{listen, Event, EventType, Key};
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::ActiveStyleKey;
+use crate::features::speech;
 
-// ── Cached hotkey config ────────────────────────────────────────────────────
+use super::{ActiveStyleKey, HotkeyRecordingMode, HotkeyRuntimeState};
 
 /// Lightweight cache of the parsed hotkey keys.
 /// Updated only when config changes, read on every rdev event.
@@ -15,7 +17,7 @@ pub struct HotkeyCache(pub Arc<Mutex<HotkeyCacheInner>>);
 
 pub struct HotkeyCacheInner {
     pub dict_key: Option<Key>,
-    /// Command hotkey as a chord — all keys must be held simultaneously.
+    /// Command hotkey as a chord - all keys must be held simultaneously.
     pub cmd_chord: Vec<Key>,
 }
 
@@ -36,8 +38,6 @@ impl HotkeyCache {
         }
     }
 }
-
-// ── Key parsing ─────────────────────────────────────────────────────────────
 
 fn parse_key(name: &str) -> Option<Key> {
     match name {
@@ -82,7 +82,6 @@ fn parse_key(name: &str) -> Option<Key> {
         "Pause" => Some(Key::Pause),
         "NumLock" => Some(Key::NumLock),
         "Insert" => Some(Key::Insert),
-        // Number row digits
         "Digit0" => Some(Key::Num0),
         "Digit1" => Some(Key::Num1),
         "Digit2" => Some(Key::Num2),
@@ -93,7 +92,6 @@ fn parse_key(name: &str) -> Option<Key> {
         "Digit7" => Some(Key::Num7),
         "Digit8" => Some(Key::Num8),
         "Digit9" => Some(Key::Num9),
-        // Numpad keys
         "Kp0" => Some(Key::Kp0),
         "Kp1" => Some(Key::Kp1),
         "Kp2" => Some(Key::Kp2),
@@ -120,11 +118,11 @@ fn parse_chord(name: &str) -> Vec<Key> {
     if name.is_empty() {
         return Vec::new();
     }
+
     name.split('+')
         .filter_map(|part| {
             let trimmed = part.trim();
             parse_key(trimmed).or_else(|| {
-                // Try letter keys: "A" → KeyA
                 if trimmed.len() == 1
                     && trimmed
                         .chars()
@@ -133,37 +131,34 @@ fn parse_chord(name: &str) -> Vec<Key> {
                         .unwrap_or(false)
                 {
                     let upper = trimmed.to_uppercase();
-                    parse_key(&format!("Key{}", upper)).or_else(|| {
-                        // Direct letter matching via Unknown variant
-                        match upper.as_str() {
-                            "A" => Some(Key::KeyA),
-                            "B" => Some(Key::KeyB),
-                            "C" => Some(Key::KeyC),
-                            "D" => Some(Key::KeyD),
-                            "E" => Some(Key::KeyE),
-                            "F" => Some(Key::KeyF),
-                            "G" => Some(Key::KeyG),
-                            "H" => Some(Key::KeyH),
-                            "I" => Some(Key::KeyI),
-                            "J" => Some(Key::KeyJ),
-                            "K" => Some(Key::KeyK),
-                            "L" => Some(Key::KeyL),
-                            "M" => Some(Key::KeyM),
-                            "N" => Some(Key::KeyN),
-                            "O" => Some(Key::KeyO),
-                            "P" => Some(Key::KeyP),
-                            "Q" => Some(Key::KeyQ),
-                            "R" => Some(Key::KeyR),
-                            "S" => Some(Key::KeyS),
-                            "T" => Some(Key::KeyT),
-                            "U" => Some(Key::KeyU),
-                            "V" => Some(Key::KeyV),
-                            "W" => Some(Key::KeyW),
-                            "X" => Some(Key::KeyX),
-                            "Y" => Some(Key::KeyY),
-                            "Z" => Some(Key::KeyZ),
-                            _ => None,
-                        }
+                    parse_key(&format!("Key{}", upper)).or_else(|| match upper.as_str() {
+                        "A" => Some(Key::KeyA),
+                        "B" => Some(Key::KeyB),
+                        "C" => Some(Key::KeyC),
+                        "D" => Some(Key::KeyD),
+                        "E" => Some(Key::KeyE),
+                        "F" => Some(Key::KeyF),
+                        "G" => Some(Key::KeyG),
+                        "H" => Some(Key::KeyH),
+                        "I" => Some(Key::KeyI),
+                        "J" => Some(Key::KeyJ),
+                        "K" => Some(Key::KeyK),
+                        "L" => Some(Key::KeyL),
+                        "M" => Some(Key::KeyM),
+                        "N" => Some(Key::KeyN),
+                        "O" => Some(Key::KeyO),
+                        "P" => Some(Key::KeyP),
+                        "Q" => Some(Key::KeyQ),
+                        "R" => Some(Key::KeyR),
+                        "S" => Some(Key::KeyS),
+                        "T" => Some(Key::KeyT),
+                        "U" => Some(Key::KeyU),
+                        "V" => Some(Key::KeyV),
+                        "W" => Some(Key::KeyW),
+                        "X" => Some(Key::KeyX),
+                        "Y" => Some(Key::KeyY),
+                        "Z" => Some(Key::KeyZ),
+                        _ => None,
                     })
                 } else {
                     None
@@ -216,7 +211,6 @@ fn key_to_rdev_name(key: &Key) -> String {
         Key::ScrollLock => "ScrollLock".to_string(),
         Key::Pause => "Pause".to_string(),
         Key::NumLock => "NumLock".to_string(),
-        // Letter keys
         Key::KeyA => "A".to_string(),
         Key::KeyB => "B".to_string(),
         Key::KeyC => "C".to_string(),
@@ -243,7 +237,6 @@ fn key_to_rdev_name(key: &Key) -> String {
         Key::KeyX => "X".to_string(),
         Key::KeyY => "Y".to_string(),
         Key::KeyZ => "Z".to_string(),
-        // Number keys
         Key::Num0 => "Digit0".to_string(),
         Key::Num1 => "Digit1".to_string(),
         Key::Num2 => "Digit2".to_string(),
@@ -254,7 +247,6 @@ fn key_to_rdev_name(key: &Key) -> String {
         Key::Num7 => "Digit7".to_string(),
         Key::Num8 => "Digit8".to_string(),
         Key::Num9 => "Digit9".to_string(),
-        // Numpad keys
         Key::Kp0 => "Kp0".to_string(),
         Key::Kp1 => "Kp1".to_string(),
         Key::Kp2 => "Kp2".to_string(),
@@ -276,8 +268,6 @@ fn key_to_rdev_name(key: &Key) -> String {
     }
 }
 
-// ── Dictation state machine ─────────────────────────────────────────────────
-
 #[derive(Debug, PartialEq)]
 enum DictationState {
     Idle,
@@ -289,8 +279,6 @@ enum DictationState {
 const HOLD_THRESHOLD_MS: u128 = 500;
 const DOUBLE_TAP_WINDOW_MS: u128 = 400;
 
-// ── Command state machine ───────────────────────────────────────────────────
-
 #[derive(Debug, PartialEq)]
 enum CommandState {
     Idle,
@@ -299,196 +287,282 @@ enum CommandState {
 
 const COMMAND_MIN_HOLD_MS: u128 = 200;
 
-// ── Which mode is actively recording ────────────────────────────────────────
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-enum ActiveRecording {
-    None,
-    Dictation,
-    Command,
+struct ListenerState {
+    dict_state: DictationState,
+    dict_press_time: Option<Instant>,
+    dict_release_time: Option<Instant>,
+    cmd_state: CommandState,
+    cmd_press_time: Option<Instant>,
+    held_keys: HashSet<Key>,
+    style_key_held: Option<Key>,
+    last_reset_generation: u64,
 }
 
-// ── Listener ────────────────────────────────────────────────────────────────
+impl ListenerState {
+    fn new(last_reset_generation: u64) -> Self {
+        Self {
+            dict_state: DictationState::Idle,
+            dict_press_time: None,
+            dict_release_time: None,
+            cmd_state: CommandState::Idle,
+            cmd_press_time: None,
+            held_keys: HashSet::new(),
+            style_key_held: None,
+            last_reset_generation,
+        }
+    }
+
+    fn reset_dictation(&mut self) {
+        self.dict_state = DictationState::Idle;
+        self.dict_press_time = None;
+        self.dict_release_time = None;
+        self.style_key_held = None;
+    }
+
+    fn reset_command(&mut self) {
+        self.cmd_state = CommandState::Idle;
+        self.cmd_press_time = None;
+    }
+
+    fn reset_all(&mut self) {
+        self.reset_dictation();
+        self.reset_command();
+    }
+}
+
+fn apply_runtime_reset_if_needed(
+    app: &AppHandle,
+    runtime: &HotkeyRuntimeState,
+    state: &mut ListenerState,
+) {
+    let reset_generation = runtime
+        .reset_generation
+        .load(std::sync::atomic::Ordering::SeqCst);
+    if reset_generation == state.last_reset_generation {
+        return;
+    }
+
+    state.last_reset_generation = reset_generation;
+    state.reset_all();
+
+    if let Ok(mut active_style_key) = app.state::<ActiveStyleKey>().0.lock() {
+        *active_style_key = None;
+    }
+}
+
+fn cancel_pending_dictation_stop(runtime: &HotkeyRuntimeState) {
+    runtime.cancel_pending_dictation_stop();
+}
+
+fn schedule_delayed_dictation_stop(app: AppHandle, runtime: HotkeyRuntimeState) {
+    let token = runtime
+        .dictation_stop_token
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        + 1;
+
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(DOUBLE_TAP_WINDOW_MS as u64));
+
+        if runtime
+            .dictation_stop_token
+            .load(std::sync::atomic::Ordering::SeqCst)
+            != token
+        {
+            return;
+        }
+
+        if runtime.recording_mode() == HotkeyRecordingMode::Dictation {
+            let _ = app.emit("hotkey-action", "stop");
+        }
+    });
+}
+
+fn start_dictation_press(app: &AppHandle, state: &mut ListenerState) {
+    state.dict_state = DictationState::Pressed;
+    state.dict_press_time = Some(Instant::now());
+    state.dict_release_time = None;
+    state.style_key_held = None;
+    let _ = app.emit("hotkey-action", "start");
+}
+
+fn stop_dictation(app: &AppHandle, runtime: &HotkeyRuntimeState, state: &mut ListenerState) {
+    cancel_pending_dictation_stop(runtime);
+    state.reset_dictation();
+    let _ = app.emit("hotkey-action", "stop");
+}
+
+fn resolve_style_shortcut_key(app: &AppHandle, key: Key) -> Option<String> {
+    let key_name = key_to_rdev_name(&key);
+    if key_name.is_empty() {
+        return None;
+    }
+
+    let profiles_dir = speech::get_profiles_dir(app).ok()?;
+    let profiles = speech::list_profiles(&profiles_dir).ok()?;
+    profiles
+        .iter()
+        .any(|profile| profile.shortcut_key.eq_ignore_ascii_case(&key_name))
+        .then_some(key_name)
+}
 
 pub fn start_hotkey_listener(app_handle: AppHandle, cache: HotkeyCache) {
+    let hotkey_runtime = app_handle.state::<HotkeyRuntimeState>().inner().clone();
+
     std::thread::spawn(move || {
-        // Dictation state
-        let mut dict_state = DictationState::Idle;
-        let mut dict_press_time: Option<Instant> = None;
-        let mut dict_release_time: Option<Instant> = None;
-
-        // Command state
-        let mut cmd_state = CommandState::Idle;
-        let mut cmd_press_time: Option<Instant> = None;
-        // Track currently held keys for chord detection
-        let mut held_keys: std::collections::HashSet<Key> = std::collections::HashSet::new();
-
-        // Style key tracking (for two-key styled dictation)
-        let mut style_key_held: Option<Key> = None;
-
-        // Shared
-        let mut active = ActiveRecording::None;
+        let mut state = ListenerState::new(
+            hotkey_runtime
+                .reset_generation
+                .load(std::sync::atomic::Ordering::SeqCst),
+        );
 
         let app = app_handle.clone();
         let hotkey_cache = cache.clone();
+        let runtime = hotkey_runtime.clone();
         let callback = move |event: Event| {
-            // Update held keys set
+            apply_runtime_reset_if_needed(&app, &runtime, &mut state);
+
+            let key_was_held = match event.event_type {
+                EventType::KeyPress(key) => state.held_keys.contains(&key),
+                _ => false,
+            };
+
             match &event.event_type {
                 EventType::KeyPress(key) => {
-                    held_keys.insert(*key);
+                    state.held_keys.insert(*key);
                 }
                 EventType::KeyRelease(key) => {
-                    held_keys.remove(key);
+                    state.held_keys.remove(key);
                 }
                 _ => {}
             }
 
-            // Read cached hotkey keys
             let (dict_key, cmd_chord) = match hotkey_cache.0.lock() {
                 Ok(inner) => (inner.dict_key, inner.cmd_chord.clone()),
                 Err(_) => return,
             };
 
-            // ── Dictation hotkey handling ────────────────────────────────
+            let backend_mode = runtime.recording_mode();
+
             if let Some(target_key) = dict_key {
                 match event.event_type {
                     EventType::KeyPress(key) if key == target_key => {
-                        if active == ActiveRecording::Command {
-                            // Command mode active — ignore dictation
+                        if backend_mode == HotkeyRecordingMode::Command {
+                            // Command mode active - ignore dictation.
                         } else {
-                            match dict_state {
+                            match state.dict_state {
                                 DictationState::Idle => {
-                                    dict_state = DictationState::Pressed;
-                                    dict_press_time = Some(Instant::now());
-                                    active = ActiveRecording::Dictation;
-                                    let _ = app.emit("hotkey-action", "start");
+                                    if backend_mode == HotkeyRecordingMode::Dictation {
+                                        stop_dictation(&app, &runtime, &mut state);
+                                    } else {
+                                        start_dictation_press(&app, &mut state);
+                                    }
                                 }
                                 DictationState::Pressed => {
-                                    // Key repeat — ignore
+                                    // Key repeat - ignore.
                                 }
                                 DictationState::WaitingForDoubleTap => {
-                                    let in_window = dict_release_time
-                                        .map(|t| t.elapsed().as_millis() < DOUBLE_TAP_WINDOW_MS)
+                                    let in_window = state
+                                        .dict_release_time
+                                        .map(|time| time.elapsed().as_millis() < DOUBLE_TAP_WINDOW_MS)
                                         .unwrap_or(false);
 
                                     if in_window {
-                                        dict_state = DictationState::ToggleRecording;
+                                        cancel_pending_dictation_stop(&runtime);
+                                        state.dict_state = DictationState::ToggleRecording;
+                                        state.dict_press_time = None;
+                                        state.dict_release_time = None;
                                     } else {
-                                        dict_state = DictationState::Pressed;
-                                        dict_press_time = Some(Instant::now());
-                                        active = ActiveRecording::Dictation;
-                                        let _ = app.emit("hotkey-action", "start");
+                                        if runtime.recording_mode() == HotkeyRecordingMode::Dictation {
+                                            stop_dictation(&app, &runtime, &mut state);
+                                        } else {
+                                            start_dictation_press(&app, &mut state);
+                                        }
                                     }
                                 }
                                 DictationState::ToggleRecording => {
-                                    dict_state = DictationState::Idle;
-                                    active = ActiveRecording::None;
-                                    let _ = app.emit("hotkey-action", "stop");
+                                    stop_dictation(&app, &runtime, &mut state);
                                 }
                             }
                         }
                     }
-
-                    // While dictation key is held, another key pressed → activate style
-                    // Recording continues — release either key to stop with style applied
                     EventType::KeyPress(key)
-                        if dict_state == DictationState::Pressed
+                        if state.dict_state == DictationState::Pressed
                             && key != target_key
-                            && active == ActiveRecording::Dictation =>
+                            && !key_was_held
+                            && backend_mode == HotkeyRecordingMode::Dictation =>
                     {
-                        let key_name = key_to_rdev_name(&key);
-                        if !key_name.is_empty() {
-                            style_key_held = Some(key);
-                            // Store style key in managed state so pipeline can read it
-                            if let Ok(mut sk) = app.state::<ActiveStyleKey>().0.lock() {
-                                *sk = Some(key_name.clone());
+                        if let Some(key_name) = resolve_style_shortcut_key(&app, key) {
+                            state.style_key_held = Some(key);
+                            if let Ok(mut active_style_key) = app.state::<ActiveStyleKey>().0.lock() {
+                                *active_style_key = Some(key_name.clone());
                             }
                             let _ = app.emit("style-switch", key_name);
                         }
                     }
-
-                    // Style key released while dictation key is still held → stop recording
                     EventType::KeyRelease(key)
-                        if style_key_held == Some(key)
-                            && dict_state == DictationState::Pressed
-                            && active == ActiveRecording::Dictation =>
+                        if state.style_key_held == Some(key)
+                            && state.dict_state == DictationState::Pressed
+                            && backend_mode == HotkeyRecordingMode::Dictation =>
                     {
-                        style_key_held = None;
-                        dict_state = DictationState::Idle;
-                        active = ActiveRecording::None;
-                        let _ = app.emit("hotkey-action", "stop");
+                        state.style_key_held = None;
+                        stop_dictation(&app, &runtime, &mut state);
                     }
-
                     EventType::KeyRelease(key) if key == target_key => {
-                        // Clear style key tracking when dictation key is released
-                        style_key_held = None;
+                        state.style_key_held = None;
 
-                        match dict_state {
+                        match state.dict_state {
                             DictationState::Pressed => {
-                                let held_ms = dict_press_time
-                                    .map(|t| t.elapsed().as_millis())
+                                let held_ms = state
+                                    .dict_press_time
+                                    .map(|time| time.elapsed().as_millis())
                                     .unwrap_or(0);
 
                                 if held_ms >= HOLD_THRESHOLD_MS {
-                                    dict_state = DictationState::Idle;
-                                    active = ActiveRecording::None;
-                                    let _ = app.emit("hotkey-action", "stop");
+                                    stop_dictation(&app, &runtime, &mut state);
                                 } else {
-                                    dict_state = DictationState::WaitingForDoubleTap;
-                                    dict_release_time = Some(Instant::now());
+                                    state.dict_state = DictationState::WaitingForDoubleTap;
+                                    state.dict_release_time = Some(Instant::now());
+                                    schedule_delayed_dictation_stop(app.clone(), runtime.clone());
                                 }
                             }
                             DictationState::ToggleRecording => {
-                                // Release during toggle — ignore
+                                // Release during toggle - ignore.
                             }
                             _ => {}
                         }
                     }
                     _ => {}
                 }
-
-                // Check timeout for WaitingForDoubleTap
-                if dict_state == DictationState::WaitingForDoubleTap {
-                    if let Some(rt) = dict_release_time {
-                        if rt.elapsed().as_millis() > DOUBLE_TAP_WINDOW_MS {
-                            dict_state = DictationState::Idle;
-                            active = ActiveRecording::None;
-                            let _ = app.emit("hotkey-action", "stop");
-                        }
-                    }
-                }
             }
 
-            // ── Command hotkey handling (chord-aware) ─────────────────────
             if !cmd_chord.is_empty() {
-                let all_chord_held = cmd_chord.iter().all(|k| held_keys.contains(k));
+                let all_chord_held = cmd_chord.iter().all(|key| state.held_keys.contains(key));
 
                 match event.event_type {
-                    EventType::KeyPress(_) => {
-                        if all_chord_held
-                            && cmd_state == CommandState::Idle
-                            && active != ActiveRecording::Dictation
-                        {
-                            cmd_state = CommandState::Recording;
-                            cmd_press_time = Some(Instant::now());
-                            active = ActiveRecording::Command;
-                            let _ = app.emit("command-hotkey-action", "start");
-                        }
+                    EventType::KeyPress(_)
+                        if !key_was_held
+                            && all_chord_held
+                            && state.cmd_state == CommandState::Idle
+                            && runtime.recording_mode() == HotkeyRecordingMode::None =>
+                    {
+                        state.cmd_state = CommandState::Recording;
+                        state.cmd_press_time = Some(Instant::now());
+                        let _ = app.emit("command-hotkey-action", "start");
                     }
-                    EventType::KeyRelease(key) => {
-                        // Any chord key released → stop recording
-                        if cmd_state == CommandState::Recording && cmd_chord.contains(&key) {
-                            let held_ms =
-                                cmd_press_time.map(|t| t.elapsed().as_millis()).unwrap_or(0);
+                    EventType::KeyRelease(key)
+                        if state.cmd_state == CommandState::Recording && cmd_chord.contains(&key) =>
+                    {
+                        let held_ms = state
+                            .cmd_press_time
+                            .map(|time| time.elapsed().as_millis())
+                            .unwrap_or(0);
 
-                            cmd_state = CommandState::Idle;
-                            active = ActiveRecording::None;
+                        state.reset_command();
 
-                            if held_ms >= COMMAND_MIN_HOLD_MS {
-                                let _ = app.emit("command-hotkey-action", "stop");
-                            } else {
-                                let _ = app.emit("command-hotkey-action", "cancel");
-                            }
+                        if held_ms >= COMMAND_MIN_HOLD_MS {
+                            let _ = app.emit("command-hotkey-action", "stop");
+                        } else {
+                            let _ = app.emit("command-hotkey-action", "cancel");
                         }
                     }
                     _ => {}
