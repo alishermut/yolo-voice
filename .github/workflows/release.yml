@@ -55,6 +55,22 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build
 
+      - name: Verify bundled updater resources
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "src-tauri/target/release/resources/distil_whisper.py",
+            "src-tauri/target/release/resources/resources/distil_whisper.py",
+            "src-tauri/target/release/_up_/sidecar/distil_whisper.py"
+          )
+          $found = $candidates | Where-Object { Test-Path $_ }
+          if (!$found) {
+            Write-Host "::error::distil_whisper.py was not found in any bundled release artifact location."
+            exit 1
+          }
+          Write-Host "Verified distil_whisper.py in:"
+          $found | ForEach-Object { Write-Host "  $_" }
+
       - name: Publish GitHub release
         shell: pwsh
         env:
@@ -94,9 +110,6 @@ jobs:
           }
 
           $signature = Get-Content $sigFile.FullName -Raw
-          $updaterName = $updaterFile.Name
-          $url = "https://github.com/$repo/releases/download/$tag/$updaterName"
-          $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
           if (Test-Path $releaseNotesPath) {
             $heading = Get-Content $releaseNotesPath | Where-Object { $_ -match '^#\s+' } | Select-Object -First 1
@@ -105,34 +118,51 @@ jobs:
             }
           }
 
-          $json = @{
-            version = $version
-            notes = $releaseTitle
-            pub_date = $pubDate
-            platforms = @{
-              "windows-x86_64" = @{
-                signature = $signature.Trim()
-                url = $url
-              }
-            }
-          } | ConvertTo-Json -Depth 4
-
-          $json | Out-File -FilePath "latest.json" -Encoding utf8
-          Write-Host "Generated latest.json:"
-          Write-Host $json
-          Write-Host "Release title: $releaseTitle"
-
           if (!(Test-Path $releaseNotesPath)) {
             Set-Content -Path "release-notes.md" -Value "YOLO Voice v$version"
             $releaseNotesPath = "release-notes.md"
           }
 
-          $assets = @($installer.FullName, "latest.json")
+          $assets = @($installer.FullName)
           if ($installerSig) { $assets += $installerSig.FullName }
           if ($nsisZip) { $assets += $nsisZip.FullName }
           if ($nsisSig) { $assets += $nsisSig.FullName }
 
           gh release create $tag @assets --title "$releaseTitle" --notes-file "$releaseNotesPath"
+
+          $release = gh api "repos/$repo/releases/tags/$tag" | ConvertFrom-Json
+          $updaterDigest = "sha256:$((Get-FileHash $updaterFile.FullName -Algorithm SHA256).Hash.ToLower())"
+          $publishedUpdater = $release.assets | Where-Object { $_.digest -eq $updaterDigest } | Select-Object -First 1
+          if (!$publishedUpdater) {
+            Write-Host "::error::Could not find published updater asset matching digest $updaterDigest."
+            exit 1
+          }
+
+          $json = @{
+            version = $version
+            notes = $releaseTitle
+            pub_date = $release.published_at
+            platforms = @{
+              "windows-x86_64" = @{
+                signature = $signature.Trim()
+                url = $publishedUpdater.browser_download_url
+              }
+            }
+          } | ConvertTo-Json -Depth 4
+
+          $json | Out-File -FilePath "latest.json" -Encoding utf8
+          gh release upload $tag "latest.json#latest.json" --clobber
+          Write-Host "Generated latest.json:"
+          Write-Host $json
+          Write-Host "Release title: $releaseTitle"
+
+          $latest = Get-Content "latest.json" -Raw | ConvertFrom-Json
+          try {
+            $null = Invoke-WebRequest -Uri $latest.platforms.'windows-x86_64'.url -Method Head -MaximumRedirection 5
+          } catch {
+            Write-Host "::error::Published updater asset URL is not reachable: $($latest.platforms.'windows-x86_64'.url)"
+            throw
+          }
 
           Write-Host "Published release $tag with artifacts: $($assets -join ', ')"
 
@@ -145,6 +175,8 @@ jobs:
   #   APPLE_PASSWORD             - App-specific password for notarization
   #   APPLE_TEAM_ID              - Apple Developer Team ID
   release-macos:
+    # Temporarily disabled until the macOS release pipeline is ready again.
+    if: ${{ false }}
     needs: release-windows
     runs-on: macos-latest
     permissions:
@@ -231,12 +263,18 @@ jobs:
           if [ -n "$MACOS_SIGNATURE" ]; then
             gh release download "$TAG" --pattern "latest.json" --dir /tmp --clobber || true
             if [ -f /tmp/latest.json ]; then
-              MACOS_URL="https://github.com/${REPO}/releases/download/${TAG}/${DMG_NAME}"
+              RELEASE_JSON=$(gh api "repos/${REPO}/releases/tags/${TAG}")
+              DMG_DIGEST="sha256:$(shasum -a 256 "$DMG" | awk '{print tolower($1)}')"
+              MACOS_URL=$(echo "$RELEASE_JSON" | jq -r --arg digest "$DMG_DIGEST" '.assets[] | select(.digest == $digest) | .browser_download_url' | head -n 1)
+              if [ -z "$MACOS_URL" ] || [ "$MACOS_URL" = "null" ]; then
+                echo "::error::Could not find uploaded DMG asset matching digest $DMG_DIGEST"
+                exit 1
+              fi
               # Add darwin-aarch64 entry to the platforms object
               jq --arg sig "$MACOS_SIGNATURE" --arg url "$MACOS_URL" \
                 '.platforms["darwin-aarch64"] = {"signature": $sig, "url": $url}' \
                 /tmp/latest.json > /tmp/latest-updated.json
-              gh release upload "$TAG" /tmp/latest-updated.json --clobber
+              gh release upload "$TAG" "/tmp/latest-updated.json#latest.json" --clobber
               echo "Updated latest.json with darwin-aarch64 platform"
             fi
           fi

@@ -14,6 +14,7 @@ dist-ssr
 
 # Rust build artifacts
 src-tauri/target
+src-tauri/resources/distil_whisper.py
 
 # Editor directories and files
 .vscode/*

@@ -35,21 +35,34 @@ export function UpdaterProvider({ children }: { children: ReactNode }) {
         setUpdateObj(update);
         setStatus("ready");
       } else {
+        setUpdateObj(null);
+        setVersion(null);
         setStatus("up-to-date");
         setTimeout(() => setStatus("idle"), 5000);
       }
     } catch (e) {
       const msg = String(e);
       console.error("[updater] Check failed:", msg);
+      setUpdateObj(null);
       setError(msg);
       setStatus("error");
     }
   }, []);
 
   const installUpdate = useCallback(async () => {
-    if (updateObj) {
+    if (!updateObj) {
+      return;
+    }
+
+    setError(null);
+    try {
       await updateObj.install();
       await relaunch();
+    } catch (e) {
+      const msg = String(e);
+      console.error("[updater] Install failed:", msg);
+      setError(msg);
+      setStatus("error");
     }
   }, [updateObj]);
 

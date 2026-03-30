@@ -1,8 +1,8 @@
 use base64::Engine;
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::path::PathBuf;
 use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -219,10 +219,7 @@ impl DistilWhisperManager {
         Ok(proc)
     }
 
-    fn ensure_process(
-        &mut self,
-        app: &AppHandle,
-    ) -> Result<&mut DistilWhisperProcess, String> {
+    fn ensure_process(&mut self, app: &AppHandle) -> Result<&mut DistilWhisperProcess, String> {
         self.refresh_process_state();
         if self.process.is_none() {
             let launcher = resolve_launcher(app)?;
@@ -390,8 +387,10 @@ fn resolve_sidecar_script(app: &AppHandle) -> Result<PathBuf, String> {
         }
     }
 
-    Err("Could not locate sidecar/distil_whisper.py. Rebuild or run from the repo root."
-        .to_string())
+    Err(
+        "Could not locate sidecar/distil_whisper.py. Rebuild or run from the repo root."
+            .to_string(),
+    )
 }
 
 fn resolve_python_command(app: &AppHandle) -> (String, Vec<String>, String) {
@@ -449,7 +448,8 @@ fn candidate_roots(app: &AppHandle) -> Vec<PathBuf> {
     }
 
     if let Ok(resource_dir) = app.path().resource_dir() {
-        push_unique(resource_dir);
+        push_unique(resource_dir.clone());
+        push_unique(resource_dir.join("resources"));
     }
 
     roots
