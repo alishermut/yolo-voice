@@ -185,7 +185,10 @@ def handle_transcribe(req: dict) -> None:
         full_text = " ".join(text_parts).strip()
         processing_time = time.time() - start_time
 
-        log(f"Transcribed {info.duration:.1f}s audio in {processing_time:.1f}s: '{full_text[:80]}...'")
+        log(
+            f"Transcribed {info.duration:.1f}s audio in {processing_time:.1f}s "
+            f"(chars={len(full_text)})"
+        )
         respond({
             "status": "ok",
             "cmd": "transcribe",
@@ -272,7 +275,10 @@ def handle_transcribe_audio(req: dict) -> None:
         full_text = " ".join(text_parts).strip()
         processing_time = time.time() - start_time
 
-        log(f"Transcribed (in-memory) {info.duration:.1f}s audio in {processing_time:.1f}s: '{full_text[:80]}...'")
+        log(
+            f"Transcribed (in-memory) {info.duration:.1f}s audio in {processing_time:.1f}s "
+            f"(chars={len(full_text)})"
+        )
         respond({
             "status": "ok",
             "cmd": "transcribe_audio",
@@ -590,7 +596,10 @@ def handle_post_process(req: dict) -> None:
             return
 
         elapsed = time.time() - start_time
-        log(f"Post-processed in {elapsed:.1f}s via {provider}: '{result[:80]}...'")
+        log(
+            f"Post-processed in {elapsed:.1f}s via {provider} "
+            f"(chars={len(result)})"
+        )
         respond({"status": "ok", "cmd": "post_process", "text": result})
 
     except Exception as e:
@@ -631,7 +640,10 @@ def handle_cloud_transcribe(req: dict) -> None:
             return
 
         elapsed = time.time() - start_time
-        log(f"Cloud transcribed via {provider} in {elapsed:.1f}s: '{text[:80]}...'")
+        log(
+            f"Cloud transcribed via {provider} in {elapsed:.1f}s "
+            f"(chars={len(text.strip())})"
+        )
         respond({
             "status": "ok",
             "cmd": "cloud_transcribe",

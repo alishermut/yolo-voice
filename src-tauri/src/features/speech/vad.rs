@@ -326,7 +326,11 @@ pub fn compact_speech(
     })
 }
 
-pub fn resample_to_mono_16k(samples: &[f32], input_sample_rate: u32, input_channels: u16) -> Vec<f32> {
+pub fn resample_to_mono_16k(
+    samples: &[f32],
+    input_sample_rate: u32,
+    input_channels: u16,
+) -> Vec<f32> {
     if samples.is_empty() {
         return Vec::new();
     }

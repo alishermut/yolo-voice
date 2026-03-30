@@ -9,6 +9,7 @@ interface UpdaterContextValue {
   version: string | null;
   error: string | null;
   checkForUpdates: () => Promise<void>;
+  downloadUpdate: () => Promise<void>;
   installUpdate: () => Promise<void>;
   dismissError: () => void;
 }
@@ -30,10 +31,8 @@ export function UpdaterProvider({ children }: { children: ReactNode }) {
       const update = await check();
       if (update?.available) {
         setVersion(update.version);
-        setStatus("downloading");
-        await update.download();
         setUpdateObj(update);
-        setStatus("ready");
+        setStatus("available");
       } else {
         setUpdateObj(null);
         setVersion(null);
@@ -48,6 +47,24 @@ export function UpdaterProvider({ children }: { children: ReactNode }) {
       setStatus("error");
     }
   }, []);
+
+  const downloadUpdate = useCallback(async () => {
+    if (!updateObj) {
+      return;
+    }
+
+    setError(null);
+    setStatus("downloading");
+    try {
+      await updateObj.download();
+      setStatus("ready");
+    } catch (e) {
+      const msg = String(e);
+      console.error("[updater] Download failed:", msg);
+      setError(msg);
+      setStatus("error");
+    }
+  }, [updateObj]);
 
   const installUpdate = useCallback(async () => {
     if (!updateObj) {
@@ -79,7 +96,15 @@ export function UpdaterProvider({ children }: { children: ReactNode }) {
 
   return (
     <UpdaterContext.Provider
-      value={{ status, version, error, checkForUpdates, installUpdate, dismissError }}
+      value={{
+        status,
+        version,
+        error,
+        checkForUpdates,
+        downloadUpdate,
+        installUpdate,
+        dismissError,
+      }}
     >
       {children}
     </UpdaterContext.Provider>

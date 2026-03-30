@@ -29,6 +29,15 @@ fn invalidate_vocabulary_caches(app: &tauri::AppHandle) {
     }
 }
 
+fn resolve_secret(submitted: &str, stored: &str) -> String {
+    let trimmed = submitted.trim();
+    if trimmed.is_empty() {
+        stored.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 // ---- Audio Devices ----
 
 #[tauri::command]
@@ -61,7 +70,7 @@ pub fn stop_test(state: State<'_, AudioState>) -> Result<(), String> {
 #[tauri::command]
 pub fn get_config(state: State<'_, ConfigState>) -> Result<AppConfig, String> {
     let guard = state.0.lock().map_err(|e| e.to_string())?;
-    Ok(guard.clone())
+    Ok(settings::public_config(&guard))
 }
 
 #[tauri::command]
@@ -71,41 +80,42 @@ pub fn save_config_cmd(
     state: State<'_, ConfigState>,
     hotkey_cache: State<'_, HotkeyCache>,
 ) -> Result<(), String> {
-    let (old_lang, old_pill_pinned, old_device_index, old_offline_engine) = {
+    let (old_lang, old_pill_pinned, old_device_index, old_offline_engine, merged_config) = {
         let guard = state.0.lock().map_err(|e| e.to_string())?;
         (
             guard.ui_language.clone(),
             guard.pill_pinned,
             guard.device_index,
             guard.offline_engine.clone(),
+            settings::merge_runtime_config(&guard, &new_config),
         )
     };
 
-    settings::save_config(&app_handle, &new_config)?;
+    settings::save_config(&app_handle, &merged_config)?;
     // Update cached hotkey keys so the rdev listener picks up changes immediately
-    hotkey_cache.update(&new_config.hotkey, &new_config.command_hotkey);
+    hotkey_cache.update(&merged_config.hotkey, &merged_config.command_hotkey);
 
     // Notify all windows when UI language changes
-    if new_config.ui_language != old_lang {
-        let _ = app_handle.emit("ui-language-changed", &new_config.ui_language);
+    if merged_config.ui_language != old_lang {
+        let _ = app_handle.emit("ui-language-changed", &merged_config.ui_language);
     }
     // Notify all windows when pill pinned state changes
-    if new_config.pill_pinned != old_pill_pinned {
-        let _ = app_handle.emit("pill-pinned-changed", new_config.pill_pinned);
+    if merged_config.pill_pinned != old_pill_pinned {
+        let _ = app_handle.emit("pill-pinned-changed", merged_config.pill_pinned);
     }
     // Re-warm audio device if microphone changed
-    if new_config.device_index != old_device_index {
+    if merged_config.device_index != old_device_index {
         use crate::features::capture::recorder::{spawn_warm_device, WarmDeviceState};
         if let Some(warm) = app_handle.try_state::<WarmDeviceState>() {
             if let Ok(mut g) = warm.0.lock() {
                 *g = None;
             }
         }
-        spawn_warm_device(&app_handle, new_config.device_index);
+        spawn_warm_device(&app_handle, merged_config.device_index);
     }
 
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    *guard = new_config;
+    *guard = merged_config;
     let should_prepare_distil = guard.transcription_mode == "offline"
         && guard.offline_engine == "distil_whisper"
         && old_offline_engine != "distil_whisper";
@@ -115,6 +125,17 @@ pub fn save_config_cmd(
         let _ = maybe_prepare_in_background(&app_handle);
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn clear_config_secret(
+    slot: String,
+    app_handle: tauri::AppHandle,
+    state: State<'_, ConfigState>,
+) -> Result<AppConfig, String> {
+    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    settings::clear_secret(&app_handle, &mut guard, &slot)?;
+    Ok(settings::public_config(&guard))
 }
 
 // ---- Recording ----
@@ -466,7 +487,12 @@ pub fn test_llm_connection(
     model: String,
     api_key: String,
     base_url: String,
+    config_state: State<'_, ConfigState>,
 ) -> Result<String, String> {
+    let resolved_api_key = {
+        let guard = config_state.0.lock().map_err(|e| e.to_string())?;
+        resolve_secret(&api_key, &guard.llm_api_key)
+    };
     let test_profile = speech::Profile {
         id: "_test".to_string(),
         name: "Test".to_string(),
@@ -482,7 +508,7 @@ pub fn test_llm_connection(
         &test_profile,
         &provider,
         &model,
-        &api_key,
+        &resolved_api_key,
         &base_url,
     )
 }
@@ -493,13 +519,18 @@ pub fn test_command_llm_connection(
     model: String,
     api_key: String,
     base_url: String,
+    config_state: State<'_, ConfigState>,
 ) -> Result<String, String> {
+    let resolved_api_key = {
+        let guard = config_state.0.lock().map_err(|e| e.to_string())?;
+        resolve_secret(&api_key, &guard.command_api_key)
+    };
     speech::command_llm_call(
         "write hello world in python",
         "You are a voice command assistant. Output only the requested text.",
         &provider,
         &model,
-        &api_key,
+        &resolved_api_key,
         &base_url,
     )
 }

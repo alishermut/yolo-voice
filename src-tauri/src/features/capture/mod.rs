@@ -10,7 +10,7 @@ use tauri::{AppHandle, Listener, Manager};
 
 use crate::app::events::emit_all;
 use crate::features::diagnostics::{
-    current_timestamp_ms, TranscriptDiagnosticsState, TranscriptSample,
+    current_timestamp_ms, TranscriptDiagnosticsState, TranscriptHistoryMode, TranscriptSample,
 };
 use crate::features::output::{self, FocusedWindowState};
 use crate::features::settings::ConfigState;
@@ -146,29 +146,29 @@ fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) 
         && config.offline_engine == "parakeet"
         && config.parakeet_segmented_mode_enabled
     {
-            let inference_state = app.state::<InferenceState>();
-            let inference_ready = inference_state
-                .0
-                .lock()
-                .map(|g| g.is_some())
-                .unwrap_or(false);
+        let inference_state = app.state::<InferenceState>();
+        let inference_ready = inference_state
+            .0
+            .lock()
+            .map(|g| g.is_some())
+            .unwrap_or(false);
 
-            if inference_ready {
-                match resolve_vad_model_path(app) {
-                    Ok(model_path) => Some(VadConfig {
-                        silence_threshold_ms: config.vad_silence_threshold_ms,
-                        model_path,
-                        text_cleanup_enabled: config.text_cleanup_enabled,
-                    }),
-                    Err(e) => {
-                        eprintln!("[capture] VAD model not found, falling back to non-VAD: {e}");
-                        None
-                    }
+        if inference_ready {
+            match resolve_vad_model_path(app) {
+                Ok(model_path) => Some(VadConfig {
+                    silence_threshold_ms: config.vad_silence_threshold_ms,
+                    model_path,
+                    text_cleanup_enabled: config.text_cleanup_enabled,
+                }),
+                Err(e) => {
+                    eprintln!("[capture] VAD model not found, falling back to non-VAD: {e}");
+                    None
                 }
-            } else {
-                eprintln!("[capture] Inference not ready, falling back to non-VAD");
-                None
             }
+        } else {
+            eprintln!("[capture] Inference not ready, falling back to non-VAD");
+            None
+        }
     } else {
         None
     };
@@ -338,7 +338,9 @@ fn handle_stop(app: &AppHandle, config: &crate::features::settings::AppConfig) {
                                 utterance_id: None,
                                 utterance_duration_ms: Some(recording.utterance_duration_ms),
                                 preview_segment_count: Some(preview_segment_count as u32),
-                                raw_segment_count: Some(recording.transcript.raw_segments.len() as u32),
+                                raw_segment_count: Some(
+                                    recording.transcript.raw_segments.len() as u32
+                                ),
                                 gpu_available: Some(speech::get_gpu_available(
                                     &app.state::<InferenceState>(),
                                 )),
@@ -413,8 +415,10 @@ fn handle_stop(app: &AppHandle, config: &crate::features::settings::AppConfig) {
                 recorder::stop_and_save(stream)
                     .map(|path| AudioData::WavFile(path.to_string_lossy().to_string()))
             } else if use_distil_offline {
-                let diagnostics_utterance_id =
-                    app.state::<TranscriptDiagnosticsState>().0.next_utterance_id();
+                let diagnostics_utterance_id = app
+                    .state::<TranscriptDiagnosticsState>()
+                    .0
+                    .next_utterance_id();
                 recorder::stop_and_get_raw_samples(stream).map(|(samples, rate, channels)| {
                     AudioData::DistilWhisperSamples {
                         samples,
@@ -835,9 +839,7 @@ fn transcribe_and_insert(
             samples,
             sample_rate,
             channels,
-        } => {
-            duration_ms_from_samples(samples.len(), *sample_rate, *channels)
-        }
+        } => duration_ms_from_samples(samples.len(), *sample_rate, *channels),
     };
     let diagnostics_utterance_id = match &audio_data {
         AudioData::DistilWhisperSamples {
@@ -846,9 +848,9 @@ fn transcribe_and_insert(
         } => diagnostics_utterance_id.clone(),
         _ => None,
     };
-    let parakeet_gpu_available =
-        config.transcription_mode == "offline" && config.offline_engine == "parakeet"
-            && speech::get_gpu_available(&app.state::<InferenceState>());
+    let parakeet_gpu_available = config.transcription_mode == "offline"
+        && config.offline_engine == "parakeet"
+        && speech::get_gpu_available(&app.state::<InferenceState>());
 
     let transcribe_result = match audio_data {
         AudioData::WavFile(wav_path) => speech::cloud_transcribe(
@@ -892,8 +894,7 @@ fn transcribe_and_insert(
             };
             let inference_state = app.state::<InferenceState>();
             let transcribe_started = Instant::now();
-            let result =
-                speech::transcribe_audio(&inference_state, capped, sample_rate, channels);
+            let result = speech::transcribe_audio(&inference_state, capped, sample_rate, channels);
             if config.transcription_mode == "offline" && config.offline_engine == "parakeet" {
                 match &result {
                     Ok(text) => {
@@ -1102,7 +1103,8 @@ fn prepare_compacted_audio(
         config.vad_silence_threshold_ms,
     )?;
 
-    let compacted_duration_ms = duration_ms_from_samples(compacted.compacted_samples_16k.len(), 16_000, 1);
+    let compacted_duration_ms =
+        duration_ms_from_samples(compacted.compacted_samples_16k.len(), 16_000, 1);
     let compacted_wav_bytes = if !compacted.compacted_samples_16k.is_empty() {
         Some(recorder::encode_wav_bytes(
             &compacted.compacted_samples_16k,
@@ -1155,6 +1157,10 @@ fn maybe_log_transcript_sample(
     inserted_text: Option<String>,
     insert_success: bool,
 ) {
+    let history_mode = TranscriptHistoryMode::from_config_value(&config.history_mode);
+    if history_mode == TranscriptHistoryMode::Off {
+        return;
+    }
     let diagnostics_state = app.state::<TranscriptDiagnosticsState>();
     let raw_segments_json = match serde_json::to_string(&transcript.raw_segments) {
         Ok(json) => json,
@@ -1167,7 +1173,7 @@ fn maybe_log_transcript_sample(
         }
     };
 
-    diagnostics_state.0.log_sample(TranscriptSample {
+    let sample = TranscriptSample {
         created_at: current_timestamp_ms(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         session_id: diagnostics_state.0.session_id().to_string(),
@@ -1199,7 +1205,12 @@ fn maybe_log_transcript_sample(
         final_text,
         inserted_text,
         insert_success,
-    });
+    };
+
+    diagnostics_state.0.log_sample(
+        apply_history_mode(sample, history_mode),
+        config.history_retention_days,
+    );
 }
 
 fn log_command_history_sample(
@@ -1209,6 +1220,10 @@ fn log_command_history_sample(
     inserted_text: Option<String>,
     insert_success: bool,
 ) {
+    let history_mode = TranscriptHistoryMode::from_config_value(&config.history_mode);
+    if history_mode == TranscriptHistoryMode::Off {
+        return;
+    }
     let diagnostics_state = app.state::<TranscriptDiagnosticsState>();
     let raw_segments_json = match serde_json::to_string(&vec![raw_transcript.to_string()]) {
         Ok(json) => json,
@@ -1221,7 +1236,7 @@ fn log_command_history_sample(
         }
     };
 
-    diagnostics_state.0.log_sample(TranscriptSample {
+    let sample = TranscriptSample {
         created_at: current_timestamp_ms(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         session_id: diagnostics_state.0.session_id().to_string(),
@@ -1250,7 +1265,12 @@ fn log_command_history_sample(
         final_text: inserted_text.clone(),
         inserted_text,
         insert_success,
-    });
+    };
+
+    diagnostics_state.0.log_sample(
+        apply_history_mode(sample, history_mode),
+        config.history_retention_days,
+    );
 }
 
 fn option_if_not_empty(text: &str) -> Option<String> {
@@ -1260,6 +1280,20 @@ fn option_if_not_empty(text: &str) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+fn apply_history_mode(
+    mut sample: TranscriptSample,
+    history_mode: TranscriptHistoryMode,
+) -> TranscriptSample {
+    if history_mode == TranscriptHistoryMode::FinalText {
+        sample.raw_segments_json = "[]".to_string();
+        sample.joined_text = None;
+        sample.normalized_text = None;
+        sample.cleaned_text = None;
+        sample.post_processed_text = None;
+    }
+    sample
 }
 
 fn effective_cleanup_language(
@@ -1553,15 +1587,11 @@ fn command_finalize(
     }
 
     let transcript = raw_transcript.trim();
-    eprintln!("[capture] Command transcript: {}", transcript);
 
     // Check if this is a vocabulary addition command
     if let Some(vocab_cmd) = speech::llm::detect_vocab_command(transcript, &config.command_api_key)
     {
-        eprintln!(
-            "[capture] Vocab command detected: term='{}', full_form={:?}",
-            vocab_cmd.term, vocab_cmd.full_form
-        );
+        eprintln!("[capture] Vocab command detected");
         match add_term_to_general_vocabulary(app, &vocab_cmd, &config.command_api_key) {
             Ok(_) => {
                 let msg = format!("Added: {}", vocab_cmd.term);
@@ -1693,8 +1723,7 @@ fn add_term_to_general_vocabulary(
         *guard = None;
     }
     eprintln!(
-        "[capture] Added '{}' to general vocabulary with {} variant rules",
-        term,
+        "[capture] Added vocabulary entry with {} generated variant rules",
         variants.len()
     );
     Ok(())

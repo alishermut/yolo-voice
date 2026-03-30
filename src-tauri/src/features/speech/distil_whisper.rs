@@ -204,14 +204,28 @@ impl DistilWhisperManager {
 
         let model_dir = model::get_distil_whisper_models_dir(app)?;
         let device_preference = self.preferred_device.as_request_value().to_string();
-        let proc = self.ensure_process(app)?;
-        if !proc.loaded {
-            let response = proc.send_request(json!({
-                "cmd": "load_model",
-                "model_source": model_dir.display().to_string(),
-                "device_preference": device_preference,
-            }))?;
-            ensure_ok_response("load_model", &response)?;
+        let needs_load = {
+            let proc = self.ensure_process(app)?;
+            !proc.loaded
+        };
+        if needs_load {
+            let response = {
+                let proc = self.ensure_process(app)?;
+                proc.send_request(json!({
+                    "cmd": "load_model",
+                    "model_source": model_dir.display().to_string(),
+                    "device_preference": device_preference,
+                }))?
+            };
+            if let Err(err) = ensure_ok_response("load_model", &response) {
+                let message = format!(
+                    "Distil-Whisper failed to load from the pinned local snapshot: {}",
+                    err
+                );
+                self.last_error = Some(message.clone());
+                return Err(message);
+            }
+            let proc = self.ensure_process(app)?;
             proc.loaded = true;
             proc.device = response
                 .get("device")
@@ -219,7 +233,7 @@ impl DistilWhisperManager {
                 .unwrap_or("unknown")
                 .to_string();
         }
-        Ok(proc)
+        self.ensure_process(app)
     }
 
     fn ensure_process(&mut self, app: &AppHandle) -> Result<&mut DistilWhisperProcess, String> {

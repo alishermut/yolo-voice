@@ -18,6 +18,23 @@ $TempDir      = Join-Path $SidecarDir "_build_temp"
 $PythonVersion = "3.12.8"
 $PythonZipUrl  = "https://www.python.org/ftp/python/$PythonVersion/python-$PythonVersion-embed-amd64.zip"
 $GetPipUrl     = "https://bootstrap.pypa.io/get-pip.py"
+$PythonZipSha256 = "8D3F33BE9EB810F23C102F08475AF2854E50484B8E4E06275E937BE61CE3D2FB"
+$GetPipSha256    = "FEBA1C697DF45BE1B539B40D93C102C9EE9DDE1D966303323B830B06F3FBCA3C"
+$TinyWhisperRevision = "d90ca5fe260221311c53c58e660288d3deb8d356"
+
+function Assert-Sha256 {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Expected,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $actual = (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToUpperInvariant()
+    $wanted = $Expected.ToUpperInvariant()
+    if ($actual -ne $wanted) {
+        throw "$Label SHA256 mismatch. Expected $wanted but found $actual."
+    }
+}
 
 # ── Guard: skip if already built ──────────────────────────────────────────────
 if (Test-Path (Join-Path $PythonEnvDir "python.exe")) {
@@ -40,6 +57,7 @@ Write-Host "[prepare-sidecar] Step 1/5: Downloading Python $PythonVersion embedd
 $zipPath = Join-Path $TempDir "python-embed.zip"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Invoke-WebRequest -Uri $PythonZipUrl -OutFile $zipPath -UseBasicParsing
+Assert-Sha256 -Path $zipPath -Expected $PythonZipSha256 -Label "Python embeddable zip"
 
 # ── Step 2: Extract ───────────────────────────────────────────────────────────
 Write-Host "[prepare-sidecar] Step 2/5: Extracting Python..."
@@ -56,6 +74,7 @@ if (Test-Path $pthFile) {
 Write-Host "[prepare-sidecar] Step 3/5: Installing pip..."
 $getPipPath = Join-Path $TempDir "get-pip.py"
 Invoke-WebRequest -Uri $GetPipUrl -OutFile $getPipPath -UseBasicParsing
+Assert-Sha256 -Path $getPipPath -Expected $GetPipSha256 -Label "get-pip.py"
 
 $pythonExe = Join-Path $PythonEnvDir "python.exe"
 & $pythonExe $getPipPath --no-warn-script-location 2>&1 | Out-Host
@@ -64,7 +83,21 @@ if ($LASTEXITCODE -ne 0) { throw "get-pip.py failed with exit code $LASTEXITCODE
 # ── Step 4: Install dependencies ─────────────────────────────────────────────
 Write-Host "[prepare-sidecar] Step 4/5: Installing Python dependencies..."
 $requirementsPath = Join-Path $SidecarDir "requirements.txt"
-& $pythonExe -m pip install -r $requirementsPath --no-warn-script-location 2>&1 | Out-Host
+$wheelhouseDir = Join-Path $TempDir "wheelhouse"
+New-Item -ItemType Directory -Path $wheelhouseDir -Force | Out-Null
+& $pythonExe -m pip download --dest $wheelhouseDir --only-binary :all: -r $requirementsPath --disable-pip-version-check 2>&1 | Out-Host
+if ($LASTEXITCODE -ne 0) { throw "pip download failed with exit code $LASTEXITCODE" }
+
+$hashedRequirementsPath = Join-Path $wheelhouseDir "requirements-hashed.txt"
+$hashedLines = Get-ChildItem -Path $wheelhouseDir -File |
+    Sort-Object Name |
+    ForEach-Object {
+        $hash = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        "./$($_.Name) --hash=sha256:$hash"
+    }
+Set-Content -Path $hashedRequirementsPath -Value $hashedLines
+
+& $pythonExe -m pip install --no-index --find-links $wheelhouseDir --require-hashes -r $hashedRequirementsPath --no-warn-script-location --disable-pip-version-check 2>&1 | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "pip install failed with exit code $LASTEXITCODE" }
 
 # ── Step 5: Download tiny whisper model ───────────────────────────────────────
@@ -75,7 +108,11 @@ $modelDir = Join-Path $ModelsDir "faster-whisper-tiny"
 if (!(Test-Path $modelDir)) {
     & $pythonExe -c @"
 from huggingface_hub import snapshot_download
-snapshot_download('Systran/faster-whisper-tiny', local_dir=r'$modelDir')
+snapshot_download(
+    'Systran/faster-whisper-tiny',
+    revision='$TinyWhisperRevision',
+    local_dir=r'$modelDir',
+)
 print('Model downloaded successfully')
 "@ 2>&1 | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "Model download failed with exit code $LASTEXITCODE" }

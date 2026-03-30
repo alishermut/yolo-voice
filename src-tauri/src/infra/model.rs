@@ -5,6 +5,7 @@ use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager};
 
 const REPO_ID: &str = "istupakov/parakeet-tdt-0.6b-v3-onnx";
+const REPO_REVISION: &str = "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce";
 const DISTIL_WHISPER_MODEL_DIR: &str = "distil-whisper";
 const MODEL_FILES: &[(&str, bool)] = &[
     ("encoder-model.onnx", true),        // ~41MB graph, required
@@ -104,6 +105,7 @@ pub fn download_model(
 ) -> Result<(), String> {
     download_hf_files(
         REPO_ID,
+        REPO_REVISION,
         MODEL_FILES,
         models_dir,
         app_handle,
@@ -161,6 +163,7 @@ fn emit_progress(
 /// Uses chunked streaming to keep memory usage low and provide real-time progress.
 fn download_hf_files(
     repo_id: &str,
+    repo_revision: &str,
     files: &[(&str, bool)],
     dest_dir: &Path,
     app_handle: &AppHandle,
@@ -192,7 +195,10 @@ fn download_hf_files(
     let mut total_bytes: u64 = 0;
     let mut file_sizes: Vec<(&str, u64)> = Vec::new();
     for (name, _) in &files_to_download {
-        let url = format!("https://huggingface.co/{}/resolve/main/{}", repo_id, name);
+        let url = format!(
+            "https://huggingface.co/{}/resolve/{}/{}",
+            repo_id, repo_revision, name
+        );
         match client.head(&url).send() {
             Ok(resp) => {
                 let size: u64 = resp
@@ -216,7 +222,10 @@ fn download_hf_files(
 
     for (i, (name, _expected_size)) in file_sizes.iter().enumerate() {
         let file_index = i + 1;
-        let url = format!("https://huggingface.co/{}/resolve/main/{}", repo_id, name);
+        let url = format!(
+            "https://huggingface.co/{}/resolve/{}/{}",
+            repo_id, repo_revision, name
+        );
         let dest = dest_dir.join(name);
 
         // Ensure subdirectories exist (e.g. "onnx/")

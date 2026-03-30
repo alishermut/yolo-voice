@@ -2,7 +2,14 @@ import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AppConfig } from "../shared/types";
-import { getConfig, saveConfig, quitApp, getAppInfo, onOpenSettingsSection } from "../shared/platform";
+import {
+  clearConfigSecret,
+  getConfig,
+  saveConfig,
+  quitApp,
+  getAppInfo,
+  onOpenSettingsSection,
+} from "../shared/platform";
 import type { AppInfo } from "../shared/types";
 import { useToast, ToastContainer } from "../components/Toast";
 import { focusRing } from "../components/ui/styles";
@@ -63,7 +70,12 @@ export function Settings() {
     useState<SettingsSection>("general");
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const { toasts, addToast } = useToast();
-  const { status: updateStatus, version: updateVersion, installUpdate } = useUpdaterContext();
+  const {
+    status: updateStatus,
+    version: updateVersion,
+    downloadUpdate,
+    installUpdate,
+  } = useUpdaterContext();
   const [updateDismissed, setUpdateDismissed] = useState(false);
 
   useEffect(() => {
@@ -79,6 +91,20 @@ export function Settings() {
     try {
       await saveConfig(newConfig);
       setConfig(newConfig);
+      setError(null);
+    } catch (e) {
+      const msg = String(e);
+      setError(msg);
+      addToast(msg, "error");
+    }
+  };
+
+  const clearSecret = async (
+    slot: "cloud_stt_api_key" | "command_api_key" | "llm_api_key",
+  ) => {
+    try {
+      const nextConfig = await clearConfigSecret(slot);
+      setConfig(nextConfig);
       setError(null);
     } catch (e) {
       const msg = String(e);
@@ -182,7 +208,9 @@ export function Settings() {
           >
             <span className="text-base w-5 text-center opacity-70">&#9432;</span>
             {t("settings.sidebar.section.about", { defaultValue: "About" })}
-            {(updateStatus === "ready" || updateStatus === "downloading") && (
+            {(updateStatus === "available" ||
+              updateStatus === "ready" ||
+              updateStatus === "downloading") && (
               <span className="ml-auto w-2 h-2 rounded-full bg-success animate-pulse" />
             )}
           </button>
@@ -252,6 +280,32 @@ export function Settings() {
               <span>{t("updater.banner.downloading", { version: updateVersion })}</span>
             </div>
           )}
+          {updateStatus === "available" && !updateDismissed && (
+            <div className="mb-6 px-4 py-3 bg-accent/10 border border-accent rounded-lg text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-accent font-medium">
+                  {t("updater.available", {
+                    version: updateVersion,
+                    defaultValue: "Update {{version}} is available.",
+                  })}
+                </span>
+                <div className="flex gap-2 shrink-0">
+                  <button
+                    onClick={() => setUpdateDismissed(true)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors ${focusRing}`}
+                  >
+                    {t("updater.banner.later")}
+                  </button>
+                  <button
+                    onClick={downloadUpdate}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium bg-accent text-white hover:opacity-90 transition-opacity ${focusRing}`}
+                  >
+                    {t("updater.downloadButton", { defaultValue: "Download update" })}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           {updateStatus === "ready" && !updateDismissed && (
             <div className="mb-6 px-4 py-3 bg-success/10 border border-success rounded-lg text-sm">
               <div className="flex items-center justify-between gap-3">
@@ -300,10 +354,15 @@ export function Settings() {
               config={config}
               updateConfig={updateConfig}
               setError={setError}
+              clearSecret={(slot) => clearSecret(slot)}
             />
           )}
           {activeSection === "command" && (
-            <CommandSection config={config} updateConfig={updateConfig} />
+            <CommandSection
+              config={config}
+              updateConfig={updateConfig}
+              clearSecret={(slot) => clearSecret(slot)}
+            />
           )}
           {activeSection === "vocabulary" && (
             <VocabularySection
@@ -315,7 +374,9 @@ export function Settings() {
           {activeSection === "profiles" && (
             <ProfilesSection config={config} updateConfig={updateConfig} />
           )}
-          {activeSection === "history" && <HistorySection />}
+          {activeSection === "history" && (
+            <HistorySection config={config} updateConfig={updateConfig} />
+          )}
           {activeSection === "about" && <AboutSection />}
         </div>
       </div>

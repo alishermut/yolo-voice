@@ -79,7 +79,15 @@ function getReleaseNotes(version?: string) {
 export function AboutSection() {
   const { t } = useTranslation();
   const [info, setInfo] = useState<AppInfo | null>(null);
-  const { status, version, error, checkForUpdates, installUpdate, dismissError } = useUpdaterContext();
+  const {
+    status,
+    version,
+    error,
+    checkForUpdates,
+    downloadUpdate,
+    installUpdate,
+    dismissError,
+  } = useUpdaterContext();
   const releaseNotes = getReleaseNotes(info?.version);
 
   useEffect(() => {
@@ -112,6 +120,23 @@ export function AboutSection() {
 
         {status === "checking" && (
           <p className="text-sm text-text-muted text-center">{t("updater.checking")}</p>
+        )}
+
+        {status === "available" && (
+          <div className="space-y-2">
+            <p className="text-sm text-accent text-center font-medium">
+              {t("updater.available", {
+                version,
+                defaultValue: "Update {{version}} is available.",
+              })}
+            </p>
+            <button
+              onClick={downloadUpdate}
+              className={`w-full px-4 py-2 rounded-lg text-sm font-medium bg-accent hover:opacity-90 text-white transition-opacity ${focusRing}`}
+            >
+              {t("updater.downloadButton", { defaultValue: "Download update" })}
+            </button>
+          </div>
         )}
 
         {status === "downloading" && (

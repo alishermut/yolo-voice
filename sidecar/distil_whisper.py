@@ -15,6 +15,13 @@ from typing import Optional
 
 
 DISTIL_WHISPER_REPO = "distil-whisper/distil-large-v3"
+DISTIL_WHISPER_REVISION = "ff05a2254c6f9542535fd778dae85b39a08cae31"
+DISTIL_WHISPER_ALLOW_PATTERNS = [
+    "*.json",
+    "*.txt",
+    "*.model",
+    "*.safetensors",
+]
 RUNTIME_NAME = "transformers-distil-whisper"
 CHUNK_THRESHOLD_S = 30.0
 CHUNK_LENGTH_S = 25.0
@@ -69,7 +76,6 @@ def ensure_loaded(model_source: str, device_preference: str = "auto") -> None:
         model=model_source,
         torch_dtype=_torch_dtype,
         device=pipeline_device,
-        trust_remote_code=True,
     )
     tokenizer = getattr(_pipe, "tokenizer", None)
     model = getattr(_pipe, "model", None)
@@ -91,7 +97,9 @@ def download_model(target_dir: str) -> dict:
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
     local_dir = snapshot_download(
         repo_id=DISTIL_WHISPER_REPO,
+        revision=DISTIL_WHISPER_REVISION,
         local_dir=target_dir,
+        allow_patterns=DISTIL_WHISPER_ALLOW_PATTERNS,
     )
     total_time = time.time() - started
     log(f"Downloaded {DISTIL_WHISPER_REPO} to {local_dir} in {total_time:.2f}s")

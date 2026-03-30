@@ -11,6 +11,23 @@ use tauri::{AppHandle, Manager};
 
 pub const TRANSCRIPT_DIAGNOSTICS_MAX_SAMPLES: u64 = 1000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptHistoryMode {
+    Off,
+    FinalText,
+    Debug,
+}
+
+impl TranscriptHistoryMode {
+    pub fn from_config_value(value: &str) -> Self {
+        match value {
+            "off" => Self::Off,
+            "debug" => Self::Debug,
+            _ => Self::FinalText,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TranscriptDiagnosticsStore {
     db_path: PathBuf,
@@ -110,7 +127,10 @@ pub struct TranscriptSample {
 
 #[allow(dead_code)]
 enum DiagnosticsMsg {
-    Write(TranscriptSample),
+    Write {
+        sample: TranscriptSample,
+        retention_days: u32,
+    },
     DistilWhisperEvent(DistilWhisperDiagnosticsEvent),
     ParakeetEvent(ParakeetDiagnosticsEvent),
     Flush(mpsc::Sender<()>),
@@ -123,11 +143,7 @@ impl TranscriptDiagnosticsStore {
         let parakeet_events_path = parakeet_events_path(app_handle)?;
         let _ = fs::remove_file(&distil_whisper_events_path);
         let _ = fs::remove_file(&parakeet_events_path);
-        Self::from_paths(
-            db_path,
-            distil_whisper_events_path,
-            parakeet_events_path,
-        )
+        Self::from_paths(db_path, distil_whisper_events_path, parakeet_events_path)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -140,11 +156,7 @@ impl TranscriptDiagnosticsStore {
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join("parakeet_events.jsonl");
-        Self::from_paths(
-            db_path,
-            distil_whisper_events_path,
-            parakeet_events_path,
-        )
+        Self::from_paths(db_path, distil_whisper_events_path, parakeet_events_path)
     }
 
     pub fn from_paths(
@@ -214,8 +226,17 @@ impl TranscriptDiagnosticsStore {
         self.status(enabled)
     }
 
-    pub fn log_sample(&self, sample: TranscriptSample) {
-        let _ = self.tx.send(DiagnosticsMsg::Write(sample));
+    pub fn log_sample(&self, sample: TranscriptSample, retention_days: u32) {
+        let _ = self.tx.send(DiagnosticsMsg::Write {
+            sample,
+            retention_days,
+        });
+    }
+
+    pub fn prune_retention(&self, retention_days: u32) -> Result<(), String> {
+        self.flush_writer();
+        let conn = open_connection(&self.db_path)?;
+        prune_old_samples(&conn, TRANSCRIPT_DIAGNOSTICS_MAX_SAMPLES, retention_days)
     }
 
     #[allow(dead_code)]
@@ -283,14 +304,16 @@ fn writer_loop(
 
     while let Ok(msg) = rx.recv() {
         match msg {
-            DiagnosticsMsg::Write(sample) => {
-                if let Err(err) = insert_sample(&conn, &sample) {
+            DiagnosticsMsg::Write {
+                sample,
+                retention_days,
+            } => {
+                if let Err(err) = insert_sample(&conn, &sample, retention_days) {
                     eprintln!("[diagnostics] Failed to write transcript sample: {}", err);
                 }
             }
             DiagnosticsMsg::DistilWhisperEvent(event) => {
-                if let Err(err) = append_distil_whisper_event(&distil_whisper_events_path, &event)
-                {
+                if let Err(err) = append_distil_whisper_event(&distil_whisper_events_path, &event) {
                     eprintln!(
                         "[diagnostics] Failed to write Distil-Whisper event: {}",
                         err
@@ -388,7 +411,11 @@ fn open_connection(db_path: &Path) -> Result<Connection, String> {
     Ok(conn)
 }
 
-fn insert_sample(conn: &Connection, sample: &TranscriptSample) -> Result<(), String> {
+fn insert_sample(
+    conn: &Connection,
+    sample: &TranscriptSample,
+    retention_days: u32,
+) -> Result<(), String> {
     conn.execute(
         "
         INSERT INTO transcript_samples (
@@ -455,11 +482,25 @@ fn insert_sample(conn: &Connection, sample: &TranscriptSample) -> Result<(), Str
     )
     .map_err(|e| e.to_string())?;
 
-    prune_old_samples(conn, TRANSCRIPT_DIAGNOSTICS_MAX_SAMPLES)?;
+    prune_old_samples(conn, TRANSCRIPT_DIAGNOSTICS_MAX_SAMPLES, retention_days)?;
     Ok(())
 }
 
-fn prune_old_samples(conn: &Connection, max_samples: u64) -> Result<(), String> {
+fn prune_old_samples(
+    conn: &Connection,
+    max_samples: u64,
+    retention_days: u32,
+) -> Result<(), String> {
+    if retention_days > 0 {
+        let cutoff_ms =
+            current_timestamp_ms().saturating_sub(retention_days as i64 * 24 * 60 * 60 * 1000);
+        conn.execute(
+            "DELETE FROM transcript_samples WHERE created_at < ?1",
+            params![cutoff_ms],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
     conn.execute(
         "
         DELETE FROM transcript_samples
@@ -636,7 +677,6 @@ impl TranscriptDiagnosticsStore {
 
         Ok(words)
     }
-
 }
 
 pub fn current_timestamp_ms() -> i64 {
@@ -715,7 +755,7 @@ mod tests {
         let db_path = temp_db_path("diagnostics-insert");
         let store = TranscriptDiagnosticsStore::from_db_path(db_path.clone()).unwrap();
 
-        store.log_sample(sample_with_id("session-a", "utt-1", 1));
+        store.log_sample(sample_with_id("session-a", "utt-1", 1), 0);
         store.flush_for_tests();
 
         let status = store.status(true).unwrap();
@@ -777,11 +817,10 @@ mod tests {
         let store = TranscriptDiagnosticsStore::from_db_path(db_path.clone()).unwrap();
 
         for index in 0..(TRANSCRIPT_DIAGNOSTICS_MAX_SAMPLES + 5) {
-            store.log_sample(sample_with_id(
-                "session-b",
-                &format!("utt-{index}"),
-                index as i64,
-            ));
+            store.log_sample(
+                sample_with_id("session-b", &format!("utt-{index}"), index as i64),
+                0,
+            );
         }
         store.flush_for_tests();
 
@@ -806,7 +845,7 @@ mod tests {
         let db_path = temp_db_path("diagnostics-clear");
         let store = TranscriptDiagnosticsStore::from_db_path(db_path.clone()).unwrap();
 
-        store.log_sample(sample_with_id("session-c", "utt-1", 1));
+        store.log_sample(sample_with_id("session-c", "utt-1", 1), 0);
         store.flush_for_tests();
 
         let status = store.clear(true).unwrap();

@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
@@ -44,6 +45,8 @@ pub struct AppConfig {
     pub llm_model: String,
     #[serde(default)]
     pub llm_api_key: String,
+    #[serde(default)]
+    pub has_llm_api_key: bool,
     #[serde(default = "default_llm_base_url")]
     pub llm_base_url: String,
     #[serde(default = "default_transcription_mode")]
@@ -52,6 +55,8 @@ pub struct AppConfig {
     pub cloud_stt_provider: String,
     #[serde(default)]
     pub cloud_stt_api_key: String,
+    #[serde(default)]
+    pub has_cloud_stt_api_key: bool,
     #[serde(default)]
     pub onboarding_completed: bool,
     #[serde(default)]
@@ -82,6 +87,10 @@ pub struct AppConfig {
     pub show_dictionary_migration_notice: bool,
     #[serde(default)]
     pub transcript_diagnostics_enabled: bool,
+    #[serde(default = "default_history_mode_legacy")]
+    pub history_mode: String,
+    #[serde(default)]
+    pub history_retention_days: u32,
     #[serde(default = "default_hallucination_filter")]
     pub hallucination_filter_enabled: bool,
     #[serde(default)]
@@ -100,6 +109,8 @@ pub struct AppConfig {
     pub command_model: String,
     #[serde(default)]
     pub command_api_key: String,
+    #[serde(default)]
+    pub has_command_api_key: bool,
     #[serde(default = "default_command_base_url")]
     pub command_base_url: String,
     #[serde(default = "default_command_system_prompt")]
@@ -181,6 +192,15 @@ fn default_command_system_prompt() -> String {
 fn default_hallucination_filter() -> bool {
     true
 }
+fn default_history_mode() -> String {
+    "final_text".to_string()
+}
+fn default_history_mode_legacy() -> String {
+    String::new()
+}
+fn default_history_retention_days() -> u32 {
+    30
+}
 fn default_sounds_enabled() -> bool {
     true
 }
@@ -189,6 +209,25 @@ fn default_start_sound() -> String {
 }
 fn default_stop_sound() -> String {
     "success_chime".to_string()
+}
+
+const SECRET_SERVICE: &str = "yolo-voice";
+
+#[derive(Clone, Copy)]
+enum SecretSlot {
+    LlmApiKey,
+    CloudSttApiKey,
+    CommandApiKey,
+}
+
+impl SecretSlot {
+    fn user(self) -> &'static str {
+        match self {
+            Self::LlmApiKey => "llm_api_key",
+            Self::CloudSttApiKey => "cloud_stt_api_key",
+            Self::CommandApiKey => "command_api_key",
+        }
+    }
 }
 
 impl Default for AppConfig {
@@ -207,10 +246,12 @@ impl Default for AppConfig {
             llm_provider: default_llm_provider(),
             llm_model: default_llm_model(),
             llm_api_key: String::new(),
+            has_llm_api_key: false,
             llm_base_url: default_llm_base_url(),
             transcription_mode: default_transcription_mode(),
             cloud_stt_provider: default_cloud_stt_provider(),
             cloud_stt_api_key: String::new(),
+            has_cloud_stt_api_key: false,
             onboarding_completed: false,
             launch_on_startup: false,
             start_minimized: false,
@@ -226,6 +267,8 @@ impl Default for AppConfig {
             pill_pinned: false,
             show_dictionary_migration_notice: false,
             transcript_diagnostics_enabled: false,
+            history_mode: default_history_mode(),
+            history_retention_days: default_history_retention_days(),
             hallucination_filter_enabled: default_hallucination_filter(),
             spoken_punctuation_enabled: false,
             continuous_recording_enabled: false,
@@ -234,10 +277,169 @@ impl Default for AppConfig {
             command_provider: default_command_provider(),
             command_model: default_command_model(),
             command_api_key: String::new(),
+            has_command_api_key: false,
             command_base_url: default_command_base_url(),
             command_system_prompt: default_command_system_prompt(),
         }
     }
+}
+
+fn secret_entry(slot: SecretSlot) -> Result<Entry, String> {
+    Entry::new(SECRET_SERVICE, slot.user()).map_err(|e| e.to_string())
+}
+
+fn read_secret(slot: SecretSlot) -> Result<Option<String>, String> {
+    match secret_entry(slot)?.get_password() {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn write_secret(slot: SecretSlot, secret: &str) -> Result<(), String> {
+    let entry = secret_entry(slot)?;
+    entry.set_password(secret).map_err(|e| e.to_string())?;
+    let stored = entry.get_password().map_err(|e| e.to_string())?;
+    if stored != secret {
+        return Err(format!(
+            "Stored keychain secret did not match for {}",
+            slot.user()
+        ));
+    }
+    Ok(())
+}
+
+fn clear_secret_slot(slot: SecretSlot) -> Result<(), String> {
+    match secret_entry(slot)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn sync_secret_slot(
+    current_secret: &mut String,
+    has_secret: &mut bool,
+    slot: SecretSlot,
+) -> Result<bool, String> {
+    if !current_secret.trim().is_empty() {
+        write_secret(slot, current_secret.trim())?;
+        *current_secret = current_secret.trim().to_string();
+        *has_secret = true;
+        return Ok(true);
+    }
+
+    if let Some(stored) = read_secret(slot)? {
+        *current_secret = stored;
+        *has_secret = true;
+        return Ok(false);
+    }
+
+    *current_secret = String::new();
+    *has_secret = false;
+    Ok(false)
+}
+
+fn sync_secrets(config: &mut AppConfig) -> Result<bool, String> {
+    let llm_migrated = sync_secret_slot(
+        &mut config.llm_api_key,
+        &mut config.has_llm_api_key,
+        SecretSlot::LlmApiKey,
+    )?;
+    let cloud_migrated = sync_secret_slot(
+        &mut config.cloud_stt_api_key,
+        &mut config.has_cloud_stt_api_key,
+        SecretSlot::CloudSttApiKey,
+    )?;
+    let command_migrated = sync_secret_slot(
+        &mut config.command_api_key,
+        &mut config.has_command_api_key,
+        SecretSlot::CommandApiKey,
+    )?;
+
+    Ok(llm_migrated || cloud_migrated || command_migrated)
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
+fn validate_base_url(field: &str, value: &str) -> Result<(), String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+
+    let url = reqwest::Url::parse(trimmed).map_err(|err| format!("Invalid {}: {}", field, err))?;
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" if url.host_str().is_some_and(is_loopback_host) => Ok(()),
+        "http" => Err(format!(
+            "{} must use HTTPS unless it points to localhost or loopback.",
+            field
+        )),
+        scheme => Err(format!(
+            "{} must use http://localhost or HTTPS. Found unsupported scheme '{}'.",
+            field, scheme
+        )),
+    }
+}
+
+fn sanitized_config(mut config: AppConfig) -> AppConfig {
+    config.has_llm_api_key = !config.llm_api_key.trim().is_empty();
+    config.has_cloud_stt_api_key = !config.cloud_stt_api_key.trim().is_empty();
+    config.has_command_api_key = !config.command_api_key.trim().is_empty();
+    config.llm_api_key.clear();
+    config.cloud_stt_api_key.clear();
+    config.command_api_key.clear();
+    config
+}
+
+pub fn public_config(config: &AppConfig) -> AppConfig {
+    sanitized_config(config.clone())
+}
+
+pub fn merge_runtime_config(existing: &AppConfig, incoming: &AppConfig) -> AppConfig {
+    let mut merged = incoming.clone();
+    if merged.llm_api_key.trim().is_empty() {
+        merged.llm_api_key = existing.llm_api_key.clone();
+    }
+    if merged.cloud_stt_api_key.trim().is_empty() {
+        merged.cloud_stt_api_key = existing.cloud_stt_api_key.clone();
+    }
+    if merged.command_api_key.trim().is_empty() {
+        merged.command_api_key = existing.command_api_key.clone();
+    }
+    merged.has_llm_api_key = !merged.llm_api_key.trim().is_empty();
+    merged.has_cloud_stt_api_key = !merged.cloud_stt_api_key.trim().is_empty();
+    merged.has_command_api_key = !merged.command_api_key.trim().is_empty();
+    merged
+}
+
+pub fn clear_secret(
+    app_handle: &AppHandle,
+    config: &mut AppConfig,
+    slot: &str,
+) -> Result<(), String> {
+    match slot {
+        "llm_api_key" => {
+            clear_secret_slot(SecretSlot::LlmApiKey)?;
+            config.llm_api_key.clear();
+            config.has_llm_api_key = false;
+        }
+        "cloud_stt_api_key" => {
+            clear_secret_slot(SecretSlot::CloudSttApiKey)?;
+            config.cloud_stt_api_key.clear();
+            config.has_cloud_stt_api_key = false;
+        }
+        "command_api_key" => {
+            clear_secret_slot(SecretSlot::CommandApiKey)?;
+            config.command_api_key.clear();
+            config.has_command_api_key = false;
+        }
+        _ => return Err("Unknown secret slot".to_string()),
+    }
+
+    save_config(app_handle, config)
 }
 
 #[cfg(test)]
@@ -282,10 +484,26 @@ pub fn load_config(app_handle: &AppHandle) -> AppConfig {
         Err(_) => return AppConfig::default(),
     };
 
-    match fs::read_to_string(&path) {
+    let mut config = match fs::read_to_string(&path) {
         Ok(contents) => normalize_config(serde_json::from_str(&contents).unwrap_or_default()),
         Err(_) => AppConfig::default(),
+    };
+
+    match sync_secrets(&mut config) {
+        Ok(migrated) => {
+            if migrated {
+                let _ = save_config(app_handle, &config);
+            }
+        }
+        Err(err) => {
+            eprintln!("[settings] Failed to sync secrets from keychain: {}", err);
+            config.has_llm_api_key = !config.llm_api_key.trim().is_empty();
+            config.has_cloud_stt_api_key = !config.cloud_stt_api_key.trim().is_empty();
+            config.has_command_api_key = !config.command_api_key.trim().is_empty();
+        }
     }
+
+    config
 }
 
 fn normalize_config(mut config: AppConfig) -> AppConfig {
@@ -295,6 +513,20 @@ fn normalize_config(mut config: AppConfig) -> AppConfig {
         "cohere" => "distil_whisper".to_string(),
         _ => default_offline_engine(),
     };
+    config.history_mode = match config.history_mode.trim() {
+        "off" => "off".to_string(),
+        "final_text" => "final_text".to_string(),
+        "debug" => "debug".to_string(),
+        _ if config.transcript_diagnostics_enabled => "debug".to_string(),
+        _ => default_history_mode(),
+    };
+    if config.history_retention_days == 0 {
+        config.history_retention_days = default_history_retention_days();
+    }
+    config.transcript_diagnostics_enabled = config.history_mode == "debug";
+    config.has_llm_api_key = !config.llm_api_key.trim().is_empty();
+    config.has_cloud_stt_api_key = !config.cloud_stt_api_key.trim().is_empty();
+    config.has_command_api_key = !config.command_api_key.trim().is_empty();
     config
 }
 
@@ -305,7 +537,12 @@ pub fn save_config(app_handle: &AppHandle, config: &AppConfig) -> Result<(), Str
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
-    let json = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
+    let mut runtime_config = config.clone();
+    validate_base_url("llm_base_url", &runtime_config.llm_base_url)?;
+    validate_base_url("command_base_url", &runtime_config.command_base_url)?;
+    sync_secrets(&mut runtime_config)?;
+    let sanitized = sanitized_config(runtime_config);
+    let json = serde_json::to_string_pretty(&sanitized).map_err(|e| e.to_string())?;
     fs::write(&path, json).map_err(|e| e.to_string())?;
     // Ensure the write is flushed to disk (prevents data loss on crash/close)
     if let Ok(file) = fs::File::open(&path) {

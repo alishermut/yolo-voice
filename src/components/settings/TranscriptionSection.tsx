@@ -1,7 +1,9 @@
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ModelSelector } from "../ModelSelector";
 import type { AppConfig } from "../../shared/types";
 import {
+  buttonVariants,
   inputStyles,
   sectionHeader,
 } from "../ui/styles";
@@ -13,13 +15,22 @@ interface TranscriptionSectionProps {
   config: AppConfig;
   updateConfig: (updates: Partial<AppConfig>) => Promise<void>;
   setError: (error: string | null) => void;
+  clearSecret: (slot: "cloud_stt_api_key") => Promise<void>;
 }
 
 export function TranscriptionSection({
   config,
   updateConfig,
+  clearSecret,
 }: TranscriptionSectionProps) {
   const { t } = useTranslation();
+  const [cloudApiKeyInput, setCloudApiKeyInput] = useState(
+    config.cloud_stt_api_key ?? "",
+  );
+
+  useEffect(() => {
+    setCloudApiKeyInput(config.cloud_stt_api_key ?? "");
+  }, [config.cloud_stt_api_key]);
 
   return (
     <div className="space-y-8">
@@ -212,14 +223,43 @@ export function TranscriptionSection({
               </span>
               <input
                 type="password"
-                value={config.cloud_stt_api_key ?? ""}
-                onChange={(e) =>
-                  updateConfig({ cloud_stt_api_key: e.target.value })
+                value={cloudApiKeyInput}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setCloudApiKeyInput(value);
+                  updateConfig({ cloud_stt_api_key: value });
+                }}
+                placeholder={
+                  config.has_cloud_stt_api_key && !cloudApiKeyInput
+                    ? t("transcription.cloud.apiKeyStored", {
+                        defaultValue: "Stored securely. Enter a new key to replace it.",
+                      })
+                    : t("transcription.cloud.apiKeyPlaceholder")
                 }
-                placeholder={t("transcription.cloud.apiKeyPlaceholder")}
                 className={`flex-1 ${inputStyles}`}
               />
+              {config.has_cloud_stt_api_key && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await clearSecret("cloud_stt_api_key");
+                    setCloudApiKeyInput("");
+                  }}
+                  className={buttonVariants.danger}
+                >
+                  {t("transcription.cloud.clearButton", {
+                    defaultValue: "Clear stored key",
+                  })}
+                </button>
+              )}
             </div>
+            {config.has_cloud_stt_api_key && !cloudApiKeyInput && (
+              <p className="text-xs text-success">
+                {t("transcription.cloud.storedNotice", {
+                  defaultValue: "A cloud transcription API key is already stored in your OS keychain.",
+                })}
+              </p>
+            )}
           </div>
         )}
       </div>

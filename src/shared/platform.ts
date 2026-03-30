@@ -30,6 +30,12 @@ export function saveConfig(newConfig: AppConfig): Promise<void> {
   return invoke("save_config_cmd", { newConfig });
 }
 
+export function clearConfigSecret(
+  slot: "llm_api_key" | "cloud_stt_api_key" | "command_api_key",
+): Promise<AppConfig> {
+  return invoke<AppConfig>("clear_config_secret", { slot });
+}
+
 // ---- Audio Devices ----
 
 export function listDevices(): Promise<DeviceInfo[]> {

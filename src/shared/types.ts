@@ -15,10 +15,12 @@ export interface AppConfig {
   llm_provider: string;
   llm_model: string;
   llm_api_key: string;
+  has_llm_api_key: boolean;
   llm_base_url: string;
   transcription_mode: string;
   cloud_stt_provider: string;
   cloud_stt_api_key: string;
+  has_cloud_stt_api_key: boolean;
   onboarding_completed: boolean;
   launch_on_startup: boolean;
   start_minimized: boolean;
@@ -34,6 +36,8 @@ export interface AppConfig {
   pill_pinned: boolean;
   show_dictionary_migration_notice: boolean;
   transcript_diagnostics_enabled: boolean;
+  history_mode: "off" | "final_text" | "debug";
+  history_retention_days: number;
   hallucination_filter_enabled: boolean;
   spoken_punctuation_enabled: boolean;
   continuous_recording_enabled: boolean;
@@ -44,6 +48,7 @@ export interface AppConfig {
   command_provider: string;
   command_model: string;
   command_api_key: string;
+  has_command_api_key: boolean;
   command_base_url: string;
   command_system_prompt: string;
 
@@ -161,6 +166,7 @@ export interface ModelDownloadProgress {
 export type UpdateStatus =
   | "idle"
   | "checking"
+  | "available"
   | "downloading"
   | "ready"
   | "up-to-date"

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { KeybindingInput } from "../KeybindingInput";
 import type { AppConfig } from "../../shared/types";
@@ -14,14 +14,26 @@ import {
 interface CommandSectionProps {
   config: AppConfig;
   updateConfig: (updates: Partial<AppConfig>) => Promise<void>;
+  clearSecret: (slot: "command_api_key") => Promise<void>;
 }
 
-export function CommandSection({ config, updateConfig }: CommandSectionProps) {
+export function CommandSection({
+  config,
+  updateConfig,
+  clearSecret,
+}: CommandSectionProps) {
   const { t } = useTranslation();
   const [testResult, setTestResult] = useState<{
     ok: boolean;
     msg: string;
   } | null>(null);
+  const [commandApiKeyInput, setCommandApiKeyInput] = useState(
+    config.command_api_key ?? "",
+  );
+
+  useEffect(() => {
+    setCommandApiKeyInput(config.command_api_key ?? "");
+  }, [config.command_api_key]);
 
   return (
     <div className="space-y-8">
@@ -63,17 +75,44 @@ export function CommandSection({ config, updateConfig }: CommandSectionProps) {
             </span>
             <input
               type="password"
-              value={config.command_api_key ?? ""}
-              onChange={(e) =>
-                updateConfig({ command_api_key: e.target.value })
+              value={commandApiKeyInput}
+              onChange={(e) => {
+                const value = e.target.value;
+                setCommandApiKeyInput(value);
+                updateConfig({ command_api_key: value });
+              }}
+              placeholder={
+                config.has_command_api_key && !commandApiKeyInput
+                  ? t("command.api.keyStored", {
+                      defaultValue: "Stored securely. Enter a new key to replace it.",
+                    })
+                  : t("command.api.keyPlaceholder")
               }
-              placeholder={t("command.api.keyPlaceholder")}
               className={`flex-1 ${inputStyles}`}
             />
+            {config.has_command_api_key && (
+              <button
+                type="button"
+                onClick={async () => {
+                  await clearSecret("command_api_key");
+                  setCommandApiKeyInput("");
+                }}
+                className={buttonVariants.danger}
+              >
+                {t("command.api.clearButton", { defaultValue: "Clear stored key" })}
+              </button>
+            )}
           </div>
           <p className={descStyles}>
             {t("command.api.description")}
           </p>
+          {config.has_command_api_key && !commandApiKeyInput && (
+            <p className="text-xs text-success">
+              {t("command.api.storedNotice", {
+                defaultValue: "A command API key is already stored in your OS keychain.",
+              })}
+            </p>
+          )}
         </div>
       </div>
 
@@ -86,7 +125,7 @@ export function CommandSection({ config, updateConfig }: CommandSectionProps) {
               await testCommandLlmConnection(
                 config.command_provider ?? "groq",
                 config.command_model ?? "openai/gpt-oss-120b",
-                config.command_api_key ?? "",
+                commandApiKeyInput,
                 config.command_base_url ?? "https://api.groq.com/openai",
               );
               setTestResult({ ok: true, msg: t("command.testConnection.success") });

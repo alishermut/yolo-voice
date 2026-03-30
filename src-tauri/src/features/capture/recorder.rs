@@ -378,7 +378,12 @@ pub fn stop_and_get_wav_bytes_with_metadata(
     let samples = recording.samples.lock().map_err(|e| e.to_string())?.clone();
     let wav_bytes = encode_wav_bytes(&samples, recording.sample_rate, recording.channels);
 
-    Ok((wav_bytes, recording.sample_rate, recording.channels, samples.len()))
+    Ok((
+        wav_bytes,
+        recording.sample_rate,
+        recording.channels,
+        samples.len(),
+    ))
 }
 
 pub fn encode_wav_bytes(samples: &[f32], sample_rate: u32, channels: u16) -> Vec<u8> {

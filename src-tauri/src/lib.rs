@@ -48,6 +48,7 @@ pub fn run() {
             app::commands::stop_test,
             app::commands::get_config,
             app::commands::save_config_cmd,
+            app::commands::clear_config_secret,
             app::commands::start_recording,
             app::commands::stop_recording,
             app::commands::download_model_cmd,
@@ -115,6 +116,9 @@ pub fn run() {
 
             let diagnostics_store =
                 features::diagnostics::TranscriptDiagnosticsStore::new(&app.handle())?;
+            if let Err(err) = diagnostics_store.prune_retention(saved_config.history_retention_days) {
+                eprintln!("[app] Failed to prune transcript history retention: {}", err);
+            }
             app.manage(TranscriptDiagnosticsState(diagnostics_store));
 
             // Build tray menu

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import type { TranscriptHistoryEntry } from "../../shared/types";
+import type { AppConfig, TranscriptHistoryEntry } from "../../shared/types";
 import {
   getTranscriptHistory,
   clearTranscriptHistory,
@@ -8,11 +8,17 @@ import {
   getTranscriptEntryWords,
   addWordsToDictionary,
 } from "../../shared/platform";
-import { inputStyles } from "../ui/styles";
+import { inputStyles, sectionHeader } from "../ui/styles";
+import { Select } from "../ui/Select";
 
 const PAGE_SIZE = 20;
 
-export function HistorySection() {
+interface HistorySectionProps {
+  config: AppConfig;
+  updateConfig: (updates: Partial<AppConfig>) => Promise<void>;
+}
+
+export function HistorySection({ config, updateConfig }: HistorySectionProps) {
   const { t } = useTranslation();
   const [entries, setEntries] = useState<TranscriptHistoryEntry[]>([]);
   const [search, setSearch] = useState("");
@@ -113,6 +119,60 @@ export function HistorySection() {
 
   return (
     <div className="space-y-6">
+      <div className="space-y-4 rounded-xl border border-border-default bg-bg-base p-4">
+        <h3 className={sectionHeader}>
+          {t("history.storage.heading", { defaultValue: "Storage & retention" })}
+        </h3>
+        <div className="flex items-center gap-3">
+          <span className="w-32 text-sm font-medium text-text-primary">
+            {t("history.storage.modeLabel", { defaultValue: "History mode" })}
+          </span>
+          <Select
+            value={config.history_mode}
+            onChange={(history_mode) => updateConfig({ history_mode: history_mode as AppConfig["history_mode"] })}
+            options={[
+              {
+                value: "off",
+                label: t("history.storage.modeOff", { defaultValue: "Off" }),
+              },
+              {
+                value: "final_text",
+                label: t("history.storage.modeFinalText", { defaultValue: "Final text only" }),
+              },
+              {
+                value: "debug",
+                label: t("history.storage.modeDebug", { defaultValue: "Debug" }),
+              },
+            ]}
+            className="flex-1"
+          />
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="w-32 text-sm font-medium text-text-primary">
+            {t("history.storage.retentionLabel", { defaultValue: "Retention days" })}
+          </span>
+          <input
+            type="number"
+            min={1}
+            max={365}
+            value={config.history_retention_days}
+            onChange={(e) => {
+              const value = Number.parseInt(e.target.value, 10);
+              if (Number.isFinite(value) && value > 0) {
+                updateConfig({ history_retention_days: value });
+              }
+            }}
+            className={`w-32 ${inputStyles}`}
+          />
+          <p className="text-xs text-text-muted">
+            {t("history.storage.description", {
+              defaultValue:
+                "Choose whether to keep no history, final inserted text, or full debug data. Older entries are pruned automatically.",
+            })}
+          </p>
+        </div>
+      </div>
+
       <div className="flex items-center justify-end">
         <button
           onClick={handleClearAll}

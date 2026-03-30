@@ -463,7 +463,9 @@ pub fn start_hotkey_listener(app_handle: AppHandle, cache: HotkeyCache) {
                                 DictationState::WaitingForDoubleTap => {
                                     let in_window = state
                                         .dict_release_time
-                                        .map(|time| time.elapsed().as_millis() < DOUBLE_TAP_WINDOW_MS)
+                                        .map(|time| {
+                                            time.elapsed().as_millis() < DOUBLE_TAP_WINDOW_MS
+                                        })
                                         .unwrap_or(false);
 
                                     if in_window {
@@ -472,7 +474,9 @@ pub fn start_hotkey_listener(app_handle: AppHandle, cache: HotkeyCache) {
                                         state.dict_press_time = None;
                                         state.dict_release_time = None;
                                     } else {
-                                        if runtime.recording_mode() == HotkeyRecordingMode::Dictation {
+                                        if runtime.recording_mode()
+                                            == HotkeyRecordingMode::Dictation
+                                        {
                                             stop_dictation(&app, &runtime, &mut state);
                                         } else {
                                             start_dictation_press(&app, &mut state);
@@ -493,7 +497,8 @@ pub fn start_hotkey_listener(app_handle: AppHandle, cache: HotkeyCache) {
                     {
                         if let Some(key_name) = resolve_style_shortcut_key(&app, key) {
                             state.style_key_held = Some(key);
-                            if let Ok(mut active_style_key) = app.state::<ActiveStyleKey>().0.lock() {
+                            if let Ok(mut active_style_key) = app.state::<ActiveStyleKey>().0.lock()
+                            {
                                 *active_style_key = Some(key_name.clone());
                             }
                             let _ = app.emit("style-switch", key_name);
@@ -550,7 +555,8 @@ pub fn start_hotkey_listener(app_handle: AppHandle, cache: HotkeyCache) {
                         let _ = app.emit("command-hotkey-action", "start");
                     }
                     EventType::KeyRelease(key)
-                        if state.cmd_state == CommandState::Recording && cmd_chord.contains(&key) =>
+                        if state.cmd_state == CommandState::Recording
+                            && cmd_chord.contains(&key) =>
                     {
                         let held_ms = state
                             .cmd_press_time
