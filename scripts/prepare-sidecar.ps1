@@ -21,7 +21,7 @@ $GetPipUrl     = "https://bootstrap.pypa.io/get-pip.py"
 $PythonZipSha256 = "8D3F33BE9EB810F23C102F08475AF2854E50484B8E4E06275E937BE61CE3D2FB"
 $GetPipSha256    = "FEBA1C697DF45BE1B539B40D93C102C9EE9DDE1D966303323B830B06F3FBCA3C"
 $TinyWhisperRevision = "d90ca5fe260221311c53c58e660288d3deb8d356"
-$ExpectedTorchCudaBuild = "12.8"
+$ExpectedTorchCudaBuild = ""
 
 function Assert-Sha256 {
     param(
@@ -83,7 +83,8 @@ print(json.dumps(payload))
         return $false
     }
 
-    if ($probe.torch_cuda_build -ne $ExpectedTorchCudaBuild) {
+    $actualCudaBuild = [string]$probe.torch_cuda_build
+    if ($actualCudaBuild -ne $ExpectedTorchCudaBuild) {
         Write-Host "[prepare-sidecar] Existing Python env uses torch CUDA build '$($probe.torch_cuda_build)' but expected '$ExpectedTorchCudaBuild'. Rebuilding."
         return $false
     }

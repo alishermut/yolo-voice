@@ -12,6 +12,7 @@ import {
   getModelStatus,
   onModelDownloadProgress,
   onModelStatus,
+  onDistilWhisperProgress,
   onDistilWhisperStatus,
   openDistilWhisperModelPage,
   prepareDistilWhisperModel,
@@ -42,6 +43,7 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
   const [distilBusy, setDistilBusy] =
     useState<"download" | "prepare" | "reload" | "delete" | "open" | null>(null);
   const [distilError, setDistilError] = useState<string | null>(null);
+  const [distilProgressMessage, setDistilProgressMessage] = useState<string>("");
 
   const selectedEngine =
     config.offline_engine === "distil_whisper" ? "distil_whisper" : "parakeet";
@@ -160,14 +162,20 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
         setDistilBusy("prepare");
       } else {
         setDistilBusy((current) => (current === "prepare" ? null : current));
+        setDistilProgressMessage("");
         refreshDistilStatus().catch(() => {});
       }
+    });
+
+    const unlistenDistilProgress = onDistilWhisperProgress((message) => {
+      setDistilProgressMessage(message);
     });
 
     return () => {
       unlisten.then((fn) => fn());
       unlistenProgress.then((fn) => fn());
       unlistenDistil.then((fn) => fn());
+      unlistenDistilProgress.then((fn) => fn());
     };
   }, [t]);
 
@@ -616,21 +624,22 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
 
               {distilBusy && distilBusy !== "reload" && (
                 <div className="text-xs text-accent bg-accent-muted border border-accent/30 rounded-lg px-3 py-2">
-                  {distilBusy === "download"
-                    ? t("transcription.offline.distilDownloading", {
-                        defaultValue: "Downloading Distil-Whisper...",
-                      })
-                    : distilBusy === "prepare"
-                      ? t("transcription.offline.distilPreparing", {
-                          defaultValue: "Preparing Distil-Whisper...",
+                  {distilProgressMessage ||
+                    (distilBusy === "download"
+                      ? t("transcription.offline.distilDownloading", {
+                          defaultValue: "Downloading Distil-Whisper...",
                         })
-                      : distilBusy === "delete"
-                        ? t("transcription.offline.distilDeleting", {
-                            defaultValue: "Removing Distil-Whisper...",
+                      : distilBusy === "prepare"
+                        ? t("transcription.offline.distilPreparing", {
+                            defaultValue: "Preparing Distil-Whisper...",
                           })
-                        : t("transcription.offline.distilOpening", {
-                            defaultValue: "Opening model page...",
-                          })}
+                        : distilBusy === "delete"
+                          ? t("transcription.offline.distilDeleting", {
+                              defaultValue: "Removing Distil-Whisper...",
+                            })
+                          : t("transcription.offline.distilOpening", {
+                              defaultValue: "Opening model page...",
+                            }))}
                 </div>
               )}
             </>

@@ -87,8 +87,12 @@ def detect_device(preference: str = "auto") -> str:
             log("torch reports CUDA is available; selecting cuda:0")
             return "cuda:0"
         if preference == "gpu":
-            log("GPU preference requested, but CUDA is unavailable. Falling back to CPU.")
+            raise RuntimeError(
+                "GPU preference requested, but CUDA is unavailable in the active Distil-Whisper runtime."
+            )
     except Exception as exc:
+        if preference == "gpu":
+            raise
         log(f"CUDA detection failed: {exc}")
     log("Using CPU for Distil-Whisper")
     return "cpu"

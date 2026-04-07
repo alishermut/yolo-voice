@@ -79,9 +79,9 @@ jobs:
           Write-Host "Verified bundled Distil-Whisper sidecar script: $scriptPath"
           Write-Host "Verified bundled Distil-Whisper python.exe: $pythonPath"
 
-          & $pythonPath -c "import torch, transformers; print(torch.__version__); print(torch.version.cuda); print(transformers.__version__); assert torch.version.cuda is not None, 'expected CUDA-enabled torch build'"
+          & $pythonPath -c "import torch, transformers; print(torch.__version__); print(torch.version.cuda); print(transformers.__version__); assert torch.version.cuda is None, 'expected CPU-only bundled torch build'"
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "::error::Bundled Distil-Whisper python.exe is missing torch/transformers or does not use a CUDA-enabled torch build."
+            Write-Host "::error::Bundled Distil-Whisper python.exe is missing torch/transformers or is not the expected CPU-only base runtime."
             exit 1
           }
 
