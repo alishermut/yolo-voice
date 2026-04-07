@@ -178,7 +178,12 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
 
     refreshDistilStatus().catch(() => {});
 
-    if (!distilStatus?.downloaded || distilStatus.ready || distilBusy) {
+    if (
+      !distilStatus?.downloaded ||
+      distilStatus.ready ||
+      distilBusy ||
+      distilStatus.status === "error"
+    ) {
       return;
     }
 
@@ -197,7 +202,11 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
     if (selectedEngine !== "distil_whisper") {
       return;
     }
-    if (!distilStatus?.downloaded || distilStatus.ready) {
+    if (
+      !distilStatus?.downloaded ||
+      distilStatus.ready ||
+      distilStatus.status === "error"
+    ) {
       return;
     }
 
@@ -263,10 +272,10 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
       ? "bg-success"
       : distilStatus?.status === "preparing"
         ? "bg-accent"
-      : distilStatus?.downloaded
-        ? "bg-warning"
-        : distilStatus?.status === "error"
+      : distilStatus?.status === "error"
           ? "bg-error"
+        : distilStatus?.downloaded
+          ? "bg-warning"
           : "bg-text-muted";
 
   const offlineOptions = [

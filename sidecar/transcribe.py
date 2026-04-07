@@ -21,12 +21,38 @@ def respond(data: dict) -> None:
     print(json.dumps(data), flush=True)
 
 
+def log_runtime_details() -> None:
+    log(f"Python executable: {sys.executable}")
+    log(f"Python version: {sys.version.split()[0]}")
+    log(f"Working directory: {os.getcwd()}")
+
+    try:
+        import ctranslate2
+
+        log(f"ctranslate2 version: {ctranslate2.__version__}")
+    except Exception as exc:
+        log(f"Failed to read ctranslate2 version: {exc}")
+
+    try:
+        import torch
+
+        log(
+            "torch runtime: "
+            f"version={getattr(torch, '__version__', 'unknown')} "
+            f"cuda_build={getattr(torch.version, 'cuda', None)} "
+            f"cuda_available={torch.cuda.is_available()}"
+        )
+    except Exception as exc:
+        log(f"torch import unavailable during startup: {exc}")
+
+
 # ---------------------------------------------------------------------------
 # GPU detection
 # ---------------------------------------------------------------------------
 
 def detect_gpu() -> bool:
     """Check if CUDA is actually usable for inference."""
+    log("Starting GPU detection for faster-whisper sidecar")
     try:
         import ctranslate2
         # Step 1: Check if ctranslate2 reports CUDA compute types
@@ -41,7 +67,8 @@ def detect_gpu() -> bool:
         try:
             import numpy as np
             storage = ctranslate2.StorageView.from_array(np.zeros((2, 2), dtype=np.float32))
-            cuda_storage = storage.to("cuda")
+            log("Verifying CUDA by moving a small tensor with ctranslate2")
+            cuda_storage = storage.to_device(ctranslate2.Device.cuda)
             log("CUDA verification: successfully moved tensor to GPU")
             return True
         except Exception as e:
@@ -53,11 +80,15 @@ def detect_gpu() -> bool:
 
     try:
         import torch
-        return torch.cuda.is_available()
-    except Exception:
+        available = torch.cuda.is_available()
+        log(f"Fallback torch.cuda.is_available() => {available}")
+        return available
+    except Exception as exc:
+        log(f"Fallback torch CUDA probe failed: {exc}")
         return False
 
 
+log_runtime_details()
 GPU_AVAILABLE = detect_gpu()
 log(f"GPU available: {GPU_AVAILABLE}")
 
@@ -74,6 +105,7 @@ _model_name = None
 # ---------------------------------------------------------------------------
 
 def handle_ping(_req: dict) -> None:
+    log("Received ping request")
     respond({"status": "ok", "cmd": "ping", "gpu_available": GPU_AVAILABLE})
 
 
@@ -84,10 +116,16 @@ def handle_load_model(req: dict) -> None:
     device = req.get("device", "auto")
     compute_type = req.get("compute_type", "float16")
     models_dir = req.get("models_dir")
+    log(
+        "handle_load_model request: "
+        f"model={model_size} requested_device={device} requested_compute_type={compute_type} "
+        f"models_dir={models_dir}"
+    )
 
     # Resolve device
     if device == "auto":
         device = "cuda" if GPU_AVAILABLE else "cpu"
+        log(f"Auto device resolved to {device}")
     if device == "cuda" and not GPU_AVAILABLE:
         device = "cpu"
         log("CUDA requested but not available, falling back to CPU")
@@ -105,6 +143,7 @@ def handle_load_model(req: dict) -> None:
             "device": device,
             "compute_type": compute_type,
         }
+        log(f"WhisperModel kwargs: {kwargs}")
 
         # Try to use the direct model path first (bundled with installer).
         # This avoids HuggingFace cache lookup which uses a different directory
@@ -123,6 +162,7 @@ def handle_load_model(req: dict) -> None:
                 kwargs["download_root"] = models_dir
                 log(f"Bundled model not found at {direct_path}, using download_root fallback")
 
+        log(f"Resolved model identifier: {model_id}")
         _model = WhisperModel(model_id, **kwargs)
         _model_name = model_size
         log(f"Model '{model_size}' loaded successfully")

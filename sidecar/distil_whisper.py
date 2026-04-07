@@ -41,19 +41,56 @@ def respond(payload: dict) -> None:
     print(json.dumps(payload), flush=True)
 
 
+def log_runtime_details() -> None:
+    log(f"Python executable: {sys.executable}")
+    log(f"Python version: {sys.version.split()[0]}")
+    log(f"Working directory: {os.getcwd()}")
+
+    try:
+        import torch
+
+        log(
+            "torch runtime: "
+            f"version={getattr(torch, '__version__', 'unknown')} "
+            f"cuda_build={getattr(torch.version, 'cuda', None)} "
+            f"cuda_available={torch.cuda.is_available()}"
+        )
+        if torch.cuda.is_available():
+            try:
+                device_count = torch.cuda.device_count()
+                log(f"CUDA device count: {device_count}")
+                for index in range(device_count):
+                    log(f"CUDA device[{index}]: {torch.cuda.get_device_name(index)}")
+            except Exception as exc:
+                log(f"Failed to enumerate CUDA device details: {exc}")
+    except Exception as exc:
+        log(f"torch import unavailable during startup: {exc}")
+
+    try:
+        import transformers
+
+        log(f"transformers version: {transformers.__version__}")
+    except Exception as exc:
+        log(f"transformers import unavailable during startup: {exc}")
+
+
 def detect_device(preference: str = "auto") -> str:
+    log(f"Detecting Distil-Whisper device for preference='{preference}'")
     if preference == "cpu":
+        log("Preference forced CPU")
         return "cpu"
 
     try:
         import torch
 
         if torch.cuda.is_available():
+            log("torch reports CUDA is available; selecting cuda:0")
             return "cuda:0"
         if preference == "gpu":
             log("GPU preference requested, but CUDA is unavailable. Falling back to CPU.")
     except Exception as exc:
         log(f"CUDA detection failed: {exc}")
+    log("Using CPU for Distil-Whisper")
     return "cpu"
 
 
@@ -69,6 +106,11 @@ def ensure_loaded(model_source: str, device_preference: str = "auto") -> None:
     _device = detect_device(device_preference)
     _torch_dtype = torch.float16 if _device.startswith("cuda") else torch.float32
     pipeline_device = 0 if _device.startswith("cuda") else -1
+    log(
+        "Preparing Distil-Whisper load: "
+        f"preference={device_preference} resolved_device={_device} "
+        f"torch_dtype={_torch_dtype} pipeline_device={pipeline_device}"
+    )
 
     log(f"Loading Distil-Whisper from {model_source} on {_device}")
     _pipe = pipeline(
@@ -192,6 +234,7 @@ def handle_download_model(req: dict) -> None:
         respond({"status": "error", "cmd": "download_model", "message": "Missing target_dir"})
         return
 
+    log(f"Received download_model request: target_dir={target_dir}")
     try:
         payload = download_model(target_dir)
         payload.update({"status": "ok", "cmd": "download_model", "model_id": DISTIL_WHISPER_REPO})
@@ -207,6 +250,10 @@ def handle_load_model(req: dict) -> None:
         respond({"status": "error", "cmd": "load_model", "message": "Missing model_source"})
         return
 
+    log(
+        "Received load_model request: "
+        f"model_source={model_source} device_preference={req.get('device_preference', 'auto')}"
+    )
     try:
         ensure_loaded(model_source, req.get("device_preference", "auto"))
         respond(
@@ -237,6 +284,7 @@ def handle_transcribe_audio(req: dict) -> None:
 
 
 def main() -> int:
+    log_runtime_details()
     for line in sys.stdin:
         line = line.strip()
         if not line:

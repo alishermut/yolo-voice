@@ -98,6 +98,8 @@ impl DistilWhisperManager {
                 "ready".to_string()
             } else if preparing {
                 "preparing".to_string()
+            } else if self.last_error.is_some() {
+                "error".to_string()
             } else if downloaded {
                 "downloaded".to_string()
             } else {
@@ -209,6 +211,11 @@ impl DistilWhisperManager {
             !proc.loaded
         };
         if needs_load {
+            eprintln!(
+                "[distil-whisper] Requesting load_model with model_dir={} preference={}",
+                model_dir.display(),
+                device_preference
+            );
             let response = {
                 let proc = self.ensure_process(app)?;
                 proc.send_request(json!({
@@ -232,6 +239,7 @@ impl DistilWhisperManager {
                 .and_then(Value::as_str)
                 .unwrap_or("unknown")
                 .to_string();
+            self.last_error = None;
         }
         self.ensure_process(app)
     }
@@ -409,7 +417,12 @@ fn distil_whisper_model_downloaded(app: &AppHandle) -> bool {
 
 fn resolve_launcher(app: &AppHandle) -> Result<Launcher, String> {
     let script_path = resolve_sidecar_script(app)?;
-    let python = resolve_python_command(app);
+    let python = resolve_python_command(app)?;
+    eprintln!(
+        "[distil-whisper] Resolved launcher python={} script={}",
+        python.2,
+        script_path.display()
+    );
     Ok(Launcher {
         program: python.0,
         prefix_args: python.1,
@@ -423,6 +436,7 @@ fn resolve_sidecar_script(app: &AppHandle) -> Result<PathBuf, String> {
         [
             root.join("sidecar").join("distil_whisper.py"),
             root.join("distil_whisper.py"),
+            root.join("_up_").join("sidecar").join("distil_whisper.py"),
         ]
     }) {
         if candidate.is_file() {
@@ -436,30 +450,59 @@ fn resolve_sidecar_script(app: &AppHandle) -> Result<PathBuf, String> {
     )
 }
 
-fn resolve_python_command(app: &AppHandle) -> (String, Vec<String>, String) {
+fn resolve_python_command(app: &AppHandle) -> Result<(String, Vec<String>, String), String> {
     if let Ok(path) = std::env::var("YOLO_VOICE_PYTHON") {
-        return (path.clone(), Vec::new(), path);
+        return Ok((path.clone(), Vec::new(), path));
     }
 
     for root in candidate_roots(app) {
         let bundled = root.join("sidecar").join("python-env").join("python.exe");
         if bundled.is_file() {
             let display = bundled.display().to_string();
-            return (display.clone(), Vec::new(), display);
+            return Ok((display.clone(), Vec::new(), display));
         }
 
         let flat = root.join("python-env").join("python.exe");
         if flat.is_file() {
             let display = flat.display().to_string();
-            return (display.clone(), Vec::new(), display);
+            return Ok((display.clone(), Vec::new(), display));
+        }
+
+        let updater_bundled = root
+            .join("_up_")
+            .join("sidecar")
+            .join("python-env")
+            .join("python.exe");
+        if updater_bundled.is_file() {
+            let display = updater_bundled.display().to_string();
+            return Ok((display.clone(), Vec::new(), display));
         }
     }
 
-    (
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let bundled_script_present = [
+            resource_dir.join("sidecar").join("distil_whisper.py"),
+            resource_dir.join("distil_whisper.py"),
+            resource_dir.join("_up_").join("sidecar").join("distil_whisper.py"),
+            resource_dir.join("resources").join("sidecar").join("distil_whisper.py"),
+            resource_dir.join("resources").join("distil_whisper.py"),
+        ]
+        .into_iter()
+        .any(|path| path.is_file());
+
+        if bundled_script_present {
+            return Err(format!(
+                "Bundled Distil-Whisper Python runtime not found near {}. The packaged app is missing sidecar/python-env.",
+                resource_dir.display()
+            ));
+        }
+    }
+
+    Ok((
         DISTIL_WHISPER_SYSTEM_PYTHON.to_string(),
         Vec::new(),
         DISTIL_WHISPER_SYSTEM_PYTHON.to_string(),
-    )
+    ))
 }
 
 fn candidate_roots(app: &AppHandle) -> Vec<PathBuf> {

@@ -21,6 +21,7 @@ $GetPipUrl     = "https://bootstrap.pypa.io/get-pip.py"
 $PythonZipSha256 = "8D3F33BE9EB810F23C102F08475AF2854E50484B8E4E06275E937BE61CE3D2FB"
 $GetPipSha256    = "FEBA1C697DF45BE1B539B40D93C102C9EE9DDE1D966303323B830B06F3FBCA3C"
 $TinyWhisperRevision = "d90ca5fe260221311c53c58e660288d3deb8d356"
+$ExpectedTorchCudaBuild = "12.8"
 
 function Assert-Sha256 {
     param(
@@ -36,8 +37,63 @@ function Assert-Sha256 {
     }
 }
 
+function Test-SidecarPythonEnv {
+    param(
+        [Parameter(Mandatory = $true)][string]$PythonExe
+    )
+
+    if (!(Test-Path $PythonExe)) {
+        return $false
+    }
+
+    $probeJson = @'
+import json
+
+try:
+    import torch
+    import transformers
+    payload = {
+        "ok": True,
+        "torch_version": getattr(torch, "__version__", ""),
+        "torch_cuda_build": getattr(getattr(torch, "version", None), "cuda", None),
+        "transformers_version": getattr(transformers, "__version__", ""),
+    }
+except Exception as exc:
+    payload = {
+        "ok": False,
+        "error": str(exc),
+    }
+
+print(json.dumps(payload))
+'@ | & $PythonExe - 2>$null
+
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($probeJson)) {
+        return $false
+    }
+
+    try {
+        $probe = $probeJson | ConvertFrom-Json
+    }
+    catch {
+        return $false
+    }
+
+    if (-not $probe.ok) {
+        Write-Host "[prepare-sidecar] Existing Python env is invalid: $($probe.error)"
+        return $false
+    }
+
+    if ($probe.torch_cuda_build -ne $ExpectedTorchCudaBuild) {
+        Write-Host "[prepare-sidecar] Existing Python env uses torch CUDA build '$($probe.torch_cuda_build)' but expected '$ExpectedTorchCudaBuild'. Rebuilding."
+        return $false
+    }
+
+    Write-Host "[prepare-sidecar] Existing Python env is valid: torch $($probe.torch_version), CUDA build $($probe.torch_cuda_build), transformers $($probe.transformers_version)"
+    return $true
+}
+
 # ── Guard: skip if already built ──────────────────────────────────────────────
-if (Test-Path (Join-Path $PythonEnvDir "python.exe")) {
+if (Test-SidecarPythonEnv -PythonExe (Join-Path $PythonEnvDir "python.exe")) {
     Write-Host "[prepare-sidecar] Python environment already exists at $PythonEnvDir - skipping."
     Write-Host "[prepare-sidecar] Delete sidecar/python-env/ to force a rebuild."
     exit 0
@@ -77,7 +133,7 @@ Invoke-WebRequest -Uri $GetPipUrl -OutFile $getPipPath -UseBasicParsing
 Assert-Sha256 -Path $getPipPath -Expected $GetPipSha256 -Label "get-pip.py"
 
 $pythonExe = Join-Path $PythonEnvDir "python.exe"
-& $pythonExe $getPipPath --no-warn-script-location 2>&1 | Out-Host
+& $pythonExe $getPipPath --no-warn-script-location
 if ($LASTEXITCODE -ne 0) { throw "get-pip.py failed with exit code $LASTEXITCODE" }
 
 # ── Step 4: Install dependencies ─────────────────────────────────────────────
@@ -85,7 +141,7 @@ Write-Host "[prepare-sidecar] Step 4/5: Installing Python dependencies..."
 $requirementsPath = Join-Path $SidecarDir "requirements.txt"
 $wheelhouseDir = Join-Path $TempDir "wheelhouse"
 New-Item -ItemType Directory -Path $wheelhouseDir -Force | Out-Null
-& $pythonExe -m pip download --dest $wheelhouseDir --only-binary :all: -r $requirementsPath --disable-pip-version-check 2>&1 | Out-Host
+& $pythonExe -m pip download --dest $wheelhouseDir --only-binary :all: -r $requirementsPath --disable-pip-version-check
 if ($LASTEXITCODE -ne 0) { throw "pip download failed with exit code $LASTEXITCODE" }
 
 $hashedRequirementsPath = Join-Path $wheelhouseDir "requirements-hashed.txt"
@@ -97,8 +153,14 @@ $hashedLines = Get-ChildItem -Path $wheelhouseDir -File |
     }
 Set-Content -Path $hashedRequirementsPath -Value $hashedLines
 
-& $pythonExe -m pip install --no-index --find-links $wheelhouseDir --require-hashes -r $hashedRequirementsPath --no-warn-script-location --disable-pip-version-check 2>&1 | Out-Host
-if ($LASTEXITCODE -ne 0) { throw "pip install failed with exit code $LASTEXITCODE" }
+Push-Location $wheelhouseDir
+try {
+    & $pythonExe -m pip install --no-index --find-links . --require-hashes -r ".\requirements-hashed.txt" --no-warn-script-location --disable-pip-version-check
+    if ($LASTEXITCODE -ne 0) { throw "pip install failed with exit code $LASTEXITCODE" }
+}
+finally {
+    Pop-Location
+}
 
 # ── Step 5: Download tiny whisper model ───────────────────────────────────────
 Write-Host "[prepare-sidecar] Step 5/5: Downloading tiny whisper model..."
@@ -107,14 +169,16 @@ $modelDir = Join-Path $ModelsDir "faster-whisper-tiny"
 
 if (!(Test-Path $modelDir)) {
     & $pythonExe -c @"
+import os
 from huggingface_hub import snapshot_download
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 snapshot_download(
     'Systran/faster-whisper-tiny',
     revision='$TinyWhisperRevision',
     local_dir=r'$modelDir',
 )
 print('Model downloaded successfully')
-"@ 2>&1 | Out-Host
+"@
     if ($LASTEXITCODE -ne 0) { throw "Model download failed with exit code $LASTEXITCODE" }
 } else {
     Write-Host "[prepare-sidecar]   Model already exists, skipping download."
@@ -125,7 +189,7 @@ Write-Host "[prepare-sidecar] Cleaning up temp files and pip cache..."
 Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue
 
 # Clear pip cache to reduce size
-& $pythonExe -m pip cache purge 2>&1 | Out-Null
+& $pythonExe -m pip cache purge | Out-Null
 
 # Remove unnecessary files to shrink bundle
 $removePatterns = @("__pycache__", "*.dist-info", "tests", "test")

@@ -37,16 +37,11 @@ jobs:
           path: |
             sidecar/python-env
             sidecar/models
-          key: sidecar-${{ hashFiles('sidecar/requirements.txt') }}
+          key: sidecar-${{ hashFiles('sidecar/requirements.txt', 'scripts/prepare-sidecar.ps1') }}
 
       - name: Prepare Python sidecar environment
         shell: pwsh
-        run: |
-          if (!(Test-Path "sidecar/python-env/python.exe")) {
-            .\scripts\prepare-sidecar.ps1
-          } else {
-            Write-Host "Python sidecar environment already cached, skipping."
-          }
+        run: .\scripts\prepare-sidecar.ps1
 
       - name: Build Tauri app
         shell: pwsh
@@ -55,21 +50,40 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build
 
-      - name: Verify bundled updater resources
+      - name: Verify bundled Distil sidecar resources
         shell: pwsh
         run: |
-          $candidates = @(
-            "src-tauri/target/release/resources/distil_whisper.py",
-            "src-tauri/target/release/resources/resources/distil_whisper.py",
+          $scriptCandidates = @(
+            "src-tauri/target/release/resources/sidecar/distil_whisper.py",
+            "src-tauri/target/release/resources/resources/sidecar/distil_whisper.py",
             "src-tauri/target/release/_up_/sidecar/distil_whisper.py"
           )
-          $found = $candidates | Where-Object { Test-Path $_ }
-          if (!$found) {
-            Write-Host "::error::distil_whisper.py was not found in any bundled release artifact location."
+          $pythonCandidates = @(
+            "src-tauri/target/release/resources/sidecar/python-env/python.exe",
+            "src-tauri/target/release/resources/resources/sidecar/python-env/python.exe",
+            "src-tauri/target/release/_up_/sidecar/python-env/python.exe"
+          )
+
+          $scriptPath = $scriptCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (!$scriptPath) {
+            Write-Host "::error::Distil-Whisper sidecar script was not found in any bundled release artifact location."
             exit 1
           }
-          Write-Host "Verified distil_whisper.py in:"
-          $found | ForEach-Object { Write-Host "  $_" }
+
+          $pythonPath = $pythonCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (!$pythonPath) {
+            Write-Host "::error::Bundled Distil-Whisper python.exe was not found in any bundled release artifact location."
+            exit 1
+          }
+
+          Write-Host "Verified bundled Distil-Whisper sidecar script: $scriptPath"
+          Write-Host "Verified bundled Distil-Whisper python.exe: $pythonPath"
+
+          & $pythonPath -c "import torch, transformers; print(torch.__version__); print(torch.version.cuda); print(transformers.__version__); assert torch.version.cuda is not None, 'expected CUDA-enabled torch build'"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Bundled Distil-Whisper python.exe is missing torch/transformers or does not use a CUDA-enabled torch build."
+            exit 1
+          }
 
       - name: Publish GitHub release
         shell: pwsh

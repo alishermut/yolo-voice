@@ -1,6 +1,6 @@
 [package]
 name = "yolo-voice"
-version = "1.0.0"
+version = "1.0.1"
 description = "Offline voice dictation app"
 authors = ["Alish Ermo Talif"]
 edition = "2021"
