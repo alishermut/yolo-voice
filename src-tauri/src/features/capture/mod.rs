@@ -10,7 +10,8 @@ use tauri::{AppHandle, Listener, Manager};
 
 use crate::app::events::emit_all;
 use crate::features::diagnostics::{
-    current_timestamp_ms, TranscriptDiagnosticsState, TranscriptSample,
+    current_timestamp_ms, maybe_log_support_event, DistilWhisperDiagnosticsEvent,
+    ParakeetDiagnosticsEvent, TranscriptDiagnosticsState, TranscriptSample,
 };
 use crate::features::output::{self, FocusedWindowState};
 use crate::features::settings::ConfigState;
@@ -112,6 +113,19 @@ pub fn setup_hotkey_handler(app: &AppHandle) {
             }
         };
 
+        maybe_log_support_event(
+            &app_handle,
+            "capture",
+            "hotkey_action",
+            format!("Received hotkey action '{action}'"),
+            serde_json::json!({
+                "action": action,
+                "offline_engine": config.offline_engine,
+                "transcription_mode": config.transcription_mode,
+                "continuous_recording_enabled": config.continuous_recording_enabled,
+            }),
+        );
+
         match action {
             "start" => handle_start(&app_handle, &config),
             "stop" => handle_stop(&app_handle, &config),
@@ -122,6 +136,20 @@ pub fn setup_hotkey_handler(app: &AppHandle) {
 }
 
 fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) {
+    maybe_log_support_event(
+        app,
+        "capture",
+        "recording_start_requested",
+        "Starting dictation recording",
+        serde_json::json!({
+            "pipeline_mode": "dictation",
+            "device_index": config.device_index,
+            "offline_engine": config.offline_engine,
+            "transcription_mode": config.transcription_mode,
+            "parakeet_segmented_mode_enabled": config.parakeet_segmented_mode_enabled,
+        }),
+    );
+
     // Capture the foreground window before recording
     let hwnd = output::capture_foreground_window();
     if let Ok(mut g) = app.state::<FocusedWindowState>().0.lock() {
@@ -146,29 +174,29 @@ fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) 
         && config.offline_engine == "parakeet"
         && config.parakeet_segmented_mode_enabled
     {
-            let inference_state = app.state::<InferenceState>();
-            let inference_ready = inference_state
-                .0
-                .lock()
-                .map(|g| g.is_some())
-                .unwrap_or(false);
+        let inference_state = app.state::<InferenceState>();
+        let inference_ready = inference_state
+            .0
+            .lock()
+            .map(|g| g.is_some())
+            .unwrap_or(false);
 
-            if inference_ready {
-                match resolve_vad_model_path(app) {
-                    Ok(model_path) => Some(VadConfig {
-                        silence_threshold_ms: config.vad_silence_threshold_ms,
-                        model_path,
-                        text_cleanup_enabled: config.text_cleanup_enabled,
-                    }),
-                    Err(e) => {
-                        eprintln!("[capture] VAD model not found, falling back to non-VAD: {e}");
-                        None
-                    }
+        if inference_ready {
+            match resolve_vad_model_path(app) {
+                Ok(model_path) => Some(VadConfig {
+                    silence_threshold_ms: config.vad_silence_threshold_ms,
+                    model_path,
+                    text_cleanup_enabled: config.text_cleanup_enabled,
+                }),
+                Err(e) => {
+                    eprintln!("[capture] VAD model not found, falling back to non-VAD: {e}");
+                    None
                 }
-            } else {
-                eprintln!("[capture] Inference not ready, falling back to non-VAD");
-                None
             }
+        } else {
+            eprintln!("[capture] Inference not ready, falling back to non-VAD");
+            None
+        }
     } else {
         None
     };
@@ -199,6 +227,19 @@ fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) 
         Ok(stream) => {
             *guard = Some(stream);
             set_hotkey_recording_mode(app, HotkeyRecordingMode::Dictation);
+            maybe_log_support_event(
+                app,
+                "capture",
+                "recording_start_success",
+                "Dictation recording started",
+                serde_json::json!({
+                    "pipeline_mode": "dictation",
+                    "device_index": config.device_index,
+                    "vad_enabled": config.transcription_mode == "offline"
+                        && config.offline_engine == "parakeet"
+                        && config.parakeet_segmented_mode_enabled,
+                }),
+            );
             if config.sounds_enabled {
                 output::play_start_sound(&config.start_sound);
             }
@@ -254,6 +295,17 @@ fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) 
                     },
                 );
             }
+            maybe_log_support_event(
+                app,
+                "capture",
+                "recording_start_error",
+                "Failed to start dictation recording",
+                serde_json::json!({
+                    "pipeline_mode": "dictation",
+                    "device_index": config.device_index,
+                    "error": e,
+                }),
+            );
             set_hotkey_recording_mode(app, HotkeyRecordingMode::None);
             reset_hotkey_runtime(app);
             emit_all(app, "recording-state", "idle");
@@ -266,6 +318,18 @@ fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) 
 }
 
 fn handle_stop(app: &AppHandle, config: &crate::features::settings::AppConfig) {
+    maybe_log_support_event(
+        app,
+        "capture",
+        "recording_stop_requested",
+        "Stopping dictation recording",
+        serde_json::json!({
+            "pipeline_mode": "dictation",
+            "offline_engine": config.offline_engine,
+            "transcription_mode": config.transcription_mode,
+        }),
+    );
+
     // Break continuous recording cycle — user explicitly pressed stop
     app.state::<ContinuousGeneration>()
         .0
@@ -323,6 +387,19 @@ fn handle_stop(app: &AppHandle, config: &crate::features::settings::AppConfig) {
             std::thread::spawn(move || match recorder::stop_vad_recording(stream) {
                 Ok(recording) => {
                     let stop_elapsed = stop_started.elapsed();
+                    maybe_log_support_event(
+                        &app,
+                        "capture",
+                        "vad_finalize_success",
+                        "Completed VAD dictation finalize",
+                        serde_json::json!({
+                            "pipeline_mode": "dictation",
+                            "utterance_duration_ms": recording.utterance_duration_ms,
+                            "raw_segment_count": recording.transcript.raw_segments.len(),
+                            "joined_text_len": recording.transcript.joined_text.len(),
+                            "stop_ms": stop_elapsed.as_millis() as u64,
+                        }),
+                    );
                     let runtime_dict = resolve_runtime_dictionary(&app, &config);
                     let preview_analysis =
                         language::analyze_preview_segments(&recording.transcript.raw_segments);
@@ -338,7 +415,9 @@ fn handle_stop(app: &AppHandle, config: &crate::features::settings::AppConfig) {
                                 utterance_id: None,
                                 utterance_duration_ms: Some(recording.utterance_duration_ms),
                                 preview_segment_count: Some(preview_segment_count as u32),
-                                raw_segment_count: Some(recording.transcript.raw_segments.len() as u32),
+                                raw_segment_count: Some(
+                                    recording.transcript.raw_segments.len() as u32
+                                ),
                                 gpu_available: Some(speech::get_gpu_available(
                                     &app.state::<InferenceState>(),
                                 )),
@@ -376,6 +455,16 @@ fn handle_stop(app: &AppHandle, config: &crate::features::settings::AppConfig) {
                 }
                 Err(e) => {
                     eprintln!("VAD recording stop failed: {}", e);
+                    maybe_log_support_event(
+                        &app,
+                        "capture",
+                        "vad_finalize_error",
+                        "Failed to finalize VAD dictation recording",
+                        serde_json::json!({
+                            "pipeline_mode": "dictation",
+                            "error": e,
+                        }),
+                    );
                     if config.transcription_mode == "offline" && config.offline_engine == "parakeet"
                     {
                         log_parakeet_event(
@@ -413,8 +502,10 @@ fn handle_stop(app: &AppHandle, config: &crate::features::settings::AppConfig) {
                 recorder::stop_and_save(stream)
                     .map(|path| AudioData::WavFile(path.to_string_lossy().to_string()))
             } else if use_distil_offline {
-                let diagnostics_utterance_id =
-                    app.state::<TranscriptDiagnosticsState>().0.next_utterance_id();
+                let diagnostics_utterance_id = app
+                    .state::<TranscriptDiagnosticsState>()
+                    .0
+                    .next_utterance_id();
                 recorder::stop_and_get_raw_samples(stream).map(|(samples, rate, channels)| {
                     AudioData::DistilWhisperSamples {
                         samples,
@@ -435,6 +526,43 @@ fn handle_stop(app: &AppHandle, config: &crate::features::settings::AppConfig) {
 
             match audio_result {
                 Ok(audio_data) => {
+                    let audio_details = match &audio_data {
+                        AudioData::WavFile(path) => serde_json::json!({
+                            "pipeline_mode": "dictation",
+                            "audio_kind": "wav_file",
+                            "path": path,
+                        }),
+                        AudioData::DistilWhisperSamples {
+                            samples,
+                            sample_rate,
+                            channels,
+                            ..
+                        } => serde_json::json!({
+                            "pipeline_mode": "dictation",
+                            "audio_kind": "distil_samples",
+                            "sample_count": samples.len(),
+                            "sample_rate": sample_rate,
+                            "channels": channels,
+                        }),
+                        AudioData::RawSamples {
+                            samples,
+                            sample_rate,
+                            channels,
+                        } => serde_json::json!({
+                            "pipeline_mode": "dictation",
+                            "audio_kind": "raw_samples",
+                            "sample_count": samples.len(),
+                            "sample_rate": sample_rate,
+                            "channels": channels,
+                        }),
+                    };
+                    maybe_log_support_event(
+                        app,
+                        "capture",
+                        "recording_capture_success",
+                        "Captured dictation audio successfully",
+                        audio_details,
+                    );
                     emit_all(app, "recording-state", "transcribing");
 
                     let hwnd = app
@@ -462,6 +590,16 @@ fn handle_stop(app: &AppHandle, config: &crate::features::settings::AppConfig) {
                 }
                 Err(e) => {
                     eprintln!("Failed to capture recording: {}", e);
+                    maybe_log_support_event(
+                        app,
+                        "capture",
+                        "recording_capture_error",
+                        "Failed to capture dictation audio",
+                        serde_json::json!({
+                            "pipeline_mode": "dictation",
+                            "error": e,
+                        }),
+                    );
                     if use_distil_offline {
                         log_distil_whisper_event(
                             app,
@@ -646,6 +784,17 @@ fn finalize_and_insert(
 
     if transcript.raw_segments.is_empty() && transcript.joined_text.trim().is_empty() {
         eprintln!("[capture] Transcription produced empty text");
+        maybe_log_support_event(
+            app,
+            "capture",
+            "finalize_empty",
+            "Transcription finalized with empty text",
+            serde_json::json!({
+                "pipeline_mode": "dictation",
+                "stt_provider": transcript.stt_provider,
+                "utterance_duration_ms": transcript.utterance_duration_ms,
+            }),
+        );
         if config.sounds_enabled {
             output::play_done_sound(&config.stop_sound);
         }
@@ -768,13 +917,72 @@ fn finalize_and_insert(
             // Target is our own app — emit event so the frontend can insert into the focused input
             emit_all(app, "self-insert-text", text_to_insert.to_string());
             insert_success = true;
-        } else if let Err(e) = output::insert_text(text_to_insert, hwnd) {
-            eprintln!("Text insertion error: {}", e);
-            emit_all(app, "transcription-error", e);
+            maybe_log_support_event(
+                app,
+                "capture",
+                "insert_success",
+                "Inserted dictated text into the app window",
+                serde_json::json!({
+                    "pipeline_mode": "dictation",
+                    "stt_provider": transcript.stt_provider,
+                    "final_text_len": final_text.len(),
+                    "insert_target": "self_window",
+                }),
+            );
         } else {
-            insert_success = true;
+            match output::insert_text(text_to_insert, hwnd) {
+                Ok(report) => {
+                    insert_success = true;
+                    maybe_log_support_event(
+                        app,
+                        "capture",
+                        "insert_success",
+                        "Inserted dictated text",
+                        serde_json::json!({
+                            "pipeline_mode": "dictation",
+                            "stt_provider": transcript.stt_provider,
+                            "final_text_len": final_text.len(),
+                            "insert_target": "focused_window",
+                            "output_report": report,
+                        }),
+                    );
+                }
+                Err(error) => {
+                    eprintln!("Text insertion error: {}", error);
+                    maybe_log_support_event(
+                        app,
+                        "capture",
+                        "insert_error",
+                        "Failed to insert dictated text",
+                        serde_json::json!({
+                            "pipeline_mode": "dictation",
+                            "stt_provider": transcript.stt_provider,
+                            "final_text_len": final_text.len(),
+                            "error": error.to_string(),
+                            "output_report": error.report,
+                        }),
+                    );
+                    emit_all(app, "transcription-error", error.to_string());
+                }
+            }
         }
     }
+
+    maybe_log_support_event(
+        app,
+        "capture",
+        "finalize_complete",
+        "Completed dictation finalize pipeline",
+        serde_json::json!({
+            "pipeline_mode": "dictation",
+            "stt_provider": transcript.stt_provider,
+            "joined_text_len": transcript.joined_text.len(),
+            "final_text_len": final_text.len(),
+            "insert_success": insert_success,
+            "final_pass_used": transcript.final_pass_used,
+            "final_pass_reason": transcript.final_pass_reason,
+        }),
+    );
 
     maybe_log_transcript_sample(
         app,
@@ -835,9 +1043,7 @@ fn transcribe_and_insert(
             samples,
             sample_rate,
             channels,
-        } => {
-            duration_ms_from_samples(samples.len(), *sample_rate, *channels)
-        }
+        } => duration_ms_from_samples(samples.len(), *sample_rate, *channels),
     };
     let diagnostics_utterance_id = match &audio_data {
         AudioData::DistilWhisperSamples {
@@ -846,9 +1052,27 @@ fn transcribe_and_insert(
         } => diagnostics_utterance_id.clone(),
         _ => None,
     };
-    let parakeet_gpu_available =
-        config.transcription_mode == "offline" && config.offline_engine == "parakeet"
-            && speech::get_gpu_available(&app.state::<InferenceState>());
+    let parakeet_gpu_available = config.transcription_mode == "offline"
+        && config.offline_engine == "parakeet"
+        && speech::get_gpu_available(&app.state::<InferenceState>());
+
+    maybe_log_support_event(
+        app,
+        "capture",
+        "transcribe_started",
+        "Starting dictation transcription",
+        serde_json::json!({
+            "pipeline_mode": "dictation",
+            "offline_engine": config.offline_engine,
+            "transcription_mode": config.transcription_mode,
+            "utterance_duration_ms": utterance_duration_ms,
+            "audio_kind": match &audio_data {
+                AudioData::WavFile(_) => "wav_file",
+                AudioData::DistilWhisperSamples { .. } => "distil_samples",
+                AudioData::RawSamples { .. } => "raw_samples",
+            },
+        }),
+    );
 
     let transcribe_result = match audio_data {
         AudioData::WavFile(wav_path) => speech::cloud_transcribe(
@@ -892,8 +1116,7 @@ fn transcribe_and_insert(
             };
             let inference_state = app.state::<InferenceState>();
             let transcribe_started = Instant::now();
-            let result =
-                speech::transcribe_audio(&inference_state, capped, sample_rate, channels);
+            let result = speech::transcribe_audio(&inference_state, capped, sample_rate, channels);
             if config.transcription_mode == "offline" && config.offline_engine == "parakeet" {
                 match &result {
                     Ok(text) => {
@@ -956,6 +1179,19 @@ fn transcribe_and_insert(
 
     match transcribe_result {
         Ok(raw_text) => {
+            maybe_log_support_event(
+                app,
+                "capture",
+                "transcribe_success",
+                "Dictation transcription completed",
+                serde_json::json!({
+                    "pipeline_mode": "dictation",
+                    "stt_provider": resolve_stt_provider(config),
+                    "utterance_duration_ms": utterance_duration_ms,
+                    "text_len": raw_text.len(),
+                    "elapsed_ms": pipeline_started.elapsed().as_millis() as u64,
+                }),
+            );
             let raw_segments = vec![raw_text.clone()];
             let preview_analysis = language::analyze_preview_segments(&raw_segments);
             finalize_and_insert(
@@ -981,6 +1217,19 @@ fn transcribe_and_insert(
         }
         Err(e) => {
             eprintln!("Transcription error: {}", e);
+            maybe_log_support_event(
+                app,
+                "capture",
+                "transcribe_error",
+                "Dictation transcription failed",
+                serde_json::json!({
+                    "pipeline_mode": "dictation",
+                    "offline_engine": config.offline_engine,
+                    "utterance_duration_ms": utterance_duration_ms,
+                    "elapsed_ms": pipeline_started.elapsed().as_millis() as u64,
+                    "error": e,
+                }),
+            );
             if config.transcription_mode == "offline" && config.offline_engine == "distil_whisper" {
                 log_distil_whisper_event(
                     app,
@@ -1075,13 +1324,63 @@ fn resolve_stt_provider(config: &crate::features::settings::AppConfig) -> String
 }
 
 fn log_distil_whisper_event(app: &AppHandle, event: DistilWhisperEventContext<'_>) {
-    let _ = app;
-    let _ = event;
+    if !crate::features::diagnostics::support_diagnostics_enabled(app) {
+        return;
+    }
+
+    let diagnostics_state = app.state::<TranscriptDiagnosticsState>();
+    diagnostics_state
+        .0
+        .log_distil_whisper_event(DistilWhisperDiagnosticsEvent {
+            created_at: current_timestamp_ms(),
+            session_id: diagnostics_state.0.session_id().to_string(),
+            utterance_id: event.utterance_id,
+            event_type: event.event_type.to_string(),
+            pipeline_mode: event.pipeline_mode.to_string(),
+            input_source: event.input_source.to_string(),
+            utterance_duration_ms: event.utterance_duration_ms,
+            compacted_duration_ms: event.compacted_duration_ms,
+            wav_bytes: event.wav_bytes,
+            compacted_wav_bytes: event.compacted_wav_bytes,
+            speech_region_count: event.speech_region_count,
+            fallback_to_raw_audio: event.fallback_to_raw_audio,
+            requested_mode: event.requested_mode,
+            effective_mode: event.effective_mode,
+            device: event.device,
+            total_ms: event.total_ms,
+            text_len: event.text_len,
+            success: event.success,
+            error: event.error,
+        });
 }
 
 fn log_parakeet_event(app: &AppHandle, event: ParakeetEventContext<'_>) {
-    let _ = app;
-    let _ = event;
+    if !crate::features::diagnostics::support_diagnostics_enabled(app) {
+        return;
+    }
+
+    let diagnostics_state = app.state::<TranscriptDiagnosticsState>();
+    diagnostics_state
+        .0
+        .log_parakeet_event(ParakeetDiagnosticsEvent {
+            created_at: current_timestamp_ms(),
+            session_id: diagnostics_state.0.session_id().to_string(),
+            utterance_id: event.utterance_id,
+            event_type: event.event_type.to_string(),
+            pipeline_mode: event.pipeline_mode.to_string(),
+            input_source: event.input_source.to_string(),
+            utterance_duration_ms: event.utterance_duration_ms,
+            preview_segment_count: event.preview_segment_count,
+            raw_segment_count: event.raw_segment_count,
+            gpu_available: event.gpu_available,
+            vad_enabled: event.vad_enabled,
+            stop_ms: event.stop_ms,
+            transcribe_ms: event.transcribe_ms,
+            total_ms: event.total_ms,
+            text_len: event.text_len,
+            success: event.success,
+            error: event.error,
+        });
 }
 
 fn prepare_compacted_audio(
@@ -1102,7 +1401,8 @@ fn prepare_compacted_audio(
         config.vad_silence_threshold_ms,
     )?;
 
-    let compacted_duration_ms = duration_ms_from_samples(compacted.compacted_samples_16k.len(), 16_000, 1);
+    let compacted_duration_ms =
+        duration_ms_from_samples(compacted.compacted_samples_16k.len(), 16_000, 1);
     let compacted_wav_bytes = if !compacted.compacted_samples_16k.is_empty() {
         Some(recorder::encode_wav_bytes(
             &compacted.compacted_samples_16k,
@@ -1339,6 +1639,15 @@ pub fn setup_command_hotkey_handler(app: &AppHandle) {
 }
 
 fn handle_dictation_cancel(app: &AppHandle) {
+    maybe_log_support_event(
+        app,
+        "capture",
+        "recording_cancelled",
+        "Dictation recording cancelled",
+        serde_json::json!({
+            "pipeline_mode": "dictation",
+        }),
+    );
     // Break continuous recording cycle
     app.state::<ContinuousGeneration>()
         .0
@@ -1362,6 +1671,15 @@ fn handle_dictation_cancel(app: &AppHandle) {
 }
 
 fn handle_command_cancel(app: &AppHandle) {
+    maybe_log_support_event(
+        app,
+        "capture",
+        "recording_cancelled",
+        "Command recording cancelled",
+        serde_json::json!({
+            "pipeline_mode": "command",
+        }),
+    );
     // Silently discard any in-progress command recording
     set_hotkey_recording_mode(app, HotkeyRecordingMode::None);
     reset_hotkey_runtime(app);
@@ -1375,6 +1693,19 @@ fn handle_command_cancel(app: &AppHandle) {
 }
 
 fn handle_command_start(app: &AppHandle, config: &crate::features::settings::AppConfig) {
+    maybe_log_support_event(
+        app,
+        "capture",
+        "recording_start_requested",
+        "Starting command recording",
+        serde_json::json!({
+            "pipeline_mode": "command",
+            "device_index": config.device_index,
+            "offline_engine": config.offline_engine,
+            "transcription_mode": config.transcription_mode,
+        }),
+    );
+
     // Capture the foreground window before recording
     let hwnd = output::capture_foreground_window();
     if let Ok(mut g) = app.state::<FocusedWindowState>().0.lock() {
@@ -1411,12 +1742,33 @@ fn handle_command_start(app: &AppHandle, config: &crate::features::settings::App
         Ok(stream) => {
             *guard = Some(stream);
             set_hotkey_recording_mode(app, HotkeyRecordingMode::Command);
+            maybe_log_support_event(
+                app,
+                "capture",
+                "recording_start_success",
+                "Command recording started",
+                serde_json::json!({
+                    "pipeline_mode": "command",
+                    "device_index": config.device_index,
+                }),
+            );
             if config.sounds_enabled {
                 output::play_start_sound(&config.start_sound);
             }
         }
         Err(e) => {
             eprintln!("[capture] Failed to start command recording: {}", e);
+            maybe_log_support_event(
+                app,
+                "capture",
+                "recording_start_error",
+                "Failed to start command recording",
+                serde_json::json!({
+                    "pipeline_mode": "command",
+                    "device_index": config.device_index,
+                    "error": e,
+                }),
+            );
             set_hotkey_recording_mode(app, HotkeyRecordingMode::None);
             reset_hotkey_runtime(app);
             emit_all(app, "recording-state", "idle");
@@ -1428,6 +1780,17 @@ fn handle_command_start(app: &AppHandle, config: &crate::features::settings::App
 }
 
 fn handle_command_stop(app: &AppHandle, config: &crate::features::settings::AppConfig) {
+    maybe_log_support_event(
+        app,
+        "capture",
+        "recording_stop_requested",
+        "Stopping command recording",
+        serde_json::json!({
+            "pipeline_mode": "command",
+            "offline_engine": config.offline_engine,
+            "transcription_mode": config.transcription_mode,
+        }),
+    );
     set_hotkey_recording_mode(app, HotkeyRecordingMode::None);
     reset_hotkey_runtime(app);
     let recording_state = app.state::<RecordingState>();
@@ -1490,6 +1853,17 @@ fn handle_command_stop(app: &AppHandle, config: &crate::features::settings::AppC
 
             match transcribe_result {
                 Ok(transcript) => {
+                    maybe_log_support_event(
+                        &app,
+                        "capture",
+                        "transcribe_success",
+                        "Command transcription completed",
+                        serde_json::json!({
+                            "pipeline_mode": "command",
+                            "stt_provider": resolve_stt_provider(&config),
+                            "text_len": transcript.len(),
+                        }),
+                    );
                     let hwnd = app
                         .state::<FocusedWindowState>()
                         .0
@@ -1500,6 +1874,17 @@ fn handle_command_stop(app: &AppHandle, config: &crate::features::settings::AppC
                 }
                 Err(e) => {
                     eprintln!("[capture] Command transcription error: {}", e);
+                    maybe_log_support_event(
+                        &app,
+                        "capture",
+                        "transcribe_error",
+                        "Command transcription failed",
+                        serde_json::json!({
+                            "pipeline_mode": "command",
+                            "offline_engine": config.offline_engine,
+                            "error": e,
+                        }),
+                    );
                     if use_distil_offline {
                         log_distil_whisper_event(
                             &app,
@@ -1545,6 +1930,15 @@ fn command_finalize(
 ) {
     if raw_transcript.trim().is_empty() {
         eprintln!("[capture] Command transcription produced empty text");
+        maybe_log_support_event(
+            app,
+            "capture",
+            "finalize_empty",
+            "Command transcription finalized with empty text",
+            serde_json::json!({
+                "pipeline_mode": "command",
+            }),
+        );
         if config.sounds_enabled {
             output::play_done_sound(&config.stop_sound);
         }
@@ -1554,6 +1948,18 @@ fn command_finalize(
 
     let transcript = raw_transcript.trim();
     eprintln!("[capture] Command transcript: {}", transcript);
+    maybe_log_support_event(
+        app,
+        "capture",
+        "command_finalize_started",
+        "Starting command finalize pipeline",
+        serde_json::json!({
+            "pipeline_mode": "command",
+            "raw_text_len": transcript.len(),
+            "provider": config.command_provider,
+            "model": config.command_model,
+        }),
+    );
 
     // Check if this is a vocabulary addition command
     if let Some(vocab_cmd) = speech::llm::detect_vocab_command(transcript, &config.command_api_key)
@@ -1566,9 +1972,30 @@ fn command_finalize(
             Ok(_) => {
                 let msg = format!("Added: {}", vocab_cmd.term);
                 emit_all(app, "vocab-added", &msg);
+                maybe_log_support_event(
+                    app,
+                    "capture",
+                    "command_vocab_add_success",
+                    "Added vocabulary term from command mode",
+                    serde_json::json!({
+                        "pipeline_mode": "command",
+                        "term": vocab_cmd.term,
+                    }),
+                );
             }
             Err(e) => {
                 eprintln!("[capture] Failed to add vocab term: {}", e);
+                maybe_log_support_event(
+                    app,
+                    "capture",
+                    "command_vocab_add_error",
+                    "Failed to add vocabulary term from command mode",
+                    serde_json::json!({
+                        "pipeline_mode": "command",
+                        "term": vocab_cmd.term,
+                        "error": e,
+                    }),
+                );
                 emit_all(
                     app,
                     "transcription-error",
@@ -1596,17 +2023,55 @@ fn command_finalize(
             let inserted_text = option_if_not_empty(&text);
             let mut insert_success = false;
             if !text.is_empty() {
-                if let Err(e) = output::insert_text(&text, hwnd) {
-                    eprintln!("[capture] Command text insertion error: {}", e);
-                    emit_all(app, "transcription-error", e);
-                } else {
-                    insert_success = true;
+                match output::insert_text(&text, hwnd) {
+                    Ok(report) => {
+                        insert_success = true;
+                        maybe_log_support_event(
+                            app,
+                            "capture",
+                            "insert_success",
+                            "Inserted command output",
+                            serde_json::json!({
+                                "pipeline_mode": "command",
+                                "final_text_len": text.len(),
+                                "output_report": report,
+                            }),
+                        );
+                    }
+                    Err(error) => {
+                        eprintln!("[capture] Command text insertion error: {}", error);
+                        maybe_log_support_event(
+                            app,
+                            "capture",
+                            "insert_error",
+                            "Failed to insert command output",
+                            serde_json::json!({
+                                "pipeline_mode": "command",
+                                "final_text_len": text.len(),
+                                "error": error.to_string(),
+                                "output_report": error.report,
+                            }),
+                        );
+                        emit_all(app, "transcription-error", error.to_string());
+                    }
                 }
             }
             log_command_history_sample(app, config, transcript, inserted_text, insert_success);
         }
         Err(e) => {
             eprintln!("[capture] Command error: {}", e);
+            maybe_log_support_event(
+                app,
+                "capture",
+                "command_error",
+                "Command LLM pipeline failed",
+                serde_json::json!({
+                    "pipeline_mode": "command",
+                    "provider": config.command_provider,
+                    "model": config.command_model,
+                    "error": e,
+                }),
+            );
             emit_all(app, "transcription-error", format!("Command error: {}", e));
         }
     }

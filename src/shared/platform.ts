@@ -16,6 +16,7 @@ import type {
   PillState,
   Profile,
   SegmentTranscribed,
+  SupportDiagnosticsExport,
   TranscriptDiagnosticsStatus,
   TranscriptHistoryEntry,
 } from "./types";
@@ -238,6 +239,10 @@ export function getTranscriptDiagnosticsStatus(): Promise<TranscriptDiagnosticsS
 
 export function clearTranscriptDiagnostics(): Promise<TranscriptDiagnosticsStatus> {
   return invoke<TranscriptDiagnosticsStatus>("clear_transcript_diagnostics");
+}
+
+export function exportSupportDiagnostics(): Promise<SupportDiagnosticsExport> {
+  return invoke<SupportDiagnosticsExport>("export_support_diagnostics");
 }
 
 // ---- Transcript History ----

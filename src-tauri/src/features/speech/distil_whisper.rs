@@ -12,6 +12,7 @@ use tauri::{AppHandle, Manager};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
+use crate::features::diagnostics::maybe_log_support_event;
 use crate::infra::model;
 
 const DISTIL_WHISPER_REPO: &str = "distil-whisper/distil-large-v3";
@@ -113,6 +114,17 @@ impl DistilWhisperManager {
 
     pub fn download_model(&mut self, app: &AppHandle) -> Result<DistilWhisperStatus, String> {
         let model_dir = model::get_distil_whisper_models_dir(app)?;
+        let model_dir_display = model_dir.display().to_string();
+        maybe_log_support_event(
+            app,
+            "distil_whisper",
+            "download_requested",
+            "Downloading Distil-Whisper model snapshot",
+            json!({
+                "model_id": DISTIL_WHISPER_REPO,
+                "target_dir": model_dir_display,
+            }),
+        );
         let proc = self.ensure_process(app)?;
         let response = proc.send_request(json!({
             "cmd": "download_model",
@@ -120,6 +132,15 @@ impl DistilWhisperManager {
             "target_dir": model_dir.display().to_string(),
         }))?;
         ensure_ok_response("download_model", &response)?;
+        maybe_log_support_event(
+            app,
+            "distil_whisper",
+            "download_success",
+            "Downloaded Distil-Whisper model snapshot",
+            json!({
+                "model_id": DISTIL_WHISPER_REPO,
+            }),
+        );
         self.last_error = None;
         maybe_prepare_in_background(app)?;
         Ok(self.status(app))
@@ -144,19 +165,39 @@ impl DistilWhisperManager {
         wav_bytes: &[u8],
     ) -> Result<DistilWhisperResult, String> {
         let proc = self.ensure_model_loaded(app)?;
+        maybe_log_support_event(
+            app,
+            "distil_whisper",
+            "transcribe_requested",
+            "Sending audio to Distil-Whisper sidecar",
+            json!({
+                "wav_bytes": wav_bytes.len(),
+                "device": proc.device,
+            }),
+        );
         let response = proc.send_request(json!({
             "cmd": "transcribe_audio",
             "audio_data": base64::engine::general_purpose::STANDARD.encode(wav_bytes),
         }))?;
         ensure_ok_response("transcribe_audio", &response)?;
+        let text = response
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        maybe_log_support_event(
+            app,
+            "distil_whisper",
+            "transcribe_success",
+            "Distil-Whisper sidecar returned a transcript",
+            json!({
+                "wav_bytes": wav_bytes.len(),
+                "device": proc.device,
+                "text_len": text.len(),
+            }),
+        );
 
-        Ok(DistilWhisperResult {
-            text: response
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        })
+        Ok(DistilWhisperResult { text })
     }
 
     pub fn shutdown(&mut self) -> Result<(), String> {
@@ -204,8 +245,19 @@ impl DistilWhisperManager {
 
         let model_dir = model::get_distil_whisper_models_dir(app)?;
         let device_preference = self.preferred_device.as_request_value().to_string();
+        let model_source = model_dir.display().to_string();
         let proc = self.ensure_process(app)?;
         if !proc.loaded {
+            maybe_log_support_event(
+                app,
+                "distil_whisper",
+                "load_requested",
+                "Loading Distil-Whisper model",
+                json!({
+                    "model_source": model_source,
+                    "device_preference": device_preference.clone(),
+                }),
+            );
             let response = proc.send_request(json!({
                 "cmd": "load_model",
                 "model_source": model_dir.display().to_string(),
@@ -218,6 +270,15 @@ impl DistilWhisperManager {
                 .and_then(Value::as_str)
                 .unwrap_or("unknown")
                 .to_string();
+            maybe_log_support_event(
+                app,
+                "distil_whisper",
+                "load_success",
+                "Loaded Distil-Whisper model",
+                json!({
+                    "device": proc.device,
+                }),
+            );
         }
         Ok(proc)
     }
@@ -226,7 +287,28 @@ impl DistilWhisperManager {
         self.refresh_process_state();
         if self.process.is_none() {
             let launcher = resolve_launcher(app)?;
+            let program = launcher.program.clone();
+            let prefix_args = launcher.prefix_args.clone();
+            let script_path = launcher.script_path.to_string_lossy().to_string();
+            maybe_log_support_event(
+                app,
+                "distil_whisper",
+                "sidecar_spawn_attempt",
+                "Starting Distil-Whisper sidecar",
+                json!({
+                    "program": program,
+                    "prefix_args": prefix_args,
+                    "script_path": script_path,
+                }),
+            );
             self.process = Some(DistilWhisperProcess::spawn(launcher)?);
+            maybe_log_support_event(
+                app,
+                "distil_whisper",
+                "sidecar_spawn_success",
+                "Started Distil-Whisper sidecar",
+                json!({}),
+            );
         }
         self.process
             .as_mut()
@@ -260,6 +342,13 @@ pub fn maybe_prepare_in_background(app: &AppHandle) -> Result<(), String> {
 
     let handle = app.clone();
     let _ = handle.emit("distil-whisper-status", "preparing");
+    maybe_log_support_event(
+        &handle,
+        "distil_whisper",
+        "prepare_started",
+        "Preparing Distil-Whisper in the background",
+        json!({}),
+    );
     std::thread::spawn(move || {
         let final_status = match handle.state::<DistilWhisperState>().0.lock() {
             Ok(mut guard) => match guard.prepare_model(&handle) {
@@ -275,6 +364,15 @@ pub fn maybe_prepare_in_background(app: &AppHandle) -> Result<(), String> {
             }
         };
         DISTIL_PREPARE_IN_PROGRESS.store(false, Ordering::SeqCst);
+        maybe_log_support_event(
+            &handle,
+            "distil_whisper",
+            "prepare_finished",
+            "Finished Distil-Whisper background prepare",
+            json!({
+                "status": final_status,
+            }),
+        );
         let _ = handle.emit("distil-whisper-status", final_status);
     });
 

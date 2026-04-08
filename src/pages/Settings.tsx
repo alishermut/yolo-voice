@@ -316,7 +316,12 @@ export function Settings() {
             <ProfilesSection config={config} updateConfig={updateConfig} />
           )}
           {activeSection === "history" && <HistorySection />}
-          {activeSection === "about" && <AboutSection />}
+          {activeSection === "about" && (
+            <AboutSection
+              config={config}
+              updateConfig={updateConfig}
+            />
+          )}
         </div>
       </div>
     </div>

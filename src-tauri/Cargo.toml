@@ -1,6 +1,6 @@
 [package]
 name = "yolo-voice"
-version = "1.0.0"
+version = "1.0.3"
 description = "Offline voice dictation app"
 authors = ["Alish Ermo Talif"]
 edition = "2021"
@@ -33,6 +33,7 @@ ort = { version = "2.0.0-rc.12", default-features = false }
 rodio = "0.19"
 enigo = "0.3"
 base64 = "0.22"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # ---- Windows-only dependencies ----
 [target.'cfg(windows)'.dependencies]
@@ -43,6 +44,7 @@ keyring = { version = "3.6.3", features = ["windows-native"] }
 version = "0.58"
 features = [
     "Win32_Foundation",
+    "Win32_Security",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Accessibility",

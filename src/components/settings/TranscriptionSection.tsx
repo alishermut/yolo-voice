@@ -223,8 +223,6 @@ export function TranscriptionSection({
           </div>
         )}
       </div>
-
-      {/* Diagnostics section hidden — dev-only, not needed in production */}
     </div>
   );
 }

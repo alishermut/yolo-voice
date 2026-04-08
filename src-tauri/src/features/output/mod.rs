@@ -2,11 +2,16 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
+use serde::Serialize;
+
 #[cfg(windows)]
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{GetLastError, SetLastError, HWND, WIN32_ERROR};
+#[cfg(windows)]
+use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 #[cfg(windows)]
 use windows::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION,
 };
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -15,10 +20,57 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+    GetClassNameW, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
+    SetForegroundWindow,
 };
 
 pub struct FocusedWindowState(pub Mutex<isize>);
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OutputWindowDetails {
+    pub hwnd: isize,
+    pub pid: Option<u32>,
+    pub exe_name: Option<String>,
+    pub class_name: Option<String>,
+    pub title_length: Option<usize>,
+    pub is_terminal: bool,
+    pub is_own_window: bool,
+    pub is_elevated: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InsertTextReport {
+    pub app_pid: u32,
+    pub app_is_elevated: Option<bool>,
+    pub clipboard_text_len: usize,
+    pub used_shift_paste: bool,
+    pub target: OutputWindowDetails,
+    pub foreground_before: Option<OutputWindowDetails>,
+    pub foreground_after_refocus: Option<OutputWindowDetails>,
+    pub foreground_after_paste: Option<OutputWindowDetails>,
+    pub set_foreground_attempted: bool,
+    pub set_foreground_succeeded: Option<bool>,
+    pub set_foreground_last_error_code: Option<u32>,
+    pub set_foreground_last_error: Option<String>,
+    pub send_input_event_count: usize,
+    pub send_input_sent: Option<u32>,
+    pub send_input_last_error_code: Option<u32>,
+    pub send_input_last_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InsertTextError {
+    pub message: String,
+    pub report: InsertTextReport,
+}
+
+impl std::fmt::Display for InsertTextError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for InsertTextError {}
 
 // Sound registry
 const SOUND_CHIME: &[u8] = include_bytes!("../../../sounds/chime.wav");
@@ -291,6 +343,110 @@ fn get_window_exe_name(hwnd: isize) -> Option<String> {
     }
 }
 
+#[cfg(windows)]
+fn get_window_pid(hwnd: isize) -> Option<u32> {
+    unsafe {
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(HWND(hwnd as *mut _), Some(&mut pid));
+        (pid != 0).then_some(pid)
+    }
+}
+
+#[cfg(windows)]
+fn get_process_elevation(pid: u32) -> Option<bool> {
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut token = Default::default();
+        let token_result = OpenProcessToken(process, TOKEN_QUERY, &mut token);
+        let _ = windows::Win32::Foundation::CloseHandle(process);
+        if token_result.is_err() {
+            return None;
+        }
+
+        let mut elevation = TOKEN_ELEVATION::default();
+        let mut returned = 0u32;
+        let info_result = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(&mut elevation as *mut _ as *mut _),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        );
+        let _ = windows::Win32::Foundation::CloseHandle(token);
+        if info_result.is_err() {
+            return None;
+        }
+
+        Some(elevation.TokenIsElevated != 0)
+    }
+}
+
+#[cfg(windows)]
+fn get_window_class_name(hwnd: isize) -> Option<String> {
+    unsafe {
+        let hwnd = HWND(hwnd as *mut _);
+        let mut buf = [0u16; 256];
+        let len = GetClassNameW(hwnd, &mut buf) as usize;
+        if len == 0 {
+            return None;
+        }
+        Some(String::from_utf16_lossy(&buf[..len]))
+    }
+}
+
+#[cfg(windows)]
+fn describe_window(hwnd: isize) -> Option<OutputWindowDetails> {
+    if hwnd == 0 {
+        return None;
+    }
+
+    let pid = get_window_pid(hwnd);
+    let title_length = unsafe {
+        let hwnd = HWND(hwnd as *mut _);
+        let mut buf = [0u16; 512];
+        let len = GetWindowTextW(hwnd, &mut buf) as usize;
+        (len != 0).then_some(len)
+    };
+    Some(OutputWindowDetails {
+        hwnd,
+        pid,
+        exe_name: get_window_exe_name(hwnd),
+        class_name: get_window_class_name(hwnd),
+        title_length,
+        is_terminal: is_terminal_window(hwnd),
+        is_own_window: is_own_window(hwnd),
+        is_elevated: pid.and_then(get_process_elevation),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn describe_window(target: isize) -> Option<OutputWindowDetails> {
+    if target == 0 {
+        return None;
+    }
+
+    Some(OutputWindowDetails {
+        hwnd: target,
+        pid: Some(target as u32),
+        exe_name: None,
+        class_name: None,
+        title_length: None,
+        is_terminal: is_terminal_window(target),
+        is_own_window: is_own_window(target),
+        is_elevated: None,
+    })
+}
+
+#[cfg(windows)]
+fn win32_error_details(code: u32) -> (Option<u32>, Option<String>) {
+    if code == 0 {
+        return (None, None);
+    }
+
+    let error = windows::core::Error::from_win32();
+    (Some(code), Some(error.message().to_string()))
+}
+
 // ---- Text insertion ----
 
 /// Check if a window belongs to our own process.
@@ -308,21 +464,177 @@ pub fn is_own_window(pid: isize) -> bool {
     pid == std::process::id() as isize
 }
 
-pub fn insert_text(text: &str, target_hwnd: isize) -> Result<(), String> {
+pub fn insert_text(text: &str, target_hwnd: isize) -> Result<InsertTextReport, InsertTextError> {
     if text.is_empty() {
-        return Ok(());
+        return Ok(InsertTextReport {
+            app_pid: std::process::id(),
+            app_is_elevated: {
+                #[cfg(windows)]
+                {
+                    get_process_elevation(std::process::id())
+                }
+                #[cfg(not(windows))]
+                {
+                    None
+                }
+            },
+            clipboard_text_len: 0,
+            used_shift_paste: false,
+            target: describe_window(target_hwnd).unwrap_or(OutputWindowDetails {
+                hwnd: target_hwnd,
+                pid: None,
+                exe_name: None,
+                class_name: None,
+                title_length: None,
+                is_terminal: false,
+                is_own_window: false,
+                is_elevated: None,
+            }),
+            foreground_before: None,
+            foreground_after_refocus: None,
+            foreground_after_paste: None,
+            set_foreground_attempted: false,
+            set_foreground_succeeded: None,
+            set_foreground_last_error_code: None,
+            set_foreground_last_error: None,
+            send_input_event_count: 0,
+            send_input_sent: None,
+            send_input_last_error_code: None,
+            send_input_last_error: None,
+        });
     }
 
-    let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("Clipboard error: {}", e))?;
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| InsertTextError {
+        message: format!("Clipboard error: {}", e),
+        report: InsertTextReport {
+            app_pid: std::process::id(),
+            app_is_elevated: {
+                #[cfg(windows)]
+                {
+                    get_process_elevation(std::process::id())
+                }
+                #[cfg(not(windows))]
+                {
+                    None
+                }
+            },
+            clipboard_text_len: text.chars().count(),
+            used_shift_paste: false,
+            target: describe_window(target_hwnd).unwrap_or(OutputWindowDetails {
+                hwnd: target_hwnd,
+                pid: None,
+                exe_name: None,
+                class_name: None,
+                title_length: None,
+                is_terminal: false,
+                is_own_window: false,
+                is_elevated: None,
+            }),
+            foreground_before: None,
+            foreground_after_refocus: None,
+            foreground_after_paste: None,
+            set_foreground_attempted: false,
+            set_foreground_succeeded: None,
+            set_foreground_last_error_code: None,
+            set_foreground_last_error: None,
+            send_input_event_count: 0,
+            send_input_sent: None,
+            send_input_last_error_code: None,
+            send_input_last_error: None,
+        },
+    })?;
     clipboard
         .set_text(text)
-        .map_err(|e| format!("Failed to set clipboard text: {}", e))?;
+        .map_err(|e| InsertTextError {
+            message: format!("Failed to set clipboard text: {}", e),
+            report: InsertTextReport {
+                app_pid: std::process::id(),
+                app_is_elevated: {
+                    #[cfg(windows)]
+                    {
+                        get_process_elevation(std::process::id())
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        None
+                    }
+                },
+                clipboard_text_len: text.chars().count(),
+                used_shift_paste: false,
+                target: describe_window(target_hwnd).unwrap_or(OutputWindowDetails {
+                hwnd: target_hwnd,
+                pid: None,
+                exe_name: None,
+                class_name: None,
+                title_length: None,
+                is_terminal: false,
+                is_own_window: false,
+                    is_elevated: None,
+                }),
+                foreground_before: None,
+                foreground_after_refocus: None,
+                foreground_after_paste: None,
+                set_foreground_attempted: false,
+                set_foreground_succeeded: None,
+                set_foreground_last_error_code: None,
+                set_foreground_last_error: None,
+                send_input_event_count: 0,
+                send_input_sent: None,
+                send_input_last_error_code: None,
+                send_input_last_error: None,
+            },
+        })?;
+
+    let use_shift = is_terminal_window(target_hwnd);
+    let mut report = InsertTextReport {
+        app_pid: std::process::id(),
+        app_is_elevated: {
+            #[cfg(windows)]
+            {
+                get_process_elevation(std::process::id())
+            }
+            #[cfg(not(windows))]
+            {
+                None
+            }
+        },
+        clipboard_text_len: text.chars().count(),
+        used_shift_paste: use_shift,
+        target: describe_window(target_hwnd).unwrap_or(OutputWindowDetails {
+            hwnd: target_hwnd,
+            pid: None,
+            exe_name: None,
+            class_name: None,
+            title_length: None,
+            is_terminal: use_shift,
+            is_own_window: is_own_window(target_hwnd),
+            is_elevated: None,
+        }),
+        foreground_before: describe_window(capture_foreground_window()),
+        foreground_after_refocus: None,
+        foreground_after_paste: None,
+        set_foreground_attempted: false,
+        set_foreground_succeeded: None,
+        set_foreground_last_error_code: None,
+        set_foreground_last_error: None,
+        send_input_event_count: 0,
+        send_input_sent: None,
+        send_input_last_error_code: None,
+        send_input_last_error: None,
+    };
 
     // Refocus the target window/app
     #[cfg(windows)]
     unsafe {
+        report.set_foreground_attempted = true;
         let hwnd = HWND(target_hwnd as *mut _);
-        let _ = SetForegroundWindow(hwnd);
+        SetLastError(WIN32_ERROR(0));
+        let succeeded = SetForegroundWindow(hwnd).as_bool();
+        let last_error = GetLastError().0;
+        let (error_code, error_message) = win32_error_details(last_error);
+        report.set_foreground_succeeded = Some(succeeded);
+        report.set_foreground_last_error_code = error_code;
+        report.set_foreground_last_error = error_message;
     }
 
     #[cfg(target_os = "macos")]
@@ -338,18 +650,39 @@ pub fn insert_text(text: &str, target_hwnd: isize) -> Result<(), String> {
                 break;
             }
         }
+        report.set_foreground_attempted = true;
+        report.set_foreground_succeeded = Some(true);
     }
 
     thread::sleep(Duration::from_millis(50));
+    report.foreground_after_refocus = describe_window(capture_foreground_window());
 
-    let use_shift = is_terminal_window(target_hwnd);
-    send_paste_keystroke(use_shift)
+    match send_paste_keystroke(use_shift) {
+        Ok((event_count, sent, error_code, error_message)) => {
+            report.send_input_event_count = event_count;
+            report.send_input_sent = Some(sent);
+            report.send_input_last_error_code = error_code;
+            report.send_input_last_error = error_message;
+            report.foreground_after_paste = describe_window(capture_foreground_window());
+            Ok(report)
+        }
+        Err((message, event_count, sent, error_code, error_message)) => {
+            report.send_input_event_count = event_count;
+            report.send_input_sent = Some(sent);
+            report.send_input_last_error_code = error_code;
+            report.send_input_last_error = error_message;
+            report.foreground_after_paste = describe_window(capture_foreground_window());
+            Err(InsertTextError { message, report })
+        }
+    }
 }
 
 // ---- Paste keystroke ----
 
 #[cfg(windows)]
-fn send_paste_keystroke(with_shift: bool) -> Result<(), String> {
+fn send_paste_keystroke(
+    with_shift: bool,
+) -> Result<(usize, u32, Option<u32>, Option<String>), (String, usize, u32, Option<u32>, Option<String>)> {
     let mut inputs: Vec<INPUT> = Vec::new();
 
     inputs.push(make_key_input(VK_CONTROL, false));
@@ -363,16 +696,28 @@ fn send_paste_keystroke(with_shift: bool) -> Result<(), String> {
     }
     inputs.push(make_key_input(VK_CONTROL, true));
 
-    let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+    let sent = unsafe {
+        SetLastError(WIN32_ERROR(0));
+        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32)
+    };
+    let last_error = unsafe { GetLastError().0 };
+    let (error_code, error_message) = win32_error_details(last_error);
     if sent != inputs.len() as u32 {
-        return Err(format!(
-            "SendInput sent {} of {} events",
-            sent,
-            inputs.len()
-        ));
+        let message = if let Some(code) = error_code {
+            format!(
+                "SendInput sent {} of {} events (win32 error {}: {})",
+                sent,
+                inputs.len(),
+                code,
+                error_message.clone().unwrap_or_else(|| "unknown".to_string())
+            )
+        } else {
+            format!("SendInput sent {} of {} events", sent, inputs.len())
+        };
+        return Err((message, inputs.len(), sent, error_code, error_message));
     }
 
-    Ok(())
+    Ok((inputs.len(), sent, error_code, error_message))
 }
 
 #[cfg(windows)]
@@ -417,24 +762,34 @@ pub fn send_media_play_pause() {
 }
 
 #[cfg(target_os = "macos")]
-fn send_paste_keystroke(_with_shift: bool) -> Result<(), String> {
+fn send_paste_keystroke(
+    _with_shift: bool,
+) -> Result<(usize, u32, Option<u32>, Option<String>), (String, usize, u32, Option<u32>, Option<String>)> {
     // On macOS, use enigo to send Cmd+V
     use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 
     let mut enigo =
-        Enigo::new(&Settings::default()).map_err(|e| format!("Failed to create enigo: {}", e))?;
+        Enigo::new(&Settings::default()).map_err(|e| {
+            (
+                format!("Failed to create enigo: {}", e),
+                0,
+                0,
+                None,
+                None,
+            )
+        })?;
 
     enigo
         .key(Key::Meta, Direction::Press)
-        .map_err(|e| format!("Enigo key error: {}", e))?;
+        .map_err(|e| (format!("Enigo key error: {}", e), 0, 0, None, None))?;
     enigo
         .key(Key::Unicode('v'), Direction::Click)
-        .map_err(|e| format!("Enigo key error: {}", e))?;
+        .map_err(|e| (format!("Enigo key error: {}", e), 0, 0, None, None))?;
     enigo
         .key(Key::Meta, Direction::Release)
-        .map_err(|e| format!("Enigo key error: {}", e))?;
+        .map_err(|e| (format!("Enigo key error: {}", e), 0, 0, None, None))?;
 
-    Ok(())
+    Ok((3, 3, None, None))
 }
 
 // ---- Sound playback ----

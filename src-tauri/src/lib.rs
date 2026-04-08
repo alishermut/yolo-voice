@@ -7,7 +7,7 @@ use features::capture::recorder::{RecordingState, WarmDeviceState};
 use features::capture::{
     ActiveStyleKey, ContinuousGeneration, HotkeyRuntimeState, RuntimeDictionaryCache,
 };
-use features::diagnostics::TranscriptDiagnosticsState;
+use features::diagnostics::{maybe_log_support_event, TranscriptDiagnosticsState};
 use features::output::FocusedWindowState;
 use features::settings::ConfigState;
 use features::speech::distil_whisper::DistilWhisperState;
@@ -75,6 +75,7 @@ pub fn run() {
             app::commands::apply_industry_pack,
             app::commands::get_transcript_diagnostics_status,
             app::commands::clear_transcript_diagnostics,
+            app::commands::export_support_diagnostics,
             app::commands::preview_sound,
             app::commands::get_available_sounds,
             app::commands::test_command_llm_connection,
@@ -286,6 +287,13 @@ pub fn run() {
                 }
 
                 let _ = inference_handle.emit("model-status", "loading");
+                maybe_log_support_event(
+                    &inference_handle,
+                    "parakeet",
+                    "startup_load_requested",
+                    "Initializing Parakeet model during app startup",
+                    serde_json::json!({}),
+                );
 
                 match features::speech::inference::InferenceSession::new(&models_dir) {
                     Ok(session) => {
@@ -299,6 +307,15 @@ pub fn run() {
                                 return;
                             }
                         }
+                        maybe_log_support_event(
+                            &inference_handle,
+                            "parakeet",
+                            "startup_load_success",
+                            "Initialized Parakeet model during app startup",
+                            serde_json::json!({
+                                "gpu": gpu,
+                            }),
+                        );
                         let _ = inference_handle.emit("model-status", "ready");
                         if !gpu {
                             let _ = inference_handle.emit("gpu-fallback", "CPU (GPU not available)");
@@ -306,6 +323,15 @@ pub fn run() {
                     }
                     Err(e) => {
                         eprintln!("[app] Failed to init inference engine: {}", e);
+                        maybe_log_support_event(
+                            &inference_handle,
+                            "parakeet",
+                            "startup_load_error",
+                            "Failed to initialize Parakeet model during app startup",
+                            serde_json::json!({
+                                "error": e,
+                            }),
+                        );
                         let _ = inference_handle.emit("model-status", "error");
                     }
                 }

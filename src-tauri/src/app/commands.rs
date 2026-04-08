@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::{fs, io::BufRead, io::BufReader};
 
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
@@ -7,7 +8,11 @@ use tauri_plugin_opener::OpenerExt;
 use crate::features::capture::hotkey::HotkeyCache;
 use crate::features::capture::recorder::{self, RecordingState};
 use crate::features::capture::RuntimeDictionaryCache;
-use crate::features::diagnostics::{TranscriptDiagnosticsState, TranscriptDiagnosticsStatus};
+use crate::features::diagnostics::{
+    distil_whisper_events_path, maybe_log_support_event, parakeet_events_path, runtime_events_path,
+    SupportDiagnosticsBundleSummary, SupportDiagnosticsExport, TranscriptDiagnosticsState,
+    TranscriptDiagnosticsStatus,
+};
 use crate::features::output;
 use crate::features::settings::{self, AppConfig, ConfigState};
 use crate::features::speech;
@@ -161,6 +166,13 @@ pub fn download_model_cmd(app_handle: tauri::AppHandle) -> Result<(), String> {
 
     let handle = app_handle.clone();
     std::thread::spawn(move || {
+        maybe_log_support_event(
+            &handle,
+            "parakeet",
+            "download_requested",
+            "Downloading Parakeet model",
+            serde_json::json!({}),
+        );
         let result = (|| -> Result<(), String> {
             let models_dir = crate::infra::model::get_models_dir(&handle)?;
             crate::infra::model::download_model(&models_dir, &handle, &DOWNLOAD_CANCELLED)?;
@@ -178,6 +190,15 @@ pub fn download_model_cmd(app_handle: tauri::AppHandle) -> Result<(), String> {
             let gpu = session.is_gpu();
             let state = handle.state::<InferenceState>();
             *state.0.lock().map_err(|e| e.to_string())? = Some(session);
+            maybe_log_support_event(
+                &handle,
+                "parakeet",
+                "load_success",
+                "Downloaded and initialized Parakeet model",
+                serde_json::json!({
+                    "gpu": gpu,
+                }),
+            );
 
             let _ = handle.emit("model-status", "ready");
             if !gpu {
@@ -190,6 +211,15 @@ pub fn download_model_cmd(app_handle: tauri::AppHandle) -> Result<(), String> {
 
         if let Err(e) = result {
             eprintln!("[download] Error: {}", e);
+            maybe_log_support_event(
+                &handle,
+                "parakeet",
+                "download_error",
+                "Failed to download or initialize Parakeet model",
+                serde_json::json!({
+                    "error": e,
+                }),
+            );
             let _ = handle.emit(
                 "model-download-progress",
                 serde_json::json!({ "status": "error", "error": e }),
@@ -260,11 +290,29 @@ pub fn reload_model_cmd(
 
     let handle = app_handle.clone();
     std::thread::spawn(move || {
+        maybe_log_support_event(
+            &handle,
+            "parakeet",
+            "reload_requested",
+            "Reloading Parakeet model",
+            serde_json::json!({
+                "use_gpu": use_gpu,
+            }),
+        );
         match speech::inference::InferenceSession::with_gpu(&models_dir, use_gpu) {
             Ok(session) => {
                 let gpu = session.is_gpu();
                 let state = handle.state::<InferenceState>();
                 *state.0.lock().unwrap() = Some(session);
+                maybe_log_support_event(
+                    &handle,
+                    "parakeet",
+                    "reload_success",
+                    "Reloaded Parakeet model",
+                    serde_json::json!({
+                        "gpu": gpu,
+                    }),
+                );
                 let _ = handle.emit("model-status", "ready");
                 if !gpu {
                     let _ = handle.emit("gpu-fallback", "CPU (GPU not available)");
@@ -272,6 +320,16 @@ pub fn reload_model_cmd(
             }
             Err(e) => {
                 eprintln!("[reload] Failed: {}", e);
+                maybe_log_support_event(
+                    &handle,
+                    "parakeet",
+                    "reload_error",
+                    "Failed to reload Parakeet model",
+                    serde_json::json!({
+                        "use_gpu": use_gpu,
+                        "error": e,
+                    }),
+                );
                 let _ = handle.emit("model-status", "error");
             }
         }
@@ -662,6 +720,118 @@ pub fn clear_transcript_diagnostics(
         .transcript_diagnostics_enabled;
 
     diagnostics_state.0.clear(enabled)
+}
+
+#[tauri::command]
+pub fn export_support_diagnostics(
+    app_handle: tauri::AppHandle,
+    config_state: State<'_, ConfigState>,
+    diagnostics_state: State<'_, TranscriptDiagnosticsState>,
+    inference_state: State<'_, InferenceState>,
+    distil_state: State<'_, DistilWhisperState>,
+) -> Result<SupportDiagnosticsExport, String> {
+    let config = config_state.0.lock().map_err(|e| e.to_string())?.clone();
+
+    let diagnostics_status = diagnostics_state
+        .0
+        .status(config.transcript_diagnostics_enabled)?;
+
+    let parakeet_gpu_loaded = speech::get_gpu_available(&inference_state);
+    let distil_status = distil_state
+        .0
+        .lock()
+        .map_err(|e| e.to_string())?
+        .status(&app_handle);
+
+    let runtime_event_count = count_lines_if_exists(&runtime_events_path(&app_handle)?);
+    let distil_event_count = count_lines_if_exists(&distil_whisper_events_path(&app_handle)?);
+    let parakeet_event_count = count_lines_if_exists(&parakeet_events_path(&app_handle)?);
+
+    let summary = SupportDiagnosticsBundleSummary {
+        generated_at: crate::features::diagnostics::current_timestamp_ms(),
+        app_name: "YOLO Voice".to_string(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        session_id: diagnostics_state.0.session_id().to_string(),
+        diagnostics_enabled: config.transcript_diagnostics_enabled,
+        runtime_event_count,
+        distil_event_count,
+        parakeet_event_count,
+        sample_count: diagnostics_status.sample_count,
+        platform: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        bundle_contents: vec![
+            "summary.json".to_string(),
+            "config.redacted.json".to_string(),
+            "diagnostics/runtime_events.jsonl".to_string(),
+            "diagnostics/distil_whisper_events.jsonl".to_string(),
+            "diagnostics/parakeet_events.jsonl".to_string(),
+        ],
+    };
+
+    let redacted_config = serde_json::json!({
+        "transcription_mode": config.transcription_mode,
+        "offline_engine": config.offline_engine,
+        "cloud_stt_provider": config.cloud_stt_provider,
+        "language": config.language,
+        "device_index": config.device_index,
+        "sounds_enabled": config.sounds_enabled,
+        "start_sound": config.start_sound,
+        "stop_sound": config.stop_sound,
+        "text_cleanup_enabled": config.text_cleanup_enabled,
+        "numerals_enabled": config.numerals_enabled,
+        "hallucination_filter_enabled": config.hallucination_filter_enabled,
+        "spoken_punctuation_enabled": config.spoken_punctuation_enabled,
+        "parakeet_segmented_mode_enabled": config.parakeet_segmented_mode_enabled,
+        "post_processing_enabled": config.post_processing_enabled,
+        "vad_silence_threshold_ms": config.vad_silence_threshold_ms,
+        "continuous_recording_enabled": config.continuous_recording_enabled,
+        "auto_pause_media_enabled": config.auto_pause_media_enabled,
+        "active_profile_id": config.active_profile_id,
+        "active_industry_pack": config.active_industry_pack,
+        "ui_language": config.ui_language,
+        "transcript_diagnostics_enabled": config.transcript_diagnostics_enabled,
+        "command_provider": config.command_provider,
+        "command_model": config.command_model,
+        "llm_provider": config.llm_provider,
+        "llm_model": config.llm_model,
+        "cloud_stt_api_key": redact_secret(&config.cloud_stt_api_key),
+        "llm_api_key": redact_secret(&config.llm_api_key),
+        "command_api_key": redact_secret(&config.command_api_key),
+        "llm_base_url": config.llm_base_url,
+        "command_base_url": config.command_base_url,
+        "parakeet_gpu_loaded": parakeet_gpu_loaded,
+        "distil_status": distil_status,
+    });
+
+    diagnostics_state
+        .0
+        .export_support_bundle(&app_handle, &summary, &redacted_config)
+}
+
+fn count_lines_if_exists(path: &std::path::Path) -> u64 {
+    if !path.is_file() {
+        return 0;
+    }
+
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return 0,
+    };
+
+    BufReader::new(file)
+        .lines()
+        .filter(|line| line.is_ok())
+        .count() as u64
+}
+
+fn redact_secret(value: &str) -> String {
+    if value.trim().is_empty() {
+        return String::new();
+    }
+
+    let visible = value.chars().rev().take(4).collect::<String>();
+    let suffix = visible.chars().rev().collect::<String>();
+    format!("***{}", suffix)
 }
 
 // ---- Transcript History ----

@@ -130,6 +130,11 @@ export interface TranscriptDiagnosticsStatus {
   db_path: string;
 }
 
+export interface SupportDiagnosticsExport {
+  archive_path: string;
+  file_name: string;
+}
+
 export interface TranscriptHistoryEntry {
   id: number;
   created_at: number;

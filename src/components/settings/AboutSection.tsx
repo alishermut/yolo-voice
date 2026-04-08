@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { getAppInfo } from "../../shared/platform";
-import type { AppInfo } from "../../shared/types";
+import type { AppConfig, AppInfo } from "../../shared/types";
 import { focusRing } from "../ui/styles";
 import { useUpdaterContext } from "../../contexts/UpdaterContext";
+import { SupportDiagnosticsCard } from "./SupportDiagnosticsCard";
 
 const releaseNoteFiles = import.meta.glob("../../../docs/releases/*.md", {
   eager: true,
@@ -76,7 +77,12 @@ function getReleaseNotes(version?: string) {
   return match ? parseReleaseNotes(match[1]) : null;
 }
 
-export function AboutSection() {
+interface AboutSectionProps {
+  config: AppConfig;
+  updateConfig: (updates: Partial<AppConfig>) => Promise<void>;
+}
+
+export function AboutSection({ config, updateConfig }: AboutSectionProps) {
   const { t } = useTranslation();
   const [info, setInfo] = useState<AppInfo | null>(null);
   const { status, version, error, checkForUpdates, installUpdate, dismissError } = useUpdaterContext();
@@ -212,6 +218,11 @@ export function AboutSection() {
           </p>
         )}
       </div>
+
+      <SupportDiagnosticsCard
+        config={config}
+        updateConfig={updateConfig}
+      />
 
       <p className="text-xs text-text-disabled text-center">
         {t("about.footer")}

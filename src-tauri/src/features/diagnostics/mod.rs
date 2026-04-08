@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -8,12 +9,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
+use zip::write::SimpleFileOptions;
+
+use crate::features::settings::ConfigState;
 
 pub const TRANSCRIPT_DIAGNOSTICS_MAX_SAMPLES: u64 = 1000;
 
 #[derive(Debug, Clone)]
 pub struct TranscriptDiagnosticsStore {
     db_path: PathBuf,
+    runtime_events_path: PathBuf,
     session_id: String,
     utterance_counter: Arc<AtomicU64>,
     tx: mpsc::Sender<DiagnosticsMsg>,
@@ -27,6 +32,38 @@ pub struct TranscriptDiagnosticsStatus {
     pub sample_count: u64,
     pub max_samples: u64,
     pub db_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SupportRuntimeEvent {
+    pub created_at: i64,
+    pub session_id: String,
+    pub area: String,
+    pub event_type: String,
+    pub message: String,
+    pub details: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SupportDiagnosticsExport {
+    pub archive_path: String,
+    pub file_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SupportDiagnosticsBundleSummary {
+    pub generated_at: i64,
+    pub app_name: String,
+    pub app_version: String,
+    pub session_id: String,
+    pub diagnostics_enabled: bool,
+    pub runtime_event_count: u64,
+    pub distil_event_count: u64,
+    pub parakeet_event_count: u64,
+    pub sample_count: u64,
+    pub platform: String,
+    pub arch: String,
+    pub bundle_contents: Vec<String>,
 }
 
 #[allow(dead_code)]
@@ -111,6 +148,7 @@ pub struct TranscriptSample {
 #[allow(dead_code)]
 enum DiagnosticsMsg {
     Write(TranscriptSample),
+    RuntimeEvent(SupportRuntimeEvent),
     DistilWhisperEvent(DistilWhisperDiagnosticsEvent),
     ParakeetEvent(ParakeetDiagnosticsEvent),
     Flush(mpsc::Sender<()>),
@@ -119,12 +157,15 @@ enum DiagnosticsMsg {
 impl TranscriptDiagnosticsStore {
     pub fn new(app_handle: &AppHandle) -> Result<Self, String> {
         let db_path = diagnostics_db_path(app_handle)?;
+        let runtime_events_path = runtime_events_path(app_handle)?;
         let distil_whisper_events_path = distil_whisper_events_path(app_handle)?;
         let parakeet_events_path = parakeet_events_path(app_handle)?;
+        let _ = fs::remove_file(&runtime_events_path);
         let _ = fs::remove_file(&distil_whisper_events_path);
         let _ = fs::remove_file(&parakeet_events_path);
         Self::from_paths(
             db_path,
+            runtime_events_path,
             distil_whisper_events_path,
             parakeet_events_path,
         )
@@ -132,6 +173,10 @@ impl TranscriptDiagnosticsStore {
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn from_db_path(db_path: PathBuf) -> Result<Self, String> {
+        let runtime_events_path = db_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("runtime_events.jsonl");
         let distil_whisper_events_path = db_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -142,6 +187,7 @@ impl TranscriptDiagnosticsStore {
             .join("parakeet_events.jsonl");
         Self::from_paths(
             db_path,
+            runtime_events_path,
             distil_whisper_events_path,
             parakeet_events_path,
         )
@@ -149,10 +195,14 @@ impl TranscriptDiagnosticsStore {
 
     pub fn from_paths(
         db_path: PathBuf,
+        runtime_events_path: PathBuf,
         distil_whisper_events_path: PathBuf,
         parakeet_events_path: PathBuf,
     ) -> Result<Self, String> {
         if let Some(parent) = db_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        if let Some(parent) = runtime_events_path.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         if let Some(parent) = distil_whisper_events_path.parent() {
@@ -166,6 +216,7 @@ impl TranscriptDiagnosticsStore {
 
         let (tx, rx) = mpsc::channel::<DiagnosticsMsg>();
         let writer_path = db_path.clone();
+        let runtime_events_writer_path = runtime_events_path.clone();
         let distil_whisper_writer_path = distil_whisper_events_path.clone();
         let parakeet_writer_path = parakeet_events_path.clone();
 
@@ -174,6 +225,7 @@ impl TranscriptDiagnosticsStore {
             .spawn(move || {
                 writer_loop(
                     writer_path,
+                    runtime_events_writer_path,
                     distil_whisper_writer_path,
                     parakeet_writer_path,
                     rx,
@@ -183,6 +235,7 @@ impl TranscriptDiagnosticsStore {
 
         Ok(Self {
             db_path,
+            runtime_events_path,
             session_id: generate_session_id(),
             utterance_counter: Arc::new(AtomicU64::new(1)),
             tx,
@@ -211,11 +264,21 @@ impl TranscriptDiagnosticsStore {
         self.flush_writer();
         let conn = open_connection(&self.db_path)?;
         clear_samples(&conn)?;
+        let diagnostics_dir = self.db_path.parent().unwrap_or_else(|| Path::new("."));
+        let _ = fs::remove_file(&self.runtime_events_path);
+        let _ = fs::remove_file(diagnostics_dir.join("distil_whisper_events.jsonl"));
+        let _ = fs::remove_file(diagnostics_dir.join("parakeet_events.jsonl"));
+        let _ = fs::remove_file(self.db_path.with_extension("sqlite3-shm"));
+        let _ = fs::remove_file(self.db_path.with_extension("sqlite3-wal"));
         self.status(enabled)
     }
 
     pub fn log_sample(&self, sample: TranscriptSample) {
         let _ = self.tx.send(DiagnosticsMsg::Write(sample));
+    }
+
+    pub fn log_runtime_event(&self, event: SupportRuntimeEvent) {
+        let _ = self.tx.send(DiagnosticsMsg::RuntimeEvent(event));
     }
 
     #[allow(dead_code)]
@@ -264,8 +327,53 @@ pub fn distil_whisper_events_path(app_handle: &AppHandle) -> Result<PathBuf, Str
     Ok(dir.join("diagnostics").join("distil_whisper_events.jsonl"))
 }
 
+pub fn runtime_events_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    Ok(dir.join("diagnostics").join("runtime_events.jsonl"))
+}
+
+pub fn support_diagnostics_enabled(app_handle: &AppHandle) -> bool {
+    app_handle
+        .try_state::<ConfigState>()
+        .and_then(|state| {
+            state
+                .0
+                .lock()
+                .ok()
+                .map(|guard| guard.transcript_diagnostics_enabled)
+        })
+        .unwrap_or(false)
+}
+
+pub fn maybe_log_support_event(
+    app_handle: &AppHandle,
+    area: impl Into<String>,
+    event_type: impl Into<String>,
+    message: impl Into<String>,
+    details: serde_json::Value,
+) {
+    if !support_diagnostics_enabled(app_handle) {
+        return;
+    }
+
+    if let Some(state) = app_handle.try_state::<TranscriptDiagnosticsState>() {
+        state.0.log_runtime_event(SupportRuntimeEvent {
+            created_at: current_timestamp_ms(),
+            session_id: state.0.session_id().to_string(),
+            area: area.into(),
+            event_type: event_type.into(),
+            message: message.into(),
+            details,
+        });
+    }
+}
+
 fn writer_loop(
     db_path: PathBuf,
+    runtime_events_path: PathBuf,
     distil_whisper_events_path: PathBuf,
     parakeet_events_path: PathBuf,
     rx: mpsc::Receiver<DiagnosticsMsg>,
@@ -288,9 +396,13 @@ fn writer_loop(
                     eprintln!("[diagnostics] Failed to write transcript sample: {}", err);
                 }
             }
+            DiagnosticsMsg::RuntimeEvent(event) => {
+                if let Err(err) = append_runtime_event(&runtime_events_path, &event) {
+                    eprintln!("[diagnostics] Failed to write runtime event: {}", err);
+                }
+            }
             DiagnosticsMsg::DistilWhisperEvent(event) => {
-                if let Err(err) = append_distil_whisper_event(&distil_whisper_events_path, &event)
-                {
+                if let Err(err) = append_distil_whisper_event(&distil_whisper_events_path, &event) {
                     eprintln!(
                         "[diagnostics] Failed to write Distil-Whisper event: {}",
                         err
@@ -510,6 +622,16 @@ fn append_distil_whisper_event(
     writeln!(file, "{}", line).map_err(|e| e.to_string())
 }
 
+fn append_runtime_event(path: &Path, event: &SupportRuntimeEvent) -> Result<(), String> {
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    let line = serde_json::to_string(event).map_err(|e| e.to_string())?;
+    writeln!(file, "{}", line).map_err(|e| e.to_string())
+}
+
 fn append_parakeet_event(path: &Path, event: &ParakeetDiagnosticsEvent) -> Result<(), String> {
     let mut file = fs::OpenOptions::new()
         .create(true)
@@ -637,6 +759,112 @@ impl TranscriptDiagnosticsStore {
         Ok(words)
     }
 
+    pub fn export_support_bundle(
+        &self,
+        app_handle: &AppHandle,
+        summary: &SupportDiagnosticsBundleSummary,
+        redacted_config: &serde_json::Value,
+    ) -> Result<SupportDiagnosticsExport, String> {
+        self.flush_writer();
+
+        let exports_dir = app_handle
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?
+            .join("diagnostics")
+            .join("exports");
+        fs::create_dir_all(&exports_dir).map_err(|e| e.to_string())?;
+
+        let file_name = format!("yolo-voice-support-{}.zip", current_timestamp_ms());
+        let archive_path = exports_dir.join(&file_name);
+        let file = fs::File::create(&archive_path).map_err(|e| e.to_string())?;
+        let mut zip = zip::ZipWriter::new(file);
+        let options = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(0o644);
+
+        write_json_to_zip(&mut zip, "summary.json", summary, options)?;
+        write_json_to_zip(&mut zip, "config.redacted.json", redacted_config, options)?;
+        write_text_to_zip(
+            &mut zip,
+            "README.txt",
+            "This support bundle is generated locally by YOLO Voice.\nIt excludes audio recordings and redacts API keys.\nShare it manually with the maintainer only if you want support.\n",
+            options,
+        )?;
+
+        add_file_if_exists(
+            &mut zip,
+            &self.runtime_events_path,
+            "diagnostics/runtime_events.jsonl",
+            options,
+        )?;
+        add_file_if_exists(
+            &mut zip,
+            &self
+                .db_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("distil_whisper_events.jsonl"),
+            "diagnostics/distil_whisper_events.jsonl",
+            options,
+        )?;
+        add_file_if_exists(
+            &mut zip,
+            &self
+                .db_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("parakeet_events.jsonl"),
+            "diagnostics/parakeet_events.jsonl",
+            options,
+        )?;
+
+        zip.finish().map_err(|e| e.to_string())?;
+
+        Ok(SupportDiagnosticsExport {
+            archive_path: archive_path.to_string_lossy().to_string(),
+            file_name,
+        })
+    }
+}
+
+fn write_json_to_zip<T: Serialize>(
+    zip: &mut zip::ZipWriter<fs::File>,
+    name: &str,
+    value: &T,
+    options: SimpleFileOptions,
+) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
+    zip.start_file(name, options).map_err(|e| e.to_string())?;
+    zip.write_all(&bytes).map_err(|e| e.to_string())
+}
+
+fn write_text_to_zip(
+    zip: &mut zip::ZipWriter<fs::File>,
+    name: &str,
+    value: &str,
+    options: SimpleFileOptions,
+) -> Result<(), String> {
+    zip.start_file(name, options).map_err(|e| e.to_string())?;
+    zip.write_all(value.as_bytes()).map_err(|e| e.to_string())
+}
+
+fn add_file_if_exists(
+    zip: &mut zip::ZipWriter<fs::File>,
+    source_path: &Path,
+    target_name: &str,
+    options: SimpleFileOptions,
+) -> Result<(), String> {
+    if !source_path.is_file() {
+        return Ok(());
+    }
+
+    let mut source = fs::File::open(source_path).map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    source.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    zip.start_file(target_name, options)
+        .map_err(|e| e.to_string())?;
+    zip.write_all(&bytes).map_err(|e| e.to_string())
 }
 
 pub fn current_timestamp_ms() -> i64 {
