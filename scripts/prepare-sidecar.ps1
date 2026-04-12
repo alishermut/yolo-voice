@@ -10,6 +10,9 @@ $PythonVersion = "3.12.8"
 $PythonZipUrl = "https://www.python.org/ftp/python/$PythonVersion/python-$PythonVersion-embed-amd64.zip"
 $GetPipUrl = "https://bootstrap.pypa.io/get-pip.py"
 $ExpectedTorchVersionPrefix = "2.6.0"
+$ExpectedTransformersVersion = "5.5.3"
+$ExpectedHubVersion = "1.10.1"
+$ExpectedSoundfileVersion = "0.13.1"
 
 function Get-TorchProbe {
     param(
@@ -25,10 +28,14 @@ import json
 try:
     import torch
     import transformers
+    import huggingface_hub
+    import soundfile
     print(json.dumps({
         'torch_version': getattr(torch, '__version__', ''),
         'cuda_version': getattr(getattr(torch, 'version', None), 'cuda', None),
         'transformers_version': getattr(transformers, '__version__', ''),
+        'huggingface_hub_version': getattr(huggingface_hub, '__version__', ''),
+        'soundfile_version': getattr(soundfile, '__version__', ''),
     }))
 except Exception as exc:
     print(json.dumps({'error': str(exc)}))
@@ -62,6 +69,9 @@ if (Test-Path $existingPythonExe) {
         $existingTorchProbe -and
         $existingTorchProbe.torch_version -and
         $existingTorchProbe.torch_version.StartsWith($ExpectedTorchVersionPrefix) -and
+        $existingTorchProbe.transformers_version -eq $ExpectedTransformersVersion -and
+        $existingTorchProbe.huggingface_hub_version -eq $ExpectedHubVersion -and
+        $existingTorchProbe.soundfile_version -eq $ExpectedSoundfileVersion -and
         !$existingTorchProbe.cuda_version
     ) {
         Write-Host "[prepare-sidecar] Base Python environment already exists at $PythonEnvDir - skipping."
@@ -119,7 +129,10 @@ $torchProbe = Get-TorchProbe $pythonExe
 if (
     -not $torchProbe -or
     -not $torchProbe.torch_version -or
-    !$torchProbe.torch_version.StartsWith($ExpectedTorchVersionPrefix)
+    !$torchProbe.torch_version.StartsWith($ExpectedTorchVersionPrefix) -or
+    $torchProbe.transformers_version -ne $ExpectedTransformersVersion -or
+    $torchProbe.huggingface_hub_version -ne $ExpectedHubVersion -or
+    $torchProbe.soundfile_version -ne $ExpectedSoundfileVersion
 ) {
     throw "Bundled Distil runtime is missing the expected torch build."
 }
@@ -133,4 +146,6 @@ Write-Host ""
 Write-Host "[prepare-sidecar] Done!"
 Write-Host "[prepare-sidecar]   Torch: $($torchProbe.torch_version)"
 Write-Host "[prepare-sidecar]   Transformers: $($torchProbe.transformers_version)"
+Write-Host "[prepare-sidecar]   Hugging Face Hub: $($torchProbe.huggingface_hub_version)"
+Write-Host "[prepare-sidecar]   SoundFile: $($torchProbe.soundfile_version)"
 Write-Host "[prepare-sidecar]   Python env size: $([math]::Round($envSize, 1)) MB"

@@ -85,11 +85,13 @@ jobs:
 
           $bundledPython = $pythonFound | Select-Object -First 1
           $torchProbeCode = @(
-            "import json, torch, transformers"
+            "import json, torch, transformers, huggingface_hub, soundfile"
             "print(json.dumps({"
             "    'torch_version': getattr(torch, '__version__', ''),"
             "    'cuda_version': getattr(getattr(torch, 'version', None), 'cuda', None),"
             "    'transformers_version': getattr(transformers, '__version__', ''),"
+            "    'huggingface_hub_version': getattr(huggingface_hub, '__version__', ''),"
+            "    'soundfile_version': getattr(soundfile, '__version__', ''),"
             "}))"
           ) -join "`n"
           $torchProbeJson = & $bundledPython -c $torchProbeCode
@@ -102,9 +104,15 @@ jobs:
             Write-Host "::error::Bundled Distil runtime should stay CPU-based; found CUDA build $($torchProbe.cuda_version)."
             exit 1
           }
+          if ($torchProbe.transformers_version -ne "5.5.3" -or $torchProbe.huggingface_hub_version -ne "1.10.1" -or $torchProbe.soundfile_version -ne "0.13.1") {
+            Write-Host "::error::Bundled Distil runtime does not match the pinned Python dependency set."
+            exit 1
+          }
           Write-Host "Verified bundled Distil base runtime:"
           Write-Host "  torch=$($torchProbe.torch_version)"
           Write-Host "  transformers=$($torchProbe.transformers_version)"
+          Write-Host "  huggingface_hub=$($torchProbe.huggingface_hub_version)"
+          Write-Host "  soundfile=$($torchProbe.soundfile_version)"
 
       - name: Publish GitHub release
         shell: pwsh
