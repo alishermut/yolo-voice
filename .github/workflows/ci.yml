@@ -36,8 +36,7 @@ jobs:
         with:
           path: |
             sidecar/python-env
-            sidecar/models
-          key: sidecar-${{ hashFiles('sidecar/requirements.txt') }}
+          key: sidecar-${{ hashFiles('sidecar/requirements.txt', 'scripts/prepare-sidecar.ps1') }}
 
       - name: Prepare Python sidecar environment
         shell: pwsh

@@ -36,8 +36,7 @@ jobs:
         with:
           path: |
             sidecar/python-env
-            sidecar/models
-          key: sidecar-${{ hashFiles('sidecar/requirements.txt') }}
+          key: sidecar-${{ hashFiles('sidecar/requirements.txt', 'scripts/prepare-sidecar.ps1') }}
 
       - name: Prepare Python sidecar environment
         shell: pwsh
@@ -84,13 +83,34 @@ jobs:
           Write-Host "Verified python-env/python.exe in:"
           $pythonFound | ForEach-Object { Write-Host "  $_" }
 
+          $bundledPython = $pythonFound | Select-Object -First 1
+          $torchProbeJson = & $bundledPython -c @'
+import json, torch
+print(json.dumps({
+    'torch_version': getattr(torch, '__version__', ''),
+    'cuda_version': getattr(getattr(torch, 'version', None), 'cuda', None),
+    'cuda_available': bool(torch.cuda.is_available()),
+    'device_count': int(torch.cuda.device_count()),
+}))
+'@
+          $torchProbe = $torchProbeJson | ConvertFrom-Json
+          if (!$torchProbe.cuda_version) {
+            Write-Host "::error::Bundled Distil runtime does not contain a CUDA-enabled torch build."
+            exit 1
+          }
+          Write-Host "Verified bundled torch runtime:"
+          Write-Host "  torch=$($torchProbe.torch_version)"
+          Write-Host "  cuda_runtime=$($torchProbe.cuda_version)"
+          Write-Host "  cuda_available=$($torchProbe.cuda_available)"
+          Write-Host "  device_count=$($torchProbe.device_count)"
+
       - name: Publish GitHub release
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
-          $bundleDir = Resolve-Path "src-tauri/target/release/bundle/nsis"
+          $bundleDir = Resolve-Path "src-tauri/target/release/bundle"
           $tag = "v$version"
           $repo = "${{ github.repository }}"
           $releaseNotesPath = "docs/releases/v$version.md"
@@ -100,18 +120,26 @@ jobs:
           Write-Host "Bundle directory contents:"
           Get-ChildItem -Path $bundleDir -Recurse | Select-Object FullName | Format-Table -HideTableHeaders
 
-          $installer = Get-ChildItem -Path $bundleDir -Filter *setup.exe -File -Recurse | Where-Object { $_.Name -notmatch '\.sig$' } | Select-Object -First 1
+          $installer = Get-ChildItem -Path $bundleDir -Include *.msi,*setup.exe -File -Recurse |
+            Where-Object { $_.Name -notmatch '\.(zip|sig)$' } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
           $installerSig = Get-ChildItem -Path $bundleDir -Filter *setup.exe.sig -File -Recurse | Select-Object -First 1
 
+          $msiZip = Get-ChildItem -Path $bundleDir -Filter *.msi.zip -File -Recurse | Select-Object -First 1
+          $msiSig = Get-ChildItem -Path $bundleDir -Filter *.msi.zip.sig -File -Recurse | Select-Object -First 1
           $nsisZip = Get-ChildItem -Path $bundleDir -Filter *.nsis.zip -File -Recurse | Select-Object -First 1
           $nsisSig = Get-ChildItem -Path $bundleDir -Filter *.nsis.zip.sig -File -Recurse | Select-Object -First 1
 
           if (!$installer) {
-            Write-Host "::error::Missing installer exe."
+            Write-Host "::error::Missing installer artifact."
             exit 1
           }
 
-          if ($nsisZip -and $nsisSig) {
+          if ($msiZip -and $msiSig) {
+            $updaterFile = $msiZip
+            $sigFile = $msiSig
+          } elseif ($nsisZip -and $nsisSig) {
             $updaterFile = $nsisZip
             $sigFile = $nsisSig
           } elseif ($installerSig) {
@@ -138,6 +166,8 @@ jobs:
 
           $assets = @($installer.FullName)
           if ($installerSig) { $assets += $installerSig.FullName }
+          if ($msiZip) { $assets += $msiZip.FullName }
+          if ($msiSig) { $assets += $msiSig.FullName }
           if ($nsisZip) { $assets += $nsisZip.FullName }
           if ($nsisSig) { $assets += $nsisSig.FullName }
 
