@@ -119,6 +119,14 @@ export function onDistilWhisperStatus(
   });
 }
 
+export function onDistilWhisperProgress(
+  handler: (message: string) => void,
+): Promise<UnlistenFn> {
+  return listen<string>("distil-whisper-progress", (event) => {
+    handler(event.payload);
+  });
+}
+
 
 // ---- Profiles ----
 

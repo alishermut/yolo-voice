@@ -463,30 +463,6 @@ pub fn reload_distil_whisper_model_cmd(
         if !status.downloaded {
             return Err("Download Distil-Whisper first.".to_string());
         }
-        if use_gpu && !status.gpu_available {
-            eprintln!(
-                "[distil-whisper] GPU switch rejected: bundled runtime has no CUDA support. current_device={:?} status={}",
-                status.device,
-                status.status
-            );
-            maybe_log_support_event(
-                &app_handle,
-                "distil_whisper",
-                "gpu_switch_unavailable",
-                "Distil-Whisper GPU switch requested, but CUDA is unavailable",
-                serde_json::json!({
-                    "requested_gpu": use_gpu,
-                    "current_device": status.device,
-                    "status": status.status,
-                    "message": status.message,
-                    "gpu_available": status.gpu_available,
-                }),
-            );
-            return Err(
-                "Distil-Whisper GPU switching requires CUDA support in the bundled Python runtime, but CUDA is unavailable."
-                    .to_string(),
-            );
-        }
         guard.set_preferred_device(use_gpu);
         guard.shutdown()?;
     }

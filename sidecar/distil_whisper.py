@@ -50,6 +50,15 @@ def detect_device(preference: str = "auto") -> str:
     return "cpu"
 
 
+def cuda_available() -> bool:
+    try:
+        import torch
+
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
+
+
 def ensure_loaded(model_source: str, device_preference: str = "auto") -> None:
     global _loaded, _pipe, _device, _torch_dtype
 
@@ -175,7 +184,14 @@ def transcribe_audio(audio_data: str) -> dict:
 
 
 def handle_ping(_req: dict) -> None:
-    respond({"status": "ok", "cmd": "ping", "device": detect_device()})
+    respond(
+        {
+            "status": "ok",
+            "cmd": "ping",
+            "device": detect_device(),
+            "gpu_available": cuda_available(),
+        }
+    )
 
 
 def handle_download_model(req: dict) -> None:
@@ -206,6 +222,7 @@ def handle_load_model(req: dict) -> None:
                 "status": "ok",
                 "cmd": "load_model",
                 "device": _device,
+                "gpu_available": cuda_available(),
             }
         )
     except Exception as exc:

@@ -11,6 +11,7 @@ import {
   getGpuAvailable,
   getModelStatus,
   onModelDownloadProgress,
+  onDistilWhisperProgress,
   onModelStatus,
   onDistilWhisperStatus,
   openDistilWhisperModelPage,
@@ -42,6 +43,7 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
   const [distilBusy, setDistilBusy] =
     useState<"download" | "prepare" | "reload" | "delete" | "open" | null>(null);
   const [distilError, setDistilError] = useState<string | null>(null);
+  const [distilProgressMessage, setDistilProgressMessage] = useState("");
 
   const selectedEngine =
     config.offline_engine === "distil_whisper" ? "distil_whisper" : "parakeet";
@@ -65,16 +67,20 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
 
   const refreshDistilStatus = async () => {
     try {
-      setDistilStatus(await getDistilWhisperModelStatus());
+      const status = await getDistilWhisperModelStatus();
+      setDistilStatus(status);
+      return status;
     } catch (err) {
-      setDistilStatus({
+      const status = {
         status: "error",
         downloaded: false,
         ready: false,
         gpu_available: false,
         runtime: "transformers-distil-whisper",
         message: String(err),
-      });
+      };
+      setDistilStatus(status);
+      return status;
     }
   };
 
@@ -162,14 +168,20 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
         setDistilBusy("prepare");
       } else {
         setDistilBusy((current) => (current === "prepare" ? null : current));
+        setDistilProgressMessage("");
         refreshDistilStatus().catch(() => {});
       }
+    });
+
+    const unlistenDistilProgress = onDistilWhisperProgress((message) => {
+      setDistilProgressMessage(message);
     });
 
     return () => {
       unlisten.then((fn) => fn());
       unlistenProgress.then((fn) => fn());
       unlistenDistil.then((fn) => fn());
+      unlistenDistilProgress.then((fn) => fn());
     };
   }, [t]);
 
@@ -239,13 +251,17 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
   ) => {
     setDistilBusy(action);
     setDistilError(null);
+    let nextBusy: typeof distilBusy = null;
     try {
       await runner();
-      await refreshDistilStatus();
+      const status = await refreshDistilStatus();
+      if ((action === "prepare" || action === "reload") && status.status === "preparing") {
+        nextBusy = "prepare";
+      }
     } catch (err) {
       setDistilError(String(err));
     } finally {
-      setDistilBusy(null);
+      setDistilBusy(nextBusy);
     }
   };
 
@@ -297,7 +313,6 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
   const distilOnGpu = Boolean(
     distilStatus?.device && distilStatus.device.toLowerCase().startsWith("cuda"),
   );
-  const distilGpuAvailable = Boolean(distilStatus?.gpu_available);
   const showDistilAccelerationRow =
     Boolean(distilStatus?.downloaded) &&
     (Boolean(distilStatus?.ready) ||
@@ -541,12 +556,6 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
                         defaultValue: "Switching acceleration...",
                       })}
                     </span>
-                  ) : !distilOnGpu && !distilGpuAvailable ? (
-                    <span className="text-warning text-right">
-                      {t("transcription.offline.distilGpuUnavailable", {
-                        defaultValue: "GPU unavailable. Distil-Whisper needs CUDA support in the bundled runtime.",
-                      })}
-                    </span>
                   ) : (
                     <button
                       onClick={() =>
@@ -561,15 +570,6 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
                         : t("model.acceleration.switchToGpu")}
                     </button>
                   )}
-                </div>
-              )}
-
-              {distilStatus?.downloaded && !distilGpuAvailable && (
-                <div className="text-xs text-warning bg-warning-muted border border-warning/30 rounded-lg px-3 py-2">
-                  {t("transcription.offline.distilGpuUnavailableDetail", {
-                    defaultValue:
-                      "Distil-Whisper GPU mode uses CUDA PyTorch, not DirectML. This installation currently only exposes CPU support for the Distil runtime, so Switch to GPU is unavailable.",
-                  })}
                 </div>
               )}
 
@@ -637,23 +637,24 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
                 </div>
               )}
 
-              {distilBusy && distilBusy !== "reload" && (
+              {distilBusy && (
                 <div className="text-xs text-accent bg-accent-muted border border-accent/30 rounded-lg px-3 py-2">
-                  {distilBusy === "download"
-                    ? t("transcription.offline.distilDownloading", {
-                        defaultValue: "Downloading Distil-Whisper...",
-                      })
-                    : distilBusy === "prepare"
-                      ? t("transcription.offline.distilPreparing", {
-                          defaultValue: "Preparing Distil-Whisper...",
+                  {distilProgressMessage ||
+                    (distilBusy === "download"
+                      ? t("transcription.offline.distilDownloading", {
+                          defaultValue: "Downloading Distil-Whisper...",
                         })
-                      : distilBusy === "delete"
-                        ? t("transcription.offline.distilDeleting", {
-                            defaultValue: "Removing Distil-Whisper...",
+                      : distilBusy === "prepare" || distilBusy === "reload"
+                        ? t("transcription.offline.distilPreparing", {
+                            defaultValue: "Preparing Distil-Whisper...",
                           })
-                        : t("transcription.offline.distilOpening", {
-                            defaultValue: "Opening model page...",
-                          })}
+                        : distilBusy === "delete"
+                          ? t("transcription.offline.distilDeleting", {
+                              defaultValue: "Removing Distil-Whisper...",
+                            })
+                          : t("transcription.offline.distilOpening", {
+                              defaultValue: "Opening model page...",
+                            }))}
                 </div>
               )}
             </>

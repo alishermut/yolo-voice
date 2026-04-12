@@ -1,8 +1,9 @@
 use base64::Engine;
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -18,6 +19,12 @@ use crate::infra::model;
 const DISTIL_WHISPER_REPO: &str = "distil-whisper/distil-large-v3";
 pub const DISTIL_WHISPER_URL: &str = "https://huggingface.co/distil-whisper/distil-large-v3";
 const DISTIL_WHISPER_SYSTEM_PYTHON: &str = "python";
+const DISTIL_WHISPER_PROGRESS_EVENT: &str = "distil-whisper-progress";
+const DISTIL_GPU_RUNTIME_VERSION: &str = "cu124-v1";
+const DISTIL_GPU_RUNTIME_DIRNAME: &str = "gpu-cu124-v1";
+const DISTIL_GPU_TORCH_SPEC: &str = "torch==2.6.0";
+const DISTIL_GPU_INDEX_URL: &str = "https://download.pytorch.org/whl/cu124";
+const DISTIL_GPU_EXPECTED_CUDA_BUILD: &str = "12.4";
 static DISTIL_PREPARE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 pub struct DistilWhisperState(pub Mutex<DistilWhisperManager>);
@@ -124,7 +131,6 @@ impl DistilWhisperManager {
 
     pub fn download_model(&mut self, app: &AppHandle) -> Result<DistilWhisperStatus, String> {
         let model_dir = model::get_distil_whisper_models_dir(app)?;
-        let model_dir_display = model_dir.display().to_string();
         maybe_log_support_event(
             app,
             "distil_whisper",
@@ -132,7 +138,7 @@ impl DistilWhisperManager {
             "Downloading Distil-Whisper model snapshot",
             json!({
                 "model_id": DISTIL_WHISPER_REPO,
-                "target_dir": model_dir_display,
+                "target_dir": model_dir.display().to_string(),
             }),
         );
         let proc = self.ensure_process(app)?;
@@ -256,8 +262,13 @@ impl DistilWhisperManager {
         let model_dir = model::get_distil_whisper_models_dir(app)?;
         let device_preference = self.preferred_device.as_request_value().to_string();
         let model_source = model_dir.display().to_string();
-        let proc = self.ensure_process(app)?;
-        if !proc.loaded {
+        let gpu_required = matches!(self.preferred_device, DistilWhisperDevicePreference::Gpu);
+        let needs_load = {
+            let proc = self.ensure_process(app)?;
+            !proc.loaded
+        };
+
+        if needs_load {
             maybe_log_support_event(
                 app,
                 "distil_whisper",
@@ -268,18 +279,56 @@ impl DistilWhisperManager {
                     "device_preference": device_preference.clone(),
                 }),
             );
-            let response = proc.send_request(json!({
-                "cmd": "load_model",
-                "model_source": model_dir.display().to_string(),
-                "device_preference": device_preference,
-            }))?;
-            ensure_ok_response("load_model", &response)?;
+            let response = {
+                let proc = self.ensure_process(app)?;
+                proc.send_request(json!({
+                    "cmd": "load_model",
+                    "model_source": model_dir.display().to_string(),
+                    "device_preference": device_preference,
+                }))?
+            };
+            if let Err(err) = ensure_ok_response("load_model", &response) {
+                let message = format!(
+                    "Distil-Whisper failed to load from the pinned local snapshot: {}",
+                    err
+                );
+                self.last_error = Some(message.clone());
+                return Err(message);
+            }
+
+            let proc = self.ensure_process(app)?;
             proc.loaded = true;
             proc.device = response
                 .get("device")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown")
                 .to_string();
+            proc.gpu_available = response
+                .get("gpu_available")
+                .and_then(Value::as_bool)
+                .unwrap_or_else(|| proc.device.to_lowercase().starts_with("cuda"));
+
+            if gpu_required && !proc.device.to_lowercase().starts_with("cuda") {
+                let device = proc.device.clone();
+                let gpu_available = proc.gpu_available;
+                let message = format!(
+                    "Distil-Whisper GPU mode was requested, but the CUDA runtime loaded on {} instead.",
+                    device
+                );
+                self.last_error = Some(message.clone());
+                maybe_log_support_event(
+                    app,
+                    "distil_whisper",
+                    "load_gpu_fallback",
+                    "Distil-Whisper GPU request fell back to CPU",
+                    json!({
+                        "device": device,
+                        "gpu_available": gpu_available,
+                    }),
+                );
+                return Err(message);
+            }
+
             maybe_log_support_event(
                 app,
                 "distil_whisper",
@@ -287,28 +336,29 @@ impl DistilWhisperManager {
                 "Loaded Distil-Whisper model",
                 json!({
                     "device": proc.device,
+                    "gpu_available": proc.gpu_available,
                 }),
             );
+            self.last_error = None;
         }
-        Ok(proc)
+
+        self.ensure_process(app)
     }
 
     fn ensure_process(&mut self, app: &AppHandle) -> Result<&mut DistilWhisperProcess, String> {
         self.refresh_process_state();
         if self.process.is_none() {
-            let launcher = resolve_launcher(app)?;
-            let program = launcher.program.clone();
-            let prefix_args = launcher.prefix_args.clone();
-            let script_path = launcher.script_path.to_string_lossy().to_string();
+            let launcher = resolve_launcher(app, self.preferred_device)?;
             maybe_log_support_event(
                 app,
                 "distil_whisper",
                 "sidecar_spawn_attempt",
                 "Starting Distil-Whisper sidecar",
                 json!({
-                    "program": program,
-                    "prefix_args": prefix_args,
-                    "script_path": script_path,
+                    "program": launcher.program,
+                    "prefix_args": launcher.prefix_args,
+                    "script_path": launcher.script_path.display().to_string(),
+                    "preferred_device": self.preferred_device.as_request_value(),
                 }),
             );
             self.process = Some(DistilWhisperProcess::spawn(launcher)?);
@@ -332,11 +382,12 @@ pub fn maybe_prepare_in_background(app: &AppHandle) -> Result<(), String> {
     }
 
     let state = app.state::<DistilWhisperState>();
-    let mut guard = match state.0.try_lock() {
+    let guard = match state.0.try_lock() {
         Ok(guard) => guard,
         Err(_) => return Ok(()),
     };
 
+    let mut guard = guard;
     let status = guard.status(app);
     if !status.downloaded || status.ready || status.status == "preparing" {
         return Ok(());
@@ -352,6 +403,7 @@ pub fn maybe_prepare_in_background(app: &AppHandle) -> Result<(), String> {
 
     let handle = app.clone();
     let _ = handle.emit("distil-whisper-status", "preparing");
+    emit_distil_progress(&handle, "Preparing Distil-Whisper...");
     maybe_log_support_event(
         &handle,
         "distil_whisper",
@@ -374,6 +426,7 @@ pub fn maybe_prepare_in_background(app: &AppHandle) -> Result<(), String> {
             }
         };
         DISTIL_PREPARE_IN_PROGRESS.store(false, Ordering::SeqCst);
+        emit_distil_progress(&handle, "");
         maybe_log_support_event(
             &handle,
             "distil_whisper",
@@ -440,12 +493,13 @@ impl DistilWhisperProcess {
             .and_then(Value::as_str)
             .unwrap_or("unknown")
             .to_string();
-        proc.gpu_available = proc.device.to_lowercase().starts_with("cuda");
+        proc.gpu_available = response
+            .get("gpu_available")
+            .and_then(Value::as_bool)
+            .unwrap_or_else(|| proc.device.to_lowercase().starts_with("cuda"));
         eprintln!(
             "[distil-whisper] Sidecar ping succeeded via {} with device={} gpu_available={}",
-            launcher.display,
-            proc.device,
-            proc.gpu_available
+            launcher.display, proc.device, proc.gpu_available
         );
 
         Ok(proc)
@@ -509,9 +563,21 @@ fn distil_whisper_model_downloaded(app: &AppHandle) -> bool {
     model::is_distil_whisper_model_downloaded(&dir)
 }
 
-fn resolve_launcher(app: &AppHandle) -> Result<Launcher, String> {
+fn emit_distil_progress(app: &AppHandle, message: impl Into<String>) {
+    let _ = app.emit(DISTIL_WHISPER_PROGRESS_EVENT, message.into());
+}
+
+fn resolve_launcher(
+    app: &AppHandle,
+    preference: DistilWhisperDevicePreference,
+) -> Result<Launcher, String> {
     let script_path = resolve_sidecar_script(app)?;
-    let python = resolve_python_command(app);
+    let python = resolve_python_command(app, preference)?;
+    eprintln!(
+        "[distil-whisper] Resolved launcher python={} script={}",
+        python.2,
+        script_path.display()
+    );
     Ok(Launcher {
         program: python.0,
         prefix_args: python.1,
@@ -525,6 +591,7 @@ fn resolve_sidecar_script(app: &AppHandle) -> Result<PathBuf, String> {
         [
             root.join("sidecar").join("distil_whisper.py"),
             root.join("distil_whisper.py"),
+            root.join("_up_").join("sidecar").join("distil_whisper.py"),
         ]
     }) {
         if candidate.is_file() {
@@ -538,34 +605,59 @@ fn resolve_sidecar_script(app: &AppHandle) -> Result<PathBuf, String> {
     )
 }
 
-fn resolve_python_command(app: &AppHandle) -> (String, Vec<String>, String) {
+fn resolve_python_command(
+    app: &AppHandle,
+    preference: DistilWhisperDevicePreference,
+) -> Result<(String, Vec<String>, String), String> {
     if let Ok(path) = std::env::var("YOLO_VOICE_PYTHON") {
         eprintln!(
             "[distil-whisper] Using YOLO_VOICE_PYTHON override for sidecar runtime: {}",
             path
         );
-        return (path.clone(), Vec::new(), path);
+        return Ok((path.clone(), Vec::new(), path));
     }
 
-    for root in candidate_roots(app) {
-        let bundled = root.join("sidecar").join("python-env").join("python.exe");
-        if bundled.is_file() {
-            let display = bundled.display().to_string();
-            eprintln!(
-                "[distil-whisper] Using bundled sidecar Python runtime: {}",
-                display
-            );
-            return (display.clone(), Vec::new(), display);
-        }
+    if matches!(preference, DistilWhisperDevicePreference::Gpu) {
+        let gpu_python = ensure_gpu_runtime(app)?;
+        let display = gpu_python.display().to_string();
+        eprintln!(
+            "[distil-whisper] Using cached GPU runtime for sidecar: {}",
+            display
+        );
+        return Ok((display.clone(), Vec::new(), display));
+    }
 
-        let flat = root.join("python-env").join("python.exe");
-        if flat.is_file() {
-            let display = flat.display().to_string();
-            eprintln!(
-                "[distil-whisper] Using bundled flat Python runtime: {}",
-                display
-            );
-            return (display.clone(), Vec::new(), display);
+    if let Some(base_python) = resolve_bundled_python_path(app) {
+        let display = base_python.display().to_string();
+        eprintln!(
+            "[distil-whisper] Using bundled sidecar Python runtime: {}",
+            display
+        );
+        return Ok((display.clone(), Vec::new(), display));
+    }
+
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let bundled_script_present = [
+            resource_dir.join("sidecar").join("distil_whisper.py"),
+            resource_dir.join("distil_whisper.py"),
+            resource_dir
+                .join("_up_")
+                .join("sidecar")
+                .join("distil_whisper.py"),
+            resource_dir
+                .join("resources")
+                .join("sidecar")
+                .join("distil_whisper.py"),
+            resource_dir.join("resources").join("distil_whisper.py"),
+        ]
+        .into_iter()
+        .any(|path| path.is_file());
+
+        if bundled_script_present {
+            return Err(format!(
+                "Bundled Distil-Whisper Python runtime not found near {}. The packaged app is missing sidecar/python-env.",
+                resource_dir.display()
+            ));
         }
     }
 
@@ -573,11 +665,361 @@ fn resolve_python_command(app: &AppHandle) -> (String, Vec<String>, String) {
         "[distil-whisper] Bundled Python runtime not found; falling back to system command: {}",
         DISTIL_WHISPER_SYSTEM_PYTHON
     );
-    (
+    Ok((
         DISTIL_WHISPER_SYSTEM_PYTHON.to_string(),
         Vec::new(),
         DISTIL_WHISPER_SYSTEM_PYTHON.to_string(),
-    )
+    ))
+}
+
+fn resolve_bundled_python_env_dir(app: &AppHandle) -> Option<PathBuf> {
+    for root in candidate_roots(app) {
+        for candidate in [
+            root.join("sidecar").join("python-env"),
+            root.join("python-env"),
+            root.join("_up_").join("sidecar").join("python-env"),
+        ] {
+            if candidate.join("python.exe").is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+fn resolve_bundled_python_path(app: &AppHandle) -> Option<PathBuf> {
+    resolve_bundled_python_env_dir(app).map(|dir| dir.join("python.exe"))
+}
+
+fn distil_runtime_cache_root(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let root = dir.join("sidecar").join("distil-whisper");
+    fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    Ok(root)
+}
+
+fn distil_gpu_runtime_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(distil_runtime_cache_root(app)?
+        .join("gpu-runtime")
+        .join(DISTIL_GPU_RUNTIME_DIRNAME))
+}
+
+fn distil_gpu_python_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(distil_gpu_runtime_dir(app)?
+        .join("python-env")
+        .join("python.exe"))
+}
+
+fn ensure_gpu_runtime(app: &AppHandle) -> Result<PathBuf, String> {
+    let python_path = distil_gpu_python_path(app)?;
+    if gpu_runtime_is_valid(&python_path) {
+        eprintln!(
+            "[distil-whisper] Reusing cached GPU runtime {} at {}",
+            DISTIL_GPU_RUNTIME_VERSION,
+            python_path.display()
+        );
+        maybe_log_support_event(
+            app,
+            "distil_whisper",
+            "gpu_runtime_reused",
+            "Reused cached Distil-Whisper GPU runtime",
+            json!({
+                "version": DISTIL_GPU_RUNTIME_VERSION,
+                "python": python_path.display().to_string(),
+            }),
+        );
+        return Ok(python_path);
+    }
+
+    provision_gpu_runtime(app)?;
+
+    if gpu_runtime_is_valid(&python_path) {
+        maybe_log_support_event(
+            app,
+            "distil_whisper",
+            "gpu_runtime_ready",
+            "Prepared Distil-Whisper GPU runtime",
+            json!({
+                "version": DISTIL_GPU_RUNTIME_VERSION,
+                "python": python_path.display().to_string(),
+            }),
+        );
+        return Ok(python_path);
+    }
+
+    Err(format!(
+        "Prepared Distil-Whisper GPU runtime at {}, but CUDA support could not be verified.",
+        python_path.display()
+    ))
+}
+
+fn gpu_runtime_is_valid(python_path: &Path) -> bool {
+    if !python_path.is_file() {
+        return false;
+    }
+
+    match probe_python_runtime(
+        python_path,
+        "import json\n\
+import torch\n\
+import transformers\n\
+print(json.dumps({\n\
+    'torch_version': getattr(torch, '__version__', ''),\n\
+    'torch_cuda_build': getattr(getattr(torch, 'version', None), 'cuda', None),\n\
+    'cuda_available': bool(torch.cuda.is_available()),\n\
+    'device_count': int(torch.cuda.device_count()),\n\
+    'transformers_version': getattr(transformers, '__version__', ''),\n\
+}))",
+    ) {
+        Ok(payload) => payload
+            .get("torch_cuda_build")
+            .and_then(Value::as_str)
+            .is_some_and(|cuda| cuda == DISTIL_GPU_EXPECTED_CUDA_BUILD),
+        Err(err) => {
+            eprintln!(
+                "[distil-whisper] Cached GPU runtime probe failed for {}: {}",
+                python_path.display(),
+                err
+            );
+            false
+        }
+    }
+}
+
+fn provision_gpu_runtime(app: &AppHandle) -> Result<(), String> {
+    let base_env = resolve_bundled_python_env_dir(app).ok_or_else(|| {
+        "Could not locate the bundled Distil-Whisper Python environment to seed GPU setup."
+            .to_string()
+    })?;
+    let runtime_dir = distil_gpu_runtime_dir(app)?;
+    let target_env = runtime_dir.join("python-env");
+    let target_python = target_env.join("python.exe");
+
+    maybe_log_support_event(
+        app,
+        "distil_whisper",
+        "gpu_runtime_prepare_started",
+        "Preparing on-demand Distil-Whisper GPU runtime",
+        json!({
+            "version": DISTIL_GPU_RUNTIME_VERSION,
+            "target_dir": runtime_dir.display().to_string(),
+        }),
+    );
+    emit_distil_progress(
+        app,
+        format!(
+            "Preparing Distil-Whisper GPU runtime {} (one-time setup)...",
+            DISTIL_GPU_RUNTIME_VERSION
+        ),
+    );
+
+    if runtime_dir.exists() {
+        fs::remove_dir_all(&runtime_dir).map_err(|e| {
+            format!(
+                "Failed to reset cached Distil-Whisper GPU runtime at {}: {}",
+                runtime_dir.display(),
+                e
+            )
+        })?;
+    }
+
+    emit_distil_progress(app, "Copying bundled Distil-Whisper runtime...");
+    copy_dir_recursive(&base_env, &target_env)?;
+
+    emit_distil_progress(
+        app,
+        "Installing CUDA support for Distil-Whisper (large one-time download)...",
+    );
+    run_logged_command(
+        &target_python,
+        &[
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "--force-reinstall",
+            "--no-cache-dir",
+            "--no-warn-script-location",
+            "--index-url",
+            DISTIL_GPU_INDEX_URL,
+            DISTIL_GPU_TORCH_SPEC,
+        ],
+        "[distil-whisper][gpu-runtime]",
+    )?;
+
+    emit_distil_progress(app, "Verifying Distil-Whisper GPU runtime...");
+    let payload = probe_python_runtime(
+        &target_python,
+        "import json\n\
+import torch\n\
+print(json.dumps({\n\
+    'torch_version': getattr(torch, '__version__', ''),\n\
+    'torch_cuda_build': getattr(getattr(torch, 'version', None), 'cuda', None),\n\
+    'cuda_available': bool(torch.cuda.is_available()),\n\
+    'device_count': int(torch.cuda.device_count()),\n\
+}))",
+    )?;
+    eprintln!(
+        "[distil-whisper] Provisioned GPU runtime torch={} cuda_build={:?} cuda_available={:?} device_count={:?}",
+        payload
+            .get("torch_version")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown"),
+        payload.get("torch_cuda_build").and_then(Value::as_str),
+        payload.get("cuda_available").and_then(Value::as_bool),
+        payload.get("device_count").and_then(Value::as_i64),
+    );
+
+    if !gpu_runtime_is_valid(&target_python) {
+        return Err(format!(
+            "Installed Distil-Whisper GPU runtime at {}, but CUDA validation failed.",
+            target_python.display()
+        ));
+    }
+
+    emit_distil_progress(app, "Distil-Whisper GPU runtime is ready.");
+    maybe_log_support_event(
+        app,
+        "distil_whisper",
+        "gpu_runtime_prepare_finished",
+        "Finished preparing on-demand Distil-Whisper GPU runtime",
+        json!({
+            "version": DISTIL_GPU_RUNTIME_VERSION,
+            "python": target_python.display().to_string(),
+            "cuda_build": payload.get("torch_cuda_build").and_then(Value::as_str),
+            "cuda_available": payload.get("cuda_available").and_then(Value::as_bool),
+            "device_count": payload.get("device_count").and_then(Value::as_i64),
+        }),
+    );
+    Ok(())
+}
+
+fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::create_dir_all(destination).map_err(|e| {
+        format!(
+            "Failed to create runtime directory {}: {}",
+            destination.display(),
+            e
+        )
+    })?;
+
+    for entry in fs::read_dir(source).map_err(|e| {
+        format!(
+            "Failed to read bundled runtime directory {}: {}",
+            source.display(),
+            e
+        )
+    })? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+
+        if source_path.is_dir() {
+            copy_dir_recursive(&source_path, &destination_path)?;
+        } else {
+            fs::copy(&source_path, &destination_path).map_err(|e| {
+                format!(
+                    "Failed to copy {} to {}: {}",
+                    source_path.display(),
+                    destination_path.display(),
+                    e
+                )
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+fn probe_python_runtime(python_path: &Path, script: &str) -> Result<Value, String> {
+    let mut command = Command::new(python_path);
+    command.arg("-c").arg(script);
+
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+
+    let output = command.output().map_err(|e| {
+        format!(
+            "Failed to run Python probe with {}: {}",
+            python_path.display(),
+            e
+        )
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("Python probe exited with {}", output.status)
+        } else {
+            stderr
+        });
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(stdout.trim()).map_err(|e| {
+        format!(
+            "Failed to parse Python probe output from {}: {}",
+            python_path.display(),
+            e
+        )
+    })
+}
+
+fn run_logged_command(python_path: &Path, args: &[&str], label: &str) -> Result<(), String> {
+    let mut command = Command::new(python_path);
+    command
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+
+    let mut child = command.spawn().map_err(|e| {
+        format!(
+            "Failed to launch {} via {}: {}",
+            label,
+            python_path.display(),
+            e
+        )
+    })?;
+
+    if let Some(stdout) = child.stdout.take() {
+        spawn_output_forwarder(stdout, label.to_string());
+    }
+    if let Some(stderr) = child.stderr.take() {
+        spawn_output_forwarder(stderr, label.to_string());
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("Failed while waiting for {}: {}", label, e))?;
+
+    if !status.success() {
+        return Err(format!("{} failed with {}", label, status));
+    }
+
+    Ok(())
+}
+
+fn spawn_output_forwarder<R>(reader: R, label: String)
+where
+    R: std::io::Read + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let reader = BufReader::new(reader);
+        for line in reader.lines() {
+            match line {
+                Ok(line) if !line.trim().is_empty() => eprintln!("{} {}", label, line),
+                Ok(_) => {}
+                Err(err) => {
+                    eprintln!("{} Failed to read process output: {}", label, err);
+                    break;
+                }
+            }
+        }
+    });
 }
 
 fn candidate_roots(app: &AppHandle) -> Vec<PathBuf> {

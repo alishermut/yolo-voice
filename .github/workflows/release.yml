@@ -85,25 +85,26 @@ jobs:
 
           $bundledPython = $pythonFound | Select-Object -First 1
           $torchProbeCode = @(
-            "import json, torch"
+            "import json, torch, transformers"
             "print(json.dumps({"
             "    'torch_version': getattr(torch, '__version__', ''),"
             "    'cuda_version': getattr(getattr(torch, 'version', None), 'cuda', None),"
-            "    'cuda_available': bool(torch.cuda.is_available()),"
-            "    'device_count': int(torch.cuda.device_count()),"
+            "    'transformers_version': getattr(transformers, '__version__', ''),"
             "}))"
           ) -join "`n"
           $torchProbeJson = & $bundledPython -c $torchProbeCode
           $torchProbe = $torchProbeJson | ConvertFrom-Json
-          if (!$torchProbe.cuda_version) {
-            Write-Host "::error::Bundled Distil runtime does not contain a CUDA-enabled torch build."
+          if (!$torchProbe.torch_version) {
+            Write-Host "::error::Bundled Distil runtime is missing torch."
             exit 1
           }
-          Write-Host "Verified bundled torch runtime:"
+          if ($torchProbe.cuda_version) {
+            Write-Host "::error::Bundled Distil runtime should stay CPU-based; found CUDA build $($torchProbe.cuda_version)."
+            exit 1
+          }
+          Write-Host "Verified bundled Distil base runtime:"
           Write-Host "  torch=$($torchProbe.torch_version)"
-          Write-Host "  cuda_runtime=$($torchProbe.cuda_version)"
-          Write-Host "  cuda_available=$($torchProbe.cuda_available)"
-          Write-Host "  device_count=$($torchProbe.device_count)"
+          Write-Host "  transformers=$($torchProbe.transformers_version)"
 
       - name: Publish GitHub release
         shell: pwsh
