@@ -58,18 +58,31 @@ jobs:
       - name: Verify bundled updater resources
         shell: pwsh
         run: |
-          $candidates = @(
+          $scriptCandidates = @(
             "src-tauri/target/release/resources/distil_whisper.py",
             "src-tauri/target/release/resources/resources/distil_whisper.py",
             "src-tauri/target/release/_up_/sidecar/distil_whisper.py"
           )
-          $found = $candidates | Where-Object { Test-Path $_ }
-          if (!$found) {
+          $scriptFound = $scriptCandidates | Where-Object { Test-Path $_ }
+          if (!$scriptFound) {
             Write-Host "::error::distil_whisper.py was not found in any bundled release artifact location."
             exit 1
           }
           Write-Host "Verified distil_whisper.py in:"
-          $found | ForEach-Object { Write-Host "  $_" }
+          $scriptFound | ForEach-Object { Write-Host "  $_" }
+
+          $pythonCandidates = @(
+            "src-tauri/target/release/resources/python-env/python.exe",
+            "src-tauri/target/release/resources/resources/python-env/python.exe",
+            "src-tauri/target/release/_up_/sidecar/python-env/python.exe"
+          )
+          $pythonFound = $pythonCandidates | Where-Object { Test-Path $_ }
+          if (!$pythonFound) {
+            Write-Host "::error::Bundled python-env/python.exe was not found in any release artifact location."
+            exit 1
+          }
+          Write-Host "Verified python-env/python.exe in:"
+          $pythonFound | ForEach-Object { Write-Host "  $_" }
 
       - name: Publish GitHub release
         shell: pwsh

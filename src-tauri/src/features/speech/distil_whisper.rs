@@ -28,6 +28,7 @@ pub struct DistilWhisperStatus {
     pub downloaded: bool,
     pub ready: bool,
     pub device: Option<String>,
+    pub gpu_available: bool,
     pub runtime: String,
     pub message: Option<String>,
 }
@@ -68,6 +69,7 @@ struct DistilWhisperProcess {
     stdout: BufReader<ChildStdout>,
     loaded: bool,
     device: String,
+    gpu_available: bool,
 }
 
 struct Launcher {
@@ -93,12 +95,19 @@ impl DistilWhisperManager {
             .process
             .as_ref()
             .and_then(|proc| (ready || preparing).then(|| proc.device.clone()));
+        let gpu_available = self
+            .process
+            .as_ref()
+            .map(|proc| proc.gpu_available)
+            .unwrap_or(false);
 
         DistilWhisperStatus {
             status: if ready {
                 "ready".to_string()
             } else if preparing {
                 "preparing".to_string()
+            } else if downloaded && self.last_error.is_some() {
+                "error".to_string()
             } else if downloaded {
                 "downloaded".to_string()
             } else {
@@ -107,6 +116,7 @@ impl DistilWhisperManager {
             downloaded,
             ready,
             device,
+            gpu_available,
             runtime: "transformers-distil-whisper".to_string(),
             message: self.last_error.clone(),
         }
@@ -420,6 +430,7 @@ impl DistilWhisperProcess {
             stdout: BufReader::new(stdout),
             loaded: false,
             device: "unknown".to_string(),
+            gpu_available: false,
         };
 
         let response = proc.send_request(json!({ "cmd": "ping" }))?;
@@ -429,6 +440,13 @@ impl DistilWhisperProcess {
             .and_then(Value::as_str)
             .unwrap_or("unknown")
             .to_string();
+        proc.gpu_available = proc.device.to_lowercase().starts_with("cuda");
+        eprintln!(
+            "[distil-whisper] Sidecar ping succeeded via {} with device={} gpu_available={}",
+            launcher.display,
+            proc.device,
+            proc.gpu_available
+        );
 
         Ok(proc)
     }
@@ -522,6 +540,10 @@ fn resolve_sidecar_script(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn resolve_python_command(app: &AppHandle) -> (String, Vec<String>, String) {
     if let Ok(path) = std::env::var("YOLO_VOICE_PYTHON") {
+        eprintln!(
+            "[distil-whisper] Using YOLO_VOICE_PYTHON override for sidecar runtime: {}",
+            path
+        );
         return (path.clone(), Vec::new(), path);
     }
 
@@ -529,16 +551,28 @@ fn resolve_python_command(app: &AppHandle) -> (String, Vec<String>, String) {
         let bundled = root.join("sidecar").join("python-env").join("python.exe");
         if bundled.is_file() {
             let display = bundled.display().to_string();
+            eprintln!(
+                "[distil-whisper] Using bundled sidecar Python runtime: {}",
+                display
+            );
             return (display.clone(), Vec::new(), display);
         }
 
         let flat = root.join("python-env").join("python.exe");
         if flat.is_file() {
             let display = flat.display().to_string();
+            eprintln!(
+                "[distil-whisper] Using bundled flat Python runtime: {}",
+                display
+            );
             return (display.clone(), Vec::new(), display);
         }
     }
 
+    eprintln!(
+        "[distil-whisper] Bundled Python runtime not found; falling back to system command: {}",
+        DISTIL_WHISPER_SYSTEM_PYTHON
+    );
     (
         DISTIL_WHISPER_SYSTEM_PYTHON.to_string(),
         Vec::new(),
@@ -557,18 +591,28 @@ fn candidate_roots(app: &AppHandle) -> Vec<PathBuf> {
 
     if let Ok(cwd) = std::env::current_dir() {
         push_unique(cwd.clone());
+        push_unique(cwd.join("_up_"));
+        push_unique(cwd.join("_up_").join("sidecar"));
         if let Some(parent) = cwd.parent() {
             push_unique(parent.to_path_buf());
+            push_unique(parent.join("_up_"));
+            push_unique(parent.join("_up_").join("sidecar"));
         }
     }
 
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             push_unique(dir.to_path_buf());
+            push_unique(dir.join("_up_"));
+            push_unique(dir.join("_up_").join("sidecar"));
             if let Some(parent) = dir.parent() {
                 push_unique(parent.to_path_buf());
+                push_unique(parent.join("_up_"));
+                push_unique(parent.join("_up_").join("sidecar"));
                 if let Some(grandparent) = parent.parent() {
                     push_unique(grandparent.to_path_buf());
+                    push_unique(grandparent.join("_up_"));
+                    push_unique(grandparent.join("_up_").join("sidecar"));
                 }
             }
         }
@@ -577,6 +621,8 @@ fn candidate_roots(app: &AppHandle) -> Vec<PathBuf> {
     if let Ok(resource_dir) = app.path().resource_dir() {
         push_unique(resource_dir.clone());
         push_unique(resource_dir.join("resources"));
+        push_unique(resource_dir.join("_up_"));
+        push_unique(resource_dir.join("_up_").join("sidecar"));
     }
 
     roots

@@ -59,6 +59,7 @@ export interface DistilWhisperModelStatus {
   downloaded: boolean;
   ready: boolean;
   device?: string | null;
+  gpu_available: boolean;
   runtime: string;
   message?: string | null;
 }

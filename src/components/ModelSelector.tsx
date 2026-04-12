@@ -71,6 +71,7 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
         status: "error",
         downloaded: false,
         ready: false,
+        gpu_available: false,
         runtime: "transformers-distil-whisper",
         message: String(err),
       });
@@ -152,6 +153,7 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
               status,
               downloaded: status !== "not-downloaded",
               ready: status === "ready",
+              gpu_available: false,
               runtime: "transformers-distil-whisper",
               message: null,
             },
@@ -178,7 +180,12 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
 
     refreshDistilStatus().catch(() => {});
 
-    if (!distilStatus?.downloaded || distilStatus.ready || distilBusy) {
+    if (
+      !distilStatus?.downloaded ||
+      distilStatus.ready ||
+      distilBusy ||
+      distilStatus.status === "error"
+    ) {
       return;
     }
 
@@ -197,7 +204,11 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
     if (selectedEngine !== "distil_whisper") {
       return;
     }
-    if (!distilStatus?.downloaded || distilStatus.ready) {
+    if (
+      !distilStatus?.downloaded ||
+      distilStatus.ready ||
+      distilStatus.status !== "preparing"
+    ) {
       return;
     }
 
@@ -286,6 +297,7 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
   const distilOnGpu = Boolean(
     distilStatus?.device && distilStatus.device.toLowerCase().startsWith("cuda"),
   );
+  const distilGpuAvailable = Boolean(distilStatus?.gpu_available);
   const showDistilAccelerationRow =
     Boolean(distilStatus?.downloaded) &&
     (Boolean(distilStatus?.ready) ||
@@ -516,7 +528,7 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
               )}
 
               {showDistilAccelerationRow && (
-                <div className="text-xs text-text-secondary bg-bg-base border border-border-default rounded-lg px-3 py-2 flex items-center justify-between">
+                <div className="text-xs text-text-secondary bg-bg-base border border-border-default rounded-lg px-3 py-2 flex items-center justify-between gap-3">
                   <span>
                     {distilOnGpu
                       ? t("model.acceleration.gpuLabel")
@@ -527,6 +539,12 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
                     <span className="text-accent ml-2">
                       {t("transcription.offline.distilPreparing", {
                         defaultValue: "Switching acceleration...",
+                      })}
+                    </span>
+                  ) : !distilOnGpu && !distilGpuAvailable ? (
+                    <span className="text-warning text-right">
+                      {t("transcription.offline.distilGpuUnavailable", {
+                        defaultValue: "GPU unavailable. Distil-Whisper needs CUDA support in the bundled runtime.",
                       })}
                     </span>
                   ) : (
@@ -543,6 +561,15 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
                         : t("model.acceleration.switchToGpu")}
                     </button>
                   )}
+                </div>
+              )}
+
+              {distilStatus?.downloaded && !distilGpuAvailable && (
+                <div className="text-xs text-warning bg-warning-muted border border-warning/30 rounded-lg px-3 py-2">
+                  {t("transcription.offline.distilGpuUnavailableDetail", {
+                    defaultValue:
+                      "Distil-Whisper GPU mode uses CUDA PyTorch, not DirectML. This installation currently only exposes CPU support for the Distil runtime, so Switch to GPU is unavailable.",
+                  })}
                 </div>
               )}
 
@@ -579,6 +606,11 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
                         ? t("transcription.offline.distilPreparingPrompt", {
                             defaultValue:
                               "Distil-Whisper is preparing in the background so it is ready for the next dictation.",
+                          })
+                      : distilStatus.status === "error"
+                        ? t("transcription.offline.distilErrorPrompt", {
+                            defaultValue:
+                              "Distil-Whisper failed to prepare. Fix the runtime issue below, then retry.",
                           })
                       : t("transcription.offline.distilPreparedPrompt", {
                           defaultValue:
