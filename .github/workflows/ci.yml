@@ -31,6 +31,23 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Cache Python sidecar environment
+        uses: actions/cache@v4
+        with:
+          path: |
+            sidecar/python-env
+            sidecar/models
+          key: sidecar-${{ hashFiles('sidecar/requirements.txt') }}
+
+      - name: Prepare Python sidecar environment
+        shell: pwsh
+        run: |
+          if (!(Test-Path "sidecar/python-env/python.exe")) {
+            .\scripts\prepare-sidecar.ps1
+          } else {
+            Write-Host "Python sidecar environment already cached, skipping."
+          }
+
       - name: TypeScript check
         run: npx tsc --noEmit
 
