@@ -84,15 +84,16 @@ jobs:
           $pythonFound | ForEach-Object { Write-Host "  $_" }
 
           $bundledPython = $pythonFound | Select-Object -First 1
-          $torchProbeJson = & $bundledPython -c @'
-import json, torch
-print(json.dumps({
-    'torch_version': getattr(torch, '__version__', ''),
-    'cuda_version': getattr(getattr(torch, 'version', None), 'cuda', None),
-    'cuda_available': bool(torch.cuda.is_available()),
-    'device_count': int(torch.cuda.device_count()),
-}))
-'@
+          $torchProbeCode = @(
+            "import json, torch"
+            "print(json.dumps({"
+            "    'torch_version': getattr(torch, '__version__', ''),"
+            "    'cuda_version': getattr(getattr(torch, 'version', None), 'cuda', None),"
+            "    'cuda_available': bool(torch.cuda.is_available()),"
+            "    'device_count': int(torch.cuda.device_count()),"
+            "}))"
+          ) -join "`n"
+          $torchProbeJson = & $bundledPython -c $torchProbeCode
           $torchProbe = $torchProbeJson | ConvertFrom-Json
           if (!$torchProbe.cuda_version) {
             Write-Host "::error::Bundled Distil runtime does not contain a CUDA-enabled torch build."
