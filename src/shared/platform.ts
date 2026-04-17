@@ -13,10 +13,16 @@ import type {
   IndustryPack,
   IndustryPackInfo,
   ModelDownloadProgress,
+  OnboardingPreviewRequest,
+  OnboardingPreviewResult,
   PillState,
   Profile,
   SegmentTranscribed,
   SupportDiagnosticsExport,
+  StorageLocationKind,
+  StorageOverview,
+  TextAction,
+  TranscriptHistoryExport,
   TranscriptDiagnosticsStatus,
   TranscriptHistoryEntry,
 } from "./types";
@@ -27,8 +33,16 @@ export function getConfig(): Promise<AppConfig> {
   return invoke<AppConfig>("get_config");
 }
 
-export function saveConfig(newConfig: AppConfig): Promise<void> {
-  return invoke("save_config_cmd", { newConfig });
+export function saveConfig(newConfig: AppConfig): Promise<AppConfig> {
+  return invoke<AppConfig>("save_config_cmd", { newConfig });
+}
+
+export function getStorageOverview(): Promise<StorageOverview> {
+  return invoke<StorageOverview>("get_storage_overview");
+}
+
+export function openStorageLocation(kind: StorageLocationKind): Promise<void> {
+  return invoke("open_storage_location", { kind });
 }
 
 // ---- Audio Devices ----
@@ -53,6 +67,24 @@ export function startRecording(deviceIndex: number): Promise<void> {
 
 export function stopRecording(): Promise<string> {
   return invoke<string>("stop_recording");
+}
+
+export function startOnboardingPreviewRecording(
+  deviceIndex: number,
+): Promise<void> {
+  return invoke("start_onboarding_preview_recording", { deviceIndex });
+}
+
+export function cancelOnboardingPreviewRecording(): Promise<void> {
+  return invoke("cancel_onboarding_preview_recording");
+}
+
+export function finishOnboardingPreview(
+  request: OnboardingPreviewRequest,
+): Promise<OnboardingPreviewResult> {
+  return invoke<OnboardingPreviewResult>("finish_onboarding_preview", {
+    request,
+  });
 }
 
 // ---- Model / Inference ----
@@ -158,6 +190,22 @@ export function testCommandLlmConnection(
     apiKey,
     baseUrl,
   });
+}
+
+export function getTextActions(): Promise<TextAction[]> {
+  return invoke<TextAction[]>("get_text_actions");
+}
+
+export function saveTextAction(action: TextAction): Promise<void> {
+  return invoke("save_text_action", { action });
+}
+
+export function deleteTextAction(id: string): Promise<void> {
+  return invoke("delete_text_action", { id });
+}
+
+export function resetTextActionToDefault(id: string): Promise<void> {
+  return invoke("reset_text_action_to_default", { id });
 }
 
 export function testLlmConnection(
@@ -269,6 +317,10 @@ export function getTranscriptHistory(
 
 export function clearTranscriptHistory(): Promise<void> {
   return invoke("clear_transcript_history");
+}
+
+export function exportTranscriptHistory(): Promise<TranscriptHistoryExport> {
+  return invoke<TranscriptHistoryExport>("export_transcript_history");
 }
 
 export function deleteTranscriptEntry(id: number): Promise<void> {

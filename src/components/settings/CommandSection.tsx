@@ -1,128 +1,275 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { KeybindingInput } from "../KeybindingInput";
-import type { AppConfig } from "../../shared/types";
-import { testCommandLlmConnection } from "../../shared/platform";
+import { TextActionManager } from "../TextActionManager";
+import { Select } from "../ui/Select";
+import type {
+  AppConfig,
+  SettingsExperienceMode,
+  StorageOverview,
+} from "../../shared/types";
+import { openStorageLocation, testCommandLlmConnection } from "../../shared/platform";
 import {
-  inputStyles,
-  textareaStyles,
   buttonVariants,
-  sectionHeader,
   descStyles,
+  inputStyles,
+  sectionHeader,
 } from "../ui/styles";
+import { TrustCard } from "./TrustCard";
 
 interface CommandSectionProps {
   config: AppConfig;
+  settingsMode: SettingsExperienceMode;
+  storageOverview: StorageOverview | null;
   updateConfig: (updates: Partial<AppConfig>) => Promise<void>;
 }
 
-export function CommandSection({ config, updateConfig }: CommandSectionProps) {
+export function CommandSection({
+  config,
+  settingsMode,
+  storageOverview,
+  updateConfig,
+}: CommandSectionProps) {
   const { t } = useTranslation();
   const [testResult, setTestResult] = useState<{
     ok: boolean;
     msg: string;
   } | null>(null);
+  const [trustMessage, setTrustMessage] = useState<{
+    tone: "error" | "info" | "success";
+    text: string;
+  } | null>(null);
+  const providerName = (() => {
+    switch (config.command_provider) {
+      case "ollama":
+        return "Ollama";
+      case "openai":
+        return "OpenAI";
+      case "claude":
+        return "Claude";
+      default:
+        return "Groq";
+    }
+  })();
+  const effectiveProviderLabel =
+    config.command_provider === "ollama"
+      ? t("trust.badge.localVia", {
+          defaultValue: "Local via {{provider}}",
+          provider: providerName,
+        })
+      : t("trust.badge.cloudVia", {
+          defaultValue: "Cloud via {{provider}}",
+          provider: providerName,
+        });
+
+  const handleOpenLocation = async (
+    kind: "text_actions" | "config",
+    label: string,
+  ) => {
+    try {
+      setTrustMessage(null);
+      await openStorageLocation(kind);
+    } catch (error) {
+      setTrustMessage({
+        tone: "error",
+        text: t("trust.message.openError", {
+          defaultValue: "Couldn't open {{label}}: {{error}}",
+          label,
+          error: String(error),
+        }),
+        });
+    }
+  };
+  const isAdvanced = settingsMode === "advanced";
+  const showCloudApiKey = config.command_provider !== "ollama";
 
   return (
     <div className="space-y-8">
-      <p className={descStyles}>
-        {t("command.description")}
-      </p>
+      <p className={descStyles}>{t("textActions.description")}</p>
 
-      {/* Command hotkey */}
       <div>
-        <h3 className={sectionHeader}>{t("command.hotkey.heading")}</h3>
-        <div className="space-y-1">
-          <div className="flex items-center gap-3">
-            <span className="text-sm font-medium text-text-primary w-36">
-              {t("command.hotkey.label")}
-            </span>
-            <KeybindingInput
-              value={config.command_hotkey ?? ""}
-              onChange={(command_hotkey) => updateConfig({ command_hotkey })}
-              chord
-            />
-          </div>
-          {config.hotkey &&
-            config.command_hotkey &&
-            config.hotkey === config.command_hotkey && (
-              <p className="text-xs text-warning ml-40">
-                &#9888; {t("command.hotkey.conflictWarning")}
-              </p>
-            )}
-        </div>
+        <h3 className={sectionHeader}>{t("textActions.actions.heading")}</h3>
+        <TextActionManager
+          defaultActionId={config.default_text_action_id ?? "clean_up"}
+          settingsMode={settingsMode}
+          onDefaultActionChange={(default_text_action_id) =>
+            updateConfig({ default_text_action_id })
+          }
+        />
       </div>
 
-      {/* Groq API key */}
       <div>
-        <h3 className={sectionHeader}>{t("command.api.heading")}</h3>
+        <h3 className={sectionHeader}>{t("textActions.api.heading")}</h3>
         <div className="space-y-4">
           <div className="flex items-center gap-3">
             <span className="text-sm font-medium text-text-primary w-36">
-              {t("command.api.keyLabel")}
+              {t("llm.providerLabel")}
             </span>
-            <input
-              type="password"
-              value={config.command_api_key ?? ""}
-              onChange={(e) =>
-                updateConfig({ command_api_key: e.target.value })
-              }
-              placeholder={t("command.api.keyPlaceholder")}
-              className={`flex-1 ${inputStyles}`}
+            <Select
+              value={config.command_provider ?? "groq"}
+              onChange={(command_provider) => updateConfig({ command_provider })}
+              options={[
+                { value: "groq", label: t("llm.provider.groq.name") },
+                { value: "ollama", label: t("llm.provider.ollama.name") },
+                { value: "openai", label: t("llm.provider.openai.name") },
+                { value: "claude", label: t("llm.provider.claude.name") },
+              ]}
+              className="flex-1"
             />
           </div>
-          <p className={descStyles}>
-            {t("command.api.description")}
-          </p>
+          {isAdvanced && (
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-medium text-text-primary w-36">
+                {t("llm.modelLabel")}
+              </span>
+              <input
+                type="text"
+                value={config.command_model ?? ""}
+                onChange={(e) =>
+                  updateConfig({ command_model: e.target.value })
+                }
+                placeholder={t("llm.modelPlaceholder")}
+                className={`flex-1 ${inputStyles}`}
+              />
+            </div>
+          )}
+          {showCloudApiKey && (
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-medium text-text-primary w-36">
+                {t("textActions.api.keyLabel")}
+              </span>
+              <input
+                type="password"
+                value={config.command_api_key ?? ""}
+                onChange={(e) =>
+                  updateConfig({ command_api_key: e.target.value })
+                }
+                placeholder={t("textActions.api.keyPlaceholder")}
+                className={`flex-1 ${inputStyles}`}
+              />
+            </div>
+          )}
+          {isAdvanced && (
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-medium text-text-primary w-36">
+                {t("llm.baseUrlLabel")}
+              </span>
+              <input
+                type="text"
+                value={config.command_base_url ?? ""}
+                onChange={(e) =>
+                  updateConfig({ command_base_url: e.target.value })
+                }
+                placeholder={t("llm.baseUrlPlaceholder")}
+                className={`flex-1 ${inputStyles}`}
+              />
+            </div>
+          )}
+          <p className={descStyles}>{t("textActions.api.description")}</p>
         </div>
       </div>
 
-      {/* Test connection */}
-      <div className="space-y-2">
-        <button
-          onClick={async () => {
-            setTestResult(null);
-            try {
-              await testCommandLlmConnection(
-                config.command_provider ?? "groq",
-                config.command_model ?? "openai/gpt-oss-120b",
-                config.command_api_key ?? "",
-                config.command_base_url ?? "https://api.groq.com/openai",
-              );
-              setTestResult({ ok: true, msg: t("command.testConnection.success") });
-            } catch (e) {
-              setTestResult({ ok: false, msg: String(e) });
-            }
-          }}
-          className={buttonVariants.secondary}
-        >
-          {t("command.testConnection")}
-        </button>
-        {testResult && (
-          <p
-            className={`text-xs ${testResult.ok ? "text-success" : "text-error"}`}
-          >
-            {testResult.msg}
-          </p>
-        )}
-      </div>
+      <TrustCard
+        title={t("textActions.trust.title", {
+          defaultValue: "Storage & provider use",
+        })}
+        badgeLabel={effectiveProviderLabel}
+        badgeTone={config.command_provider === "ollama" ? "local" : "cloud"}
+        description={[
+          config.command_provider === "ollama"
+            ? t("textActions.trust.ollamaLine", {
+                defaultValue:
+                  "When you run a text action with Ollama, dictated text plus the selected action prompt stay on this device through your local Ollama setup.",
+              })
+            : t("textActions.trust.cloudLine", {
+                defaultValue:
+                  "When you run a text action, dictated text plus the selected action prompt are sent to {{provider}}.",
+                provider: providerName,
+              }),
+          t("textActions.trust.configLine", {
+            defaultValue:
+              "API keys and base URL are stored locally in your app config.",
+          }),
+        ]}
+        paths={[
+          {
+            label: t("trust.path.textActions", {
+              defaultValue: "Text actions folder",
+            }),
+            value:
+              storageOverview?.text_actions_dir ||
+              t("trust.value.unavailable", { defaultValue: "Unavailable" }),
+          },
+          {
+            label: t("trust.path.config", {
+              defaultValue: "Config file",
+            }),
+            value:
+              storageOverview?.config_path ||
+              t("trust.value.unavailable", { defaultValue: "Unavailable" }),
+          },
+        ]}
+        actions={[
+          {
+            label: t("trust.action.openTextActions", {
+              defaultValue: "Open text actions folder",
+            }),
+            onClick: () =>
+              handleOpenLocation(
+                "text_actions",
+                t("trust.action.openTextActions", {
+                  defaultValue: "Open text actions folder",
+                }),
+              ),
+          },
+          {
+            label: t("trust.action.openConfig", {
+              defaultValue: "Open config folder",
+            }),
+            onClick: () =>
+              handleOpenLocation(
+                "config",
+                t("trust.action.openConfig", {
+                  defaultValue: "Open config folder",
+                }),
+              ),
+          },
+        ]}
+        message={trustMessage}
+      />
 
-      {/* System prompt */}
-      <div>
-        <h3 className={sectionHeader}>{t("command.systemPrompt.heading")}</h3>
-        <p className={`${descStyles} mb-2`}>
-          {t("command.systemPrompt.description")}
-        </p>
-        <textarea
-          value={config.command_system_prompt ?? ""}
-          onChange={(e) =>
-            updateConfig({ command_system_prompt: e.target.value })
-          }
-          rows={3}
-          className={textareaStyles}
-          placeholder={t("command.systemPrompt.placeholder")}
-        />
-      </div>
+      {isAdvanced && (
+        <div className="space-y-2">
+          <button
+            onClick={async () => {
+              setTestResult(null);
+              try {
+                await testCommandLlmConnection(
+                  config.command_provider ?? "groq",
+                  config.command_model ?? "openai/gpt-oss-120b",
+                  config.command_api_key ?? "",
+                  config.command_base_url ?? "https://api.groq.com/openai",
+                );
+                setTestResult({
+                  ok: true,
+                  msg: t("textActions.testConnection.success"),
+                });
+              } catch (e) {
+                setTestResult({ ok: false, msg: String(e) });
+              }
+            }}
+            className={buttonVariants.secondary}
+          >
+            {t("textActions.testConnection.button")}
+          </button>
+          {testResult && (
+            <p
+              className={`text-xs ${testResult.ok ? "text-success" : "text-error"}`}
+            >
+              {testResult.msg}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

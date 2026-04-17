@@ -1,18 +1,28 @@
 import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import type { TranscriptHistoryEntry } from "../../shared/types";
+import type {
+  StorageOverview,
+  TranscriptHistoryEntry,
+} from "../../shared/types";
 import {
+  exportTranscriptHistory,
   getTranscriptHistory,
   clearTranscriptHistory,
   deleteTranscriptEntry,
   getTranscriptEntryWords,
   addWordsToDictionary,
+  openStorageLocation,
 } from "../../shared/platform";
 import { inputStyles } from "../ui/styles";
+import { TrustCard } from "./TrustCard";
 
 const PAGE_SIZE = 20;
 
-export function HistorySection() {
+interface HistorySectionProps {
+  storageOverview: StorageOverview | null;
+}
+
+export function HistorySection({ storageOverview }: HistorySectionProps) {
   const { t } = useTranslation();
   const [entries, setEntries] = useState<TranscriptHistoryEntry[]>([]);
   const [search, setSearch] = useState("");
@@ -23,6 +33,11 @@ export function HistorySection() {
   const [words, setWords] = useState<string[]>([]);
   const [selectedWords, setSelectedWords] = useState<Set<string>>(new Set());
   const [clearing, setClearing] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [trustMessage, setTrustMessage] = useState<{
+    tone: "error" | "info" | "success";
+    text: string;
+  } | null>(null);
 
   const load = useCallback(
     async (offset: number, append: boolean) => {
@@ -78,6 +93,49 @@ export function HistorySection() {
     navigator.clipboard.writeText(text);
   };
 
+  const handleExportHistory = async () => {
+    setExporting(true);
+    setTrustMessage(null);
+    try {
+      const result = await exportTranscriptHistory();
+      setTrustMessage({
+        tone: "success",
+        text: t("history.export.success", {
+          defaultValue: "History export saved to {{path}}",
+          path: result.file_path,
+        }),
+      });
+    } catch (error) {
+      setTrustMessage({
+        tone: "error",
+        text: t("history.export.error", {
+          defaultValue: "Couldn't export history: {{error}}",
+          error: String(error),
+        }),
+      });
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleOpenHistoryFolder = async () => {
+    setTrustMessage(null);
+    try {
+      await openStorageLocation("history");
+    } catch (error) {
+      setTrustMessage({
+        tone: "error",
+        text: t("trust.message.openError", {
+          defaultValue: "Couldn't open {{label}}: {{error}}",
+          label: t("trust.action.openHistory", {
+            defaultValue: "Open history folder",
+          }),
+          error: String(error),
+        }),
+      });
+    }
+  };
+
   const handleOpenWordPicker = async (id: number) => {
     const w = await getTranscriptEntryWords(id);
     setWords(w.sort());
@@ -113,6 +171,54 @@ export function HistorySection() {
 
   return (
     <div className="space-y-6">
+      <TrustCard
+        title={t("history.trust.title", {
+          defaultValue: "Local storage",
+        })}
+        badgeLabel={t("trust.badge.local", { defaultValue: "Local" })}
+        badgeTone="local"
+        description={[
+          t("history.trust.description", {
+            defaultValue:
+              "Transcript history is stored locally in the app diagnostics database on this device.",
+          }),
+          t("history.trust.clearLine", {
+            defaultValue:
+              "Clearing history removes those saved entries from local storage.",
+          }),
+        ]}
+        paths={[
+          {
+            label: t("trust.path.historyDb", {
+              defaultValue: "History database",
+            }),
+            value:
+              storageOverview?.transcript_history_db_path ||
+              t("trust.value.unavailable", { defaultValue: "Unavailable" }),
+          },
+        ]}
+        actions={[
+          {
+            label: exporting
+              ? t("history.export.exporting", {
+                  defaultValue: "Exporting...",
+                })
+              : t("history.export.button", {
+                  defaultValue: "Export history as JSON",
+                }),
+            onClick: handleExportHistory,
+            disabled: exporting,
+          },
+          {
+            label: t("trust.action.openHistory", {
+              defaultValue: "Open history folder",
+            }),
+            onClick: handleOpenHistoryFolder,
+          },
+        ]}
+        message={trustMessage}
+      />
+
       <div className="flex items-center justify-end">
         <button
           onClick={handleClearAll}

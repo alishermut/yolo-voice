@@ -4,10 +4,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::features::speech::accumulator::{FinalizedSegments, SegmentAccumulator, SegmentSender};
 use crate::features::speech::vad::VadProcessor;
+use super::{DictationRuntimePhase, HotkeyRuntimeState};
 
 // ── Warm device cache ────────────────────────────────────────────────────────
 
@@ -110,6 +111,8 @@ pub struct VadConfig {
     pub silence_threshold_ms: u32,
     pub model_path: PathBuf,
     pub text_cleanup_enabled: bool,
+    pub emit_speech_start_event: bool,
+    pub auto_stop_after_segment: bool,
 }
 
 #[derive(Debug)]
@@ -171,6 +174,12 @@ pub fn start_recording(
             let dev_rate = sample_rate;
             let dev_ch = channels;
             let utterance_samples = utterance_samples_16k.clone();
+            let speech_start_app = if cfg.emit_speech_start_event {
+                Some(app_handle.clone())
+            } else {
+                None
+            };
+            let auto_stop_after_segment = cfg.auto_stop_after_segment;
 
             std::thread::Builder::new()
                 .name("vad-processor".into())
@@ -184,6 +193,8 @@ pub fn start_recording(
                         utterance_samples,
                         dev_rate,
                         dev_ch,
+                        speech_start_app,
+                        auto_stop_after_segment,
                     );
                     let _ = done_tx.send(());
                 })
@@ -429,6 +440,8 @@ fn vad_thread(
     utterance_samples_16k: Arc<Mutex<Vec<f32>>>,
     device_sample_rate: u32,
     device_channels: u16,
+    speech_start_app: Option<AppHandle>,
+    auto_stop_after_segment: bool,
 ) {
     let mut vad = match VadProcessor::new(model_path, silence_ms) {
         Ok(v) => v,
@@ -446,6 +459,8 @@ fn vad_thread(
     // for VAD processing (needs 512-sample chunks at 16kHz).
     // Audio callbacks send small chunks (e.g. 480 @ 48kHz = 160 @ 16kHz).
     let mut vad_buf: Vec<f32> = Vec::with_capacity(4096);
+    let mut speech_started_emitted = false;
+    let mut auto_stop_emitted = false;
 
     while let Ok(raw_chunk) = rx.recv() {
         if stop_flag.load(Ordering::Relaxed) {
@@ -492,7 +507,16 @@ fn vad_thread(
 
         // Feed buffered audio to VAD (it processes in 512-sample chunks internally)
         if vad_buf.len() >= 512 {
-            let segments = vad.process(&vad_buf);
+            let (segments, speech_started) = vad.process_with_speech_start(&vad_buf);
+            if speech_started && !speech_started_emitted {
+                speech_started_emitted = true;
+                if let Some(app) = &speech_start_app {
+                    if let Some(runtime) = app.try_state::<HotkeyRuntimeState>() {
+                        runtime.set_dictation_phase(DictationRuntimePhase::Recording);
+                    }
+                    crate::app::events::emit_all(app, "recording-state", "recording");
+                }
+            }
             // Keep leftover samples that didn't fill a complete chunk
             let consumed = (vad_buf.len() / 512) * 512;
             let leftover = vad_buf[consumed..].to_vec();
@@ -500,19 +524,45 @@ fn vad_thread(
 
             for seg in segments {
                 segment_sender.submit(seg);
+                if auto_stop_after_segment && speech_started_emitted && !auto_stop_emitted {
+                    auto_stop_emitted = true;
+                    if let Some(app) = &speech_start_app {
+                        let _ = app.emit("hotkey-action", "stop");
+                    }
+                }
             }
         }
     }
 
     // Process any remaining buffered audio
     if vad_buf.len() >= 512 {
-        let segments = vad.process(&vad_buf);
+        let (segments, speech_started) = vad.process_with_speech_start(&vad_buf);
+        if speech_started && !speech_started_emitted {
+            speech_started_emitted = true;
+            if let Some(app) = &speech_start_app {
+                if let Some(runtime) = app.try_state::<HotkeyRuntimeState>() {
+                    runtime.set_dictation_phase(DictationRuntimePhase::Recording);
+                }
+                crate::app::events::emit_all(app, "recording-state", "recording");
+            }
+        }
         for seg in segments {
             segment_sender.submit(seg);
+            if auto_stop_after_segment && speech_started_emitted && !auto_stop_emitted {
+                auto_stop_emitted = true;
+                if let Some(app) = &speech_start_app {
+                    let _ = app.emit("hotkey-action", "stop");
+                }
+            }
         }
     }
 
     if let Some(seg) = vad.flush() {
         segment_sender.submit(seg);
+        if auto_stop_after_segment && speech_started_emitted && !auto_stop_emitted {
+            if let Some(app) = &speech_start_app {
+                let _ = app.emit("hotkey-action", "stop");
+            }
+        }
     }
 }

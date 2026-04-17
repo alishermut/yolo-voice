@@ -1,10 +1,11 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { getAppInfo } from "../../shared/platform";
-import type { AppConfig, AppInfo } from "../../shared/types";
+import { getAppInfo, openStorageLocation } from "../../shared/platform";
+import type { AppConfig, AppInfo, StorageOverview } from "../../shared/types";
 import { focusRing } from "../ui/styles";
 import { useUpdaterContext } from "../../contexts/UpdaterContext";
 import { SupportDiagnosticsCard } from "./SupportDiagnosticsCard";
+import { TrustCard } from "./TrustCard";
 
 const releaseNoteFiles = import.meta.glob("../../../docs/releases/*.md", {
   eager: true,
@@ -79,18 +80,46 @@ function getReleaseNotes(version?: string) {
 
 interface AboutSectionProps {
   config: AppConfig;
+  storageOverview: StorageOverview | null;
   updateConfig: (updates: Partial<AppConfig>) => Promise<void>;
 }
 
-export function AboutSection({ config, updateConfig }: AboutSectionProps) {
+export function AboutSection({
+  config,
+  storageOverview,
+  updateConfig,
+}: AboutSectionProps) {
   const { t } = useTranslation();
   const [info, setInfo] = useState<AppInfo | null>(null);
+  const [storageMessage, setStorageMessage] = useState<{
+    tone: "error" | "info" | "success";
+    text: string;
+  } | null>(null);
   const { status, version, error, checkForUpdates, installUpdate, dismissError } = useUpdaterContext();
   const releaseNotes = getReleaseNotes(info?.version);
 
   useEffect(() => {
     getAppInfo().then(setInfo).catch(console.error);
   }, []);
+
+  const handleOpenLocation = async (
+    kind: "app_data" | "config" | "diagnostics" | "support_exports",
+    label: string,
+  ) => {
+    try {
+      setStorageMessage(null);
+      await openStorageLocation(kind);
+    } catch (error) {
+      setStorageMessage({
+        tone: "error",
+        text: t("trust.message.openError", {
+          defaultValue: "Couldn't open {{label}}: {{error}}",
+          label,
+          error: String(error),
+        }),
+      });
+    }
+  };
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -218,6 +247,121 @@ export function AboutSection({ config, updateConfig }: AboutSectionProps) {
           </p>
         )}
       </div>
+
+      <TrustCard
+        title={t("about.storage.heading", {
+          defaultValue: "Local storage",
+        })}
+        badgeLabel={t("trust.badge.local", { defaultValue: "Local" })}
+        badgeTone="local"
+        description={[
+          t("about.storage.description", {
+            defaultValue:
+              "These are the main local storage locations YOLO Voice uses on this device.",
+          }),
+        ]}
+        paths={[
+          {
+            label: t("trust.path.appData", {
+              defaultValue: "App data folder",
+            }),
+            value:
+              storageOverview?.app_data_dir ||
+              t("trust.value.unavailable", { defaultValue: "Unavailable" }),
+          },
+          {
+            label: t("trust.path.config", {
+              defaultValue: "Config file",
+            }),
+            value:
+              storageOverview?.config_path ||
+              t("trust.value.unavailable", { defaultValue: "Unavailable" }),
+          },
+          {
+            label: t("trust.path.diagnostics", {
+              defaultValue: "Diagnostics folder",
+            }),
+            value:
+              storageOverview?.diagnostics_dir ||
+              t("trust.value.unavailable", { defaultValue: "Unavailable" }),
+          },
+          {
+            label: t("trust.path.supportExports", {
+              defaultValue: "Support exports folder",
+            }),
+            value:
+              storageOverview?.support_exports_dir ||
+              t("trust.value.unavailable", { defaultValue: "Unavailable" }),
+          },
+          {
+            label: t("trust.path.profiles", {
+              defaultValue: "Profiles folder",
+            }),
+            value:
+              storageOverview?.profiles_dir ||
+              t("trust.value.unavailable", { defaultValue: "Unavailable" }),
+          },
+          {
+            label: t("trust.path.textActions", {
+              defaultValue: "Text actions folder",
+            }),
+            value:
+              storageOverview?.text_actions_dir ||
+              t("trust.value.unavailable", { defaultValue: "Unavailable" }),
+          },
+        ]}
+        actions={[
+          {
+            label: t("trust.action.openAppData", {
+              defaultValue: "Open app data folder",
+            }),
+            onClick: () =>
+              handleOpenLocation(
+                "app_data",
+                t("trust.action.openAppData", {
+                  defaultValue: "Open app data folder",
+                }),
+              ),
+          },
+          {
+            label: t("trust.action.openConfig", {
+              defaultValue: "Open config folder",
+            }),
+            onClick: () =>
+              handleOpenLocation(
+                "config",
+                t("trust.action.openConfig", {
+                  defaultValue: "Open config folder",
+                }),
+              ),
+          },
+          {
+            label: t("trust.action.openDiagnostics", {
+              defaultValue: "Open diagnostics folder",
+            }),
+            onClick: () =>
+              handleOpenLocation(
+                "diagnostics",
+                t("trust.action.openDiagnostics", {
+                  defaultValue: "Open diagnostics folder",
+                }),
+              ),
+          },
+          {
+            label: t("trust.action.openSupportExports", {
+              defaultValue: "Open support exports",
+            }),
+            onClick: () =>
+              handleOpenLocation(
+                "support_exports",
+                t("trust.action.openSupportExports", {
+                  defaultValue: "Open support exports",
+                }),
+              ),
+          },
+        ]}
+        message={storageMessage}
+      />
 
       <SupportDiagnosticsCard
         config={config}

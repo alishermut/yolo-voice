@@ -116,7 +116,7 @@ export function Pill() {
   // Pre-show the window on recording start to eliminate delay.
   // When we go from hidden → recording, show + resize in one shot.
   useEffect(() => {
-    if (state === "recording" && !windowReady.current) {
+    if ((state === "recording" || state === "listening") && !windowReady.current) {
       const win = getCurrentWindow();
       win.setSize(PILL_SIZE).catch(() => {});
       win.show().catch(() => {});
@@ -189,6 +189,7 @@ export function Pill() {
 
   const isActive = state !== "idle";
   const isCommand = mode === "command";
+  const isListening = state === "listening";
   const colors = isCommand ? COLORS.command : COLORS.dictation;
   const label = isCommand ? t("pill.recording.labelCommand") : t("pill.recording.labelDictation");
 
@@ -208,6 +209,8 @@ export function Pill() {
     ? "none"
     : state === "recording"
       ? `0 0 12px ${colors.glow}`
+      : isListening
+        ? `0 0 10px ${colors.glow}`
       : state === "transcribing"
         ? `0 0 12px ${isCommand ? "rgba(168, 85, 247, 0.15)" : "rgba(59, 130, 246, 0.15)"}`
         : "none";
@@ -250,6 +253,43 @@ export function Pill() {
             "background 0.25s ease",
         }}
       >
+        {/* LISTENING */}
+        {state === "listening" && (
+          <>
+            <div style={{ position: "relative", width: "10px", height: "10px", flexShrink: 0 }}>
+              <div
+                style={{
+                  position: "absolute",
+                  inset: "-4px",
+                  borderRadius: "50%",
+                  background: `${colors.accent} 0.18)`,
+                  animation: "ping 1.8s cubic-bezier(0,0,0.2,1) infinite",
+                }}
+              />
+              <div
+                style={{
+                  width: "10px",
+                  height: "10px",
+                  borderRadius: "50%",
+                  background: colors.solid,
+                  opacity: 0.85,
+                }}
+              />
+            </div>
+            <span
+              style={{
+                color: colors.text,
+                fontSize: "10px",
+                fontWeight: 600,
+                letterSpacing: "0.6px",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {t("pill.listening.label")}
+            </span>
+          </>
+        )}
+
         {/* RECORDING */}
         {state === "recording" && (
           <>
@@ -266,7 +306,7 @@ export function Pill() {
               <div style={{ width: "10px", height: "10px", borderRadius: "50%", background: colors.solid }} />
             </div>
             <Waveform level={level} barCount={9} color={`${colors.accent} 1)`} />
-            <span style={{ color: styleName ? "#c084fc" : colors.text, fontSize: "10px", fontWeight: 600, letterSpacing: "1px", whiteSpace: "nowrap" }}>
+            <span style={{ color: styleName ? "#c084fc" : colors.text, fontSize: "10px", fontWeight: 600, letterSpacing: "0.8px", whiteSpace: "nowrap" }}>
               {styleName ? t("pill.recording.labelWithStyle", { styleName }) : label}
             </span>
           </>

@@ -88,6 +88,8 @@ pub struct AppConfig {
     pub spoken_punctuation_enabled: bool,
     #[serde(default)]
     pub continuous_recording_enabled: bool,
+    #[serde(default = "default_dictation_activation_mode")]
+    pub dictation_activation_mode: String,
     #[serde(default)]
     pub auto_pause_media_enabled: bool,
 
@@ -104,6 +106,10 @@ pub struct AppConfig {
     pub command_base_url: String,
     #[serde(default = "default_command_system_prompt")]
     pub command_system_prompt: String,
+    #[serde(default = "default_text_action_id")]
+    pub default_text_action_id: String,
+    #[serde(default)]
+    pub settings_experience_mode: String,
 }
 
 fn default_text_cleanup() -> bool {
@@ -172,11 +178,25 @@ fn default_command_model() -> String {
 fn default_command_base_url() -> String {
     "https://api.groq.com/openai".to_string()
 }
-fn default_command_system_prompt() -> String {
+const LEGACY_DEFAULT_COMMAND_SYSTEM_PROMPT: &str =
     "You are a voice command assistant. The user speaks a command and you produce \
      the exact text they want inserted. Do not explain, do not add commentary. \
-     Output only the requested text."
-        .to_string()
+     Output only the requested text.";
+
+fn default_command_system_prompt() -> String {
+    LEGACY_DEFAULT_COMMAND_SYSTEM_PROMPT.to_string()
+}
+pub fn legacy_default_command_system_prompt() -> &'static str {
+    LEGACY_DEFAULT_COMMAND_SYSTEM_PROMPT
+}
+fn default_text_action_id() -> String {
+    crate::features::speech::default_text_action_id().to_string()
+}
+fn default_dictation_activation_mode() -> String {
+    "manual".to_string()
+}
+fn default_settings_experience_mode() -> String {
+    "simple".to_string()
 }
 fn default_hallucination_filter() -> bool {
     true
@@ -229,6 +249,7 @@ impl Default for AppConfig {
             hallucination_filter_enabled: default_hallucination_filter(),
             spoken_punctuation_enabled: false,
             continuous_recording_enabled: false,
+            dictation_activation_mode: default_dictation_activation_mode(),
             auto_pause_media_enabled: false,
             command_hotkey: default_command_hotkey(),
             command_provider: default_command_provider(),
@@ -236,6 +257,8 @@ impl Default for AppConfig {
             command_api_key: String::new(),
             command_base_url: default_command_base_url(),
             command_system_prompt: default_command_system_prompt(),
+            default_text_action_id: default_text_action_id(),
+            settings_experience_mode: default_settings_experience_mode(),
         }
     }
 }
@@ -249,6 +272,9 @@ mod tests {
         let config = AppConfig::default();
         assert_eq!(config.offline_engine, "parakeet");
         assert!(config.parakeet_segmented_mode_enabled);
+        assert_eq!(config.dictation_activation_mode, "manual");
+        assert_eq!(config.default_text_action_id, "clean_up");
+        assert_eq!(config.settings_experience_mode, "simple");
     }
 
     #[test]
@@ -263,12 +289,71 @@ mod tests {
         let config: AppConfig = serde_json::from_str(json).expect("config should deserialize");
         assert_eq!(config.offline_engine, "parakeet");
         assert!(config.parakeet_segmented_mode_enabled);
+        assert_eq!(config.dictation_activation_mode, "manual");
+        assert_eq!(config.default_text_action_id, "clean_up");
+        assert_eq!(config.settings_experience_mode, "");
+    }
+
+    #[test]
+    fn older_onboarded_config_defaults_to_advanced_mode() {
+        let json = r#"{
+            "hotkey":"CapsLock",
+            "device_index":0,
+            "language":"en",
+            "transcription_mode":"offline",
+            "onboarding_completed": true
+        }"#;
+
+        let config: AppConfig = serde_json::from_str(json).expect("config should deserialize");
+        let normalized = super::normalize_config(config);
+        assert_eq!(normalized.settings_experience_mode, "advanced");
+    }
+
+    #[test]
+    fn older_fresh_config_defaults_to_simple_mode() {
+        let json = r#"{
+            "hotkey":"CapsLock",
+            "device_index":0,
+            "language":"en",
+            "transcription_mode":"offline",
+            "onboarding_completed": false
+        }"#;
+
+        let config: AppConfig = serde_json::from_str(json).expect("config should deserialize");
+        let normalized = super::normalize_config(config);
+        assert_eq!(normalized.settings_experience_mode, "simple");
+    }
+
+    #[test]
+    fn incompatible_voice_activation_resets_to_manual() {
+        let mut config = AppConfig::default();
+        config.transcription_mode = "cloud".to_string();
+        config.offline_engine = "parakeet".to_string();
+        config.parakeet_segmented_mode_enabled = true;
+        config.dictation_activation_mode = "voice_activated".to_string();
+
+        let normalized = super::normalize_config(config);
+        assert_eq!(normalized.dictation_activation_mode, "manual");
+    }
+
+    #[test]
+    fn voice_activation_disables_continuous_recording() {
+        let mut config = AppConfig::default();
+        config.transcription_mode = "offline".to_string();
+        config.offline_engine = "parakeet".to_string();
+        config.parakeet_segmented_mode_enabled = true;
+        config.dictation_activation_mode = "voice_activated".to_string();
+        config.continuous_recording_enabled = true;
+
+        let normalized = super::normalize_config(config);
+        assert_eq!(normalized.dictation_activation_mode, "voice_activated");
+        assert!(!normalized.continuous_recording_enabled);
     }
 }
 
 pub struct ConfigState(pub Mutex<AppConfig>);
 
-fn config_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
+pub fn get_config_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
     let dir = app_handle
         .path()
         .app_data_dir()
@@ -277,7 +362,7 @@ fn config_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
 }
 
 pub fn load_config(app_handle: &AppHandle) -> AppConfig {
-    let path = match config_path(app_handle) {
+    let path = match get_config_path(app_handle) {
         Ok(p) => p,
         Err(_) => return AppConfig::default(),
     };
@@ -295,23 +380,55 @@ fn normalize_config(mut config: AppConfig) -> AppConfig {
         "cohere" => "distil_whisper".to_string(),
         _ => default_offline_engine(),
     };
+    config.dictation_activation_mode = match config.dictation_activation_mode.as_str() {
+        "manual" => "manual".to_string(),
+        "voice_activated" => "voice_activated".to_string(),
+        _ => default_dictation_activation_mode(),
+    };
+    config.settings_experience_mode = match config.settings_experience_mode.as_str() {
+        "simple" => "simple".to_string(),
+        "advanced" => "advanced".to_string(),
+        _ => {
+            if config.onboarding_completed {
+                "advanced".to_string()
+            } else {
+                default_settings_experience_mode()
+            }
+        }
+    };
+    if config.default_text_action_id.trim().is_empty() {
+        config.default_text_action_id = default_text_action_id();
+    }
+    if !voice_activation_supported(&config) {
+        config.dictation_activation_mode = "manual".to_string();
+    }
+    if config.dictation_activation_mode == "voice_activated" {
+        config.continuous_recording_enabled = false;
+    }
     config
 }
 
-pub fn save_config(app_handle: &AppHandle, config: &AppConfig) -> Result<(), String> {
-    let path = config_path(app_handle)?;
+pub fn voice_activation_supported(config: &AppConfig) -> bool {
+    config.transcription_mode == "offline"
+        && config.offline_engine == "parakeet"
+        && config.parakeet_segmented_mode_enabled
+}
+
+pub fn save_config(app_handle: &AppHandle, config: &AppConfig) -> Result<AppConfig, String> {
+    let normalized = normalize_config(config.clone());
+    let path = get_config_path(app_handle)?;
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
-    let json = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(&normalized).map_err(|e| e.to_string())?;
     fs::write(&path, json).map_err(|e| e.to_string())?;
     // Ensure the write is flushed to disk (prevents data loss on crash/close)
     if let Ok(file) = fs::File::open(&path) {
         let _ = file.sync_all();
     }
-    Ok(())
+    Ok(normalized)
 }
 
 // ---- Startup ----

@@ -163,6 +163,27 @@ pub fn command_llm_call(
     Ok(result)
 }
 
+pub fn text_action_llm_call(
+    source_text: &str,
+    action_prompt: &str,
+    provider: &str,
+    model: &str,
+    api_key: &str,
+    base_url: &str,
+) -> Result<String, String> {
+    if source_text.trim().is_empty() {
+        return Ok(String::new());
+    }
+
+    let system_prompt = format!(
+        "You are a text transformation assistant.\n\nAction instructions:\n{}\n\nRules:\n- Transform only the provided source text.\n- Preserve the original meaning unless the action instructions explicitly ask for a stronger rewrite.\n- Return only the final transformed text.\n- Do not explain your changes.\n- Keep the response in the same language as the source text unless the action instructions explicitly ask otherwise.",
+        action_prompt.trim()
+    );
+
+    let user_prompt = format!("Source text:\n{}", source_text.trim());
+    command_llm_call(&user_prompt, &system_prompt, provider, model, api_key, base_url)
+}
+
 /// Result of detecting a vocabulary addition command from voice input.
 #[derive(Debug, Clone)]
 pub struct VocabCommand {

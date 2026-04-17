@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import i18n, { UI_LANGUAGES } from "../../i18n";
 import { MicSelector } from "../MicSelector";
-import type { AppConfig } from "../../shared/types";
+import type { AppConfig, SettingsExperienceMode } from "../../shared/types";
 import {
   getAvailableSounds,
   previewSound,
@@ -14,6 +14,7 @@ import { Switch } from "../ui/Switch";
 
 interface GeneralSectionProps {
   config: AppConfig;
+  settingsMode: SettingsExperienceMode;
   updateConfig: (updates: Partial<AppConfig>) => Promise<void>;
   setConfig: React.Dispatch<React.SetStateAction<AppConfig | null>>;
   setError: (error: string | null) => void;
@@ -21,12 +22,14 @@ interface GeneralSectionProps {
 
 export function GeneralSection({
   config,
+  settingsMode,
   updateConfig,
   setConfig,
   setError,
 }: GeneralSectionProps) {
   const { t } = useTranslation();
   const [availableSounds, setAvailableSounds] = useState<string[]>([]);
+  const isAdvanced = settingsMode === "advanced";
 
   useEffect(() => {
     getAvailableSounds()
@@ -79,7 +82,7 @@ export function GeneralSection({
               label={t("general.sounds.enableLabel")}
             />
           </div>
-          {config.sounds_enabled !== false && (
+          {config.sounds_enabled !== false && isAdvanced && (
             <>
               <div className="flex items-center gap-3">
                 <span className="text-sm font-medium text-text-primary w-32">
@@ -175,41 +178,45 @@ export function GeneralSection({
             />
           </div>
 
-          <div className="flex items-center justify-between">
-            <div>
-              <span className="text-sm font-medium text-text-primary">
-                {t("general.pill.label")}
-              </span>
-              <p className="text-xs text-text-muted">
-                {t("general.pill.description")}
-              </p>
+          {isAdvanced && (
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-sm font-medium text-text-primary">
+                  {t("general.pill.label")}
+                </span>
+                <p className="text-xs text-text-muted">
+                  {t("general.pill.description")}
+                </p>
+              </div>
+              <Switch
+                checked={config.pill_pinned ?? false}
+                onChange={(checked) =>
+                  updateConfig({ pill_pinned: checked })
+                }
+                label={t("general.pill.label")}
+              />
             </div>
-            <Switch
-              checked={config.pill_pinned ?? false}
-              onChange={(checked) =>
-                updateConfig({ pill_pinned: checked })
-              }
-              label={t("general.pill.label")}
-            />
-          </div>
+          )}
 
-          <div className="flex items-center justify-between">
-            <div>
-              <span className="text-sm font-medium text-text-primary">
-                {t("general.mediaPause.label")}
-              </span>
-              <p className="text-xs text-text-muted">
-                {t("general.mediaPause.description")}
-              </p>
+          {isAdvanced && (
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-sm font-medium text-text-primary">
+                  {t("general.mediaPause.label")}
+                </span>
+                <p className="text-xs text-text-muted">
+                  {t("general.mediaPause.description")}
+                </p>
+              </div>
+              <Switch
+                checked={config.auto_pause_media_enabled ?? false}
+                onChange={(checked) =>
+                  updateConfig({ auto_pause_media_enabled: checked })
+                }
+                label={t("general.mediaPause.label")}
+              />
             </div>
-            <Switch
-              checked={config.auto_pause_media_enabled ?? false}
-              onChange={(checked) =>
-                updateConfig({ auto_pause_media_enabled: checked })
-              }
-              label={t("general.mediaPause.label")}
-            />
-          </div>
+          )}
         </div>
       </div>
     </div>

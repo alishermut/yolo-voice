@@ -11,7 +11,7 @@ use crate::features::capture::RuntimeDictionaryCache;
 use crate::features::diagnostics::{
     distil_whisper_events_path, maybe_log_support_event, parakeet_events_path, runtime_events_path,
     SupportDiagnosticsBundleSummary, SupportDiagnosticsExport, TranscriptDiagnosticsState,
-    TranscriptDiagnosticsStatus,
+    TranscriptDiagnosticsStatus, TranscriptHistoryExport,
 };
 use crate::features::output;
 use crate::features::settings::{self, AppConfig, ConfigState};
@@ -21,9 +21,71 @@ use crate::features::speech::distil_whisper::{
 };
 use crate::features::speech::inference::InferenceState;
 use crate::features::speech::vocabulary::{IndustryPack, IndustryPackInfo};
+use crate::features::speech::TextAction;
 use crate::infra::platform::{self, AudioStream, DeviceInfo};
 
 pub struct AudioState(pub Mutex<Option<AudioStream>>);
+pub struct OnboardingPreviewState(pub Mutex<Option<recorder::RecordingStream>>);
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct OnboardingPreviewRequest {
+    pub transcription_mode: String,
+    pub cloud_stt_provider: String,
+    pub cloud_stt_api_key: String,
+    pub language: String,
+    #[serde(default)]
+    pub offline_engine: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OnboardingPreviewResult {
+    pub transcript: String,
+    pub effective_provider: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StorageOverview {
+    pub app_data_dir: String,
+    pub config_path: String,
+    pub models_dir: String,
+    pub parakeet_models_dir: String,
+    pub distil_whisper_models_dir: String,
+    pub diagnostics_dir: String,
+    pub transcript_history_db_path: String,
+    pub support_exports_dir: String,
+    pub profiles_dir: String,
+    pub text_actions_dir: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StorageLocationKind {
+    AppData,
+    Config,
+    Models,
+    Diagnostics,
+    History,
+    SupportExports,
+    Profiles,
+    TextActions,
+}
+
+impl TryFrom<&str> for StorageLocationKind {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "app_data" => Ok(Self::AppData),
+            "config" => Ok(Self::Config),
+            "models" => Ok(Self::Models),
+            "diagnostics" => Ok(Self::Diagnostics),
+            "history" => Ok(Self::History),
+            "support_exports" => Ok(Self::SupportExports),
+            "profiles" => Ok(Self::Profiles),
+            "text_actions" => Ok(Self::TextActions),
+            other => Err(format!("Unknown storage location kind: {}", other)),
+        }
+    }
+}
 
 /// Invalidate both the regex cache and the runtime dictionary cache.
 /// Call this whenever vocabulary or replacement rules change.
@@ -31,6 +93,102 @@ fn invalidate_vocabulary_caches(app: &tauri::AppHandle) {
     speech::vocabulary::invalidate_regex_cache();
     if let Ok(mut guard) = app.state::<RuntimeDictionaryCache>().0.lock() {
         *guard = None;
+    }
+}
+
+fn ensure_text_actions_initialized(
+    app_handle: &tauri::AppHandle,
+    config_state: &State<'_, ConfigState>,
+) -> Result<(), String> {
+    let mut config = config_state.0.lock().map_err(|e| e.to_string())?.clone();
+    let changed = speech::ensure_text_actions_ready(app_handle, &mut config)?;
+    if changed {
+        let saved = settings::save_config(app_handle, &config)?;
+        let mut guard = config_state.0.lock().map_err(|e| e.to_string())?;
+        *guard = saved;
+    }
+    Ok(())
+}
+
+fn storage_overview_from_app_data(
+    app_data_dir: &std::path::Path,
+    config_path: &std::path::Path,
+    models_dir: &std::path::Path,
+    parakeet_models_dir: &std::path::Path,
+    distil_whisper_models_dir: &std::path::Path,
+    diagnostics_dir: &std::path::Path,
+    transcript_history_db_path: &std::path::Path,
+    support_exports_dir: &std::path::Path,
+    profiles_dir: &std::path::Path,
+    text_actions_dir: &std::path::Path,
+) -> StorageOverview {
+    StorageOverview {
+        app_data_dir: app_data_dir.to_string_lossy().to_string(),
+        config_path: config_path.to_string_lossy().to_string(),
+        models_dir: models_dir.to_string_lossy().to_string(),
+        parakeet_models_dir: parakeet_models_dir.to_string_lossy().to_string(),
+        distil_whisper_models_dir: distil_whisper_models_dir.to_string_lossy().to_string(),
+        diagnostics_dir: diagnostics_dir.to_string_lossy().to_string(),
+        transcript_history_db_path: transcript_history_db_path.to_string_lossy().to_string(),
+        support_exports_dir: support_exports_dir.to_string_lossy().to_string(),
+        profiles_dir: profiles_dir.to_string_lossy().to_string(),
+        text_actions_dir: text_actions_dir.to_string_lossy().to_string(),
+    }
+}
+
+fn build_storage_overview(app_handle: &tauri::AppHandle) -> Result<StorageOverview, String> {
+    let app_data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    let config_path = settings::get_config_path(app_handle)?;
+    let models_dir = crate::infra::model::get_models_root_dir(app_handle)?;
+    let parakeet_models_dir = crate::infra::model::get_models_dir(app_handle)?;
+    let distil_whisper_models_dir = crate::infra::model::get_distil_whisper_models_dir(app_handle)?;
+    let diagnostics_dir = crate::features::diagnostics::diagnostics_dir(app_handle)?;
+    let transcript_history_db_path = crate::features::diagnostics::diagnostics_db_path(app_handle)?;
+    let support_exports_dir = crate::features::diagnostics::support_exports_dir(app_handle)?;
+    let profiles_dir = speech::get_profiles_dir(app_handle)?;
+    let text_actions_dir = speech::get_text_actions_dir(app_handle)?;
+
+    Ok(storage_overview_from_app_data(
+        &app_data_dir,
+        &config_path,
+        &models_dir,
+        &parakeet_models_dir,
+        &distil_whisper_models_dir,
+        &diagnostics_dir,
+        &transcript_history_db_path,
+        &support_exports_dir,
+        &profiles_dir,
+        &text_actions_dir,
+    ))
+}
+
+fn resolve_storage_location_path(
+    app_handle: &tauri::AppHandle,
+    kind: StorageLocationKind,
+) -> Result<std::path::PathBuf, String> {
+    match kind {
+        StorageLocationKind::AppData => {
+            let dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+            fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            Ok(dir)
+        }
+        StorageLocationKind::Config => settings::get_config_path(app_handle)?
+            .parent()
+            .map(|path| path.to_path_buf())
+            .ok_or_else(|| "Config folder not available".to_string()),
+        StorageLocationKind::Models => crate::infra::model::get_models_root_dir(app_handle),
+        StorageLocationKind::Diagnostics => crate::features::diagnostics::diagnostics_dir(app_handle),
+        StorageLocationKind::History => crate::features::diagnostics::diagnostics_db_path(app_handle)?
+            .parent()
+            .map(|path| path.to_path_buf())
+            .ok_or_else(|| "History folder not available".to_string()),
+        StorageLocationKind::SupportExports => {
+            let dir = crate::features::diagnostics::support_exports_dir(app_handle)?;
+            fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            Ok(dir)
+        }
+        StorageLocationKind::Profiles => speech::get_profiles_dir(app_handle),
+        StorageLocationKind::TextActions => speech::get_text_actions_dir(app_handle),
     }
 }
 
@@ -70,47 +228,84 @@ pub fn get_config(state: State<'_, ConfigState>) -> Result<AppConfig, String> {
 }
 
 #[tauri::command]
+pub fn get_storage_overview(app_handle: tauri::AppHandle) -> Result<StorageOverview, String> {
+    build_storage_overview(&app_handle)
+}
+
+#[tauri::command]
+pub fn open_storage_location(
+    kind: String,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let kind = StorageLocationKind::try_from(kind.as_str())?;
+    let path = resolve_storage_location_path(&app_handle, kind)?;
+    app_handle
+        .opener()
+        .open_path(path.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn save_config_cmd(
     new_config: AppConfig,
     app_handle: tauri::AppHandle,
     state: State<'_, ConfigState>,
     hotkey_cache: State<'_, HotkeyCache>,
-) -> Result<(), String> {
-    let (old_lang, old_pill_pinned, old_device_index, old_offline_engine) = {
+) -> Result<AppConfig, String> {
+    let (
+        old_lang,
+        old_pill_pinned,
+        old_device_index,
+        old_offline_engine,
+        old_hotkey,
+        old_command_hotkey,
+        old_activation_mode,
+    ) = {
         let guard = state.0.lock().map_err(|e| e.to_string())?;
         (
             guard.ui_language.clone(),
             guard.pill_pinned,
             guard.device_index,
             guard.offline_engine.clone(),
+            guard.hotkey.clone(),
+            guard.command_hotkey.clone(),
+            guard.dictation_activation_mode.clone(),
         )
     };
 
-    settings::save_config(&app_handle, &new_config)?;
+    let saved_config = settings::save_config(&app_handle, &new_config)?;
     // Update cached hotkey keys so the rdev listener picks up changes immediately
-    hotkey_cache.update(&new_config.hotkey, &new_config.command_hotkey);
+    hotkey_cache.update(&saved_config.hotkey, &saved_config.command_hotkey);
+    if saved_config.hotkey != old_hotkey
+        || saved_config.command_hotkey != old_command_hotkey
+        || saved_config.dictation_activation_mode != old_activation_mode
+    {
+        app_handle
+            .state::<crate::features::capture::HotkeyRuntimeState>()
+            .reset_listener_state();
+    }
 
     // Notify all windows when UI language changes
-    if new_config.ui_language != old_lang {
-        let _ = app_handle.emit("ui-language-changed", &new_config.ui_language);
+    if saved_config.ui_language != old_lang {
+        let _ = app_handle.emit("ui-language-changed", &saved_config.ui_language);
     }
     // Notify all windows when pill pinned state changes
-    if new_config.pill_pinned != old_pill_pinned {
-        let _ = app_handle.emit("pill-pinned-changed", new_config.pill_pinned);
+    if saved_config.pill_pinned != old_pill_pinned {
+        let _ = app_handle.emit("pill-pinned-changed", saved_config.pill_pinned);
     }
     // Re-warm audio device if microphone changed
-    if new_config.device_index != old_device_index {
+    if saved_config.device_index != old_device_index {
         use crate::features::capture::recorder::{spawn_warm_device, WarmDeviceState};
         if let Some(warm) = app_handle.try_state::<WarmDeviceState>() {
             if let Ok(mut g) = warm.0.lock() {
                 *g = None;
             }
         }
-        spawn_warm_device(&app_handle, new_config.device_index);
+        spawn_warm_device(&app_handle, saved_config.device_index);
     }
 
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    *guard = new_config;
+    *guard = saved_config.clone();
     let should_prepare_distil = guard.transcription_mode == "offline"
         && guard.offline_engine == "distil_whisper"
         && old_offline_engine != "distil_whisper";
@@ -119,7 +314,52 @@ pub fn save_config_cmd(
     if should_prepare_distil {
         let _ = maybe_prepare_in_background(&app_handle);
     }
-    Ok(())
+    Ok(saved_config)
+}
+
+// ---- Text Actions ----
+
+#[tauri::command]
+pub fn get_text_actions(
+    app_handle: tauri::AppHandle,
+    config_state: State<'_, ConfigState>,
+) -> Result<Vec<TextAction>, String> {
+    ensure_text_actions_initialized(&app_handle, &config_state)?;
+    let text_actions_dir = speech::get_text_actions_dir(&app_handle)?;
+    speech::list_text_actions(&text_actions_dir)
+}
+
+#[tauri::command]
+pub fn save_text_action(
+    action: TextAction,
+    app_handle: tauri::AppHandle,
+    config_state: State<'_, ConfigState>,
+) -> Result<(), String> {
+    ensure_text_actions_initialized(&app_handle, &config_state)?;
+    let text_actions_dir = speech::get_text_actions_dir(&app_handle)?;
+    speech::save_text_action(&text_actions_dir, &action)
+}
+
+#[tauri::command]
+pub fn delete_text_action(
+    id: String,
+    app_handle: tauri::AppHandle,
+    config_state: State<'_, ConfigState>,
+) -> Result<(), String> {
+    ensure_text_actions_initialized(&app_handle, &config_state)?;
+    let text_actions_dir = speech::get_text_actions_dir(&app_handle)?;
+    speech::delete_text_action(&text_actions_dir, &id)
+}
+
+#[tauri::command]
+pub fn reset_text_action_to_default(
+    id: String,
+    app_handle: tauri::AppHandle,
+    config_state: State<'_, ConfigState>,
+) -> Result<(), String> {
+    ensure_text_actions_initialized(&app_handle, &config_state)?;
+    let text_actions_dir = speech::get_text_actions_dir(&app_handle)?;
+    speech::reset_text_action_to_default(&text_actions_dir, &id)
 }
 
 // ---- Recording ----
@@ -145,6 +385,95 @@ pub fn stop_recording(state: State<'_, RecordingState>) -> Result<String, String
         .ok_or_else(|| "No active recording".to_string())?;
     let path = recorder::stop_and_save(recording)?;
     Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn start_onboarding_preview_recording(
+    device_index: usize,
+    app_handle: tauri::AppHandle,
+    state: State<'_, OnboardingPreviewState>,
+) -> Result<(), String> {
+    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    *guard = None;
+    let app_handle_for_state = app_handle.clone();
+    let warm_state = app_handle_for_state.try_state::<recorder::WarmDeviceState>();
+    let stream = recorder::start_recording(device_index, app_handle, None, warm_state.as_deref())?;
+    *guard = Some(stream);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cancel_onboarding_preview_recording(
+    state: State<'_, OnboardingPreviewState>,
+) -> Result<(), String> {
+    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    *guard = None;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn finish_onboarding_preview(
+    request: OnboardingPreviewRequest,
+    app_handle: tauri::AppHandle,
+    preview_state: State<'_, OnboardingPreviewState>,
+    inference_state: State<'_, InferenceState>,
+    distil_state: State<'_, DistilWhisperState>,
+    config_state: State<'_, ConfigState>,
+) -> Result<OnboardingPreviewResult, String> {
+    let recording = {
+        let mut guard = preview_state.0.lock().map_err(|e| e.to_string())?;
+        guard
+            .take()
+            .ok_or_else(|| "No onboarding preview recording is active.".to_string())?
+    };
+
+    let config = config_state.0.lock().map_err(|e| e.to_string())?.clone();
+    let transcription_mode = if request.transcription_mode.trim().is_empty() {
+        config.transcription_mode.clone()
+    } else {
+        request.transcription_mode.trim().to_string()
+    };
+    let offline_engine = if request.offline_engine.trim().is_empty() {
+        config.offline_engine.clone()
+    } else {
+        request.offline_engine.trim().to_string()
+    };
+    let language = if request.language.trim().is_empty() {
+        config.language.clone()
+    } else {
+        request.language.trim().to_string()
+    };
+
+    let (raw_transcript, effective_provider) = if transcription_mode == "cloud" {
+        if request.cloud_stt_api_key.trim().is_empty() {
+            return Err("Enter your API key to test cloud transcription.".to_string());
+        }
+
+        let path = recorder::stop_and_save(recording)?;
+        let transcript = speech::cloud_transcribe(
+            &path.to_string_lossy(),
+            &request.cloud_stt_provider,
+            &request.cloud_stt_api_key,
+            &language,
+        )?;
+        (transcript, request.cloud_stt_provider.trim().to_string())
+    } else if offline_engine == "distil_whisper" {
+        let wav_bytes = recorder::stop_and_get_wav_bytes(recording)?;
+        let transcript = {
+            let mut guard = distil_state.0.lock().map_err(|e| e.to_string())?;
+            guard.transcribe_local_wav_bytes(&app_handle, &wav_bytes)?.text
+        };
+        (transcript, "distil_whisper".to_string())
+    } else {
+        let (samples, sample_rate, channels) = recorder::stop_and_get_raw_samples(recording)?;
+        let transcript = speech::transcribe_audio(&inference_state, &samples, sample_rate, channels)?;
+        (transcript, "parakeet".to_string())
+    };
+
+    Ok(build_onboarding_preview_result(
+        raw_transcript,
+        &effective_provider,
+    )?)
 }
 
 // ---- Model / Inference ----
@@ -378,6 +707,21 @@ pub fn get_model_status(
     }
 }
 
+fn build_onboarding_preview_result(
+    raw_transcript: String,
+    effective_provider: &str,
+) -> Result<OnboardingPreviewResult, String> {
+    let transcript = raw_transcript.trim().to_string();
+    if transcript.is_empty() {
+        return Err("No speech detected. Try speaking a little longer and closer to the microphone.".to_string());
+    }
+
+    Ok(OnboardingPreviewResult {
+        transcript,
+        effective_provider: effective_provider.to_string(),
+    })
+}
+
 #[tauri::command]
 pub fn open_distil_whisper_model_page_cmd(app_handle: tauri::AppHandle) -> Result<(), String> {
     app_handle
@@ -407,6 +751,29 @@ pub fn get_distil_whisper_model_status(
             runtime: "transformers-distil-whisper".to_string(),
             message: None,
         }),
+    }
+}
+
+#[cfg(test)]
+mod onboarding_preview_tests {
+    use super::build_onboarding_preview_result;
+
+    #[test]
+    fn preview_result_trims_transcript() {
+        let result =
+            build_onboarding_preview_result("  hello this is a test  ".to_string(), "parakeet")
+                .expect("preview result should succeed");
+
+        assert_eq!(result.transcript, "hello this is a test");
+        assert_eq!(result.effective_provider, "parakeet");
+    }
+
+    #[test]
+    fn preview_result_rejects_blank_transcript() {
+        let err = build_onboarding_preview_result("   ".to_string(), "groq")
+            .expect_err("blank transcripts should fail");
+
+        assert!(err.contains("No speech detected"));
     }
 }
 
@@ -577,7 +944,7 @@ pub fn set_launch_on_startup(
 
     let mut guard = config_state.0.lock().map_err(|e| e.to_string())?;
     guard.launch_on_startup = enable;
-    settings::save_config(&app_handle, &guard)?;
+    let _ = settings::save_config(&app_handle, &guard)?;
     Ok(())
 }
 
@@ -635,7 +1002,7 @@ pub fn apply_industry_pack(
 
     let mut config_guard = config_state.0.lock().map_err(|e| e.to_string())?;
     config_guard.active_industry_pack = pack_id;
-    settings::save_config(&app_handle, &config_guard)?;
+    let _ = settings::save_config(&app_handle, &config_guard)?;
     invalidate_vocabulary_caches(&app_handle);
 
     Ok(())
@@ -785,6 +1152,7 @@ pub fn export_support_diagnostics(
         "hallucination_filter_enabled": config.hallucination_filter_enabled,
         "spoken_punctuation_enabled": config.spoken_punctuation_enabled,
         "parakeet_segmented_mode_enabled": config.parakeet_segmented_mode_enabled,
+        "dictation_activation_mode": config.dictation_activation_mode,
         "post_processing_enabled": config.post_processing_enabled,
         "vad_silence_threshold_ms": config.vad_silence_threshold_ms,
         "continuous_recording_enabled": config.continuous_recording_enabled,
@@ -795,6 +1163,7 @@ pub fn export_support_diagnostics(
         "transcript_diagnostics_enabled": config.transcript_diagnostics_enabled,
         "command_provider": config.command_provider,
         "command_model": config.command_model,
+        "default_text_action_id": config.default_text_action_id,
         "llm_provider": config.llm_provider,
         "llm_model": config.llm_model,
         "cloud_stt_api_key": redact_secret(&config.cloud_stt_api_key),
@@ -809,6 +1178,14 @@ pub fn export_support_diagnostics(
     diagnostics_state
         .0
         .export_support_bundle(&app_handle, &summary, &redacted_config)
+}
+
+#[tauri::command]
+pub fn export_transcript_history(
+    app_handle: tauri::AppHandle,
+    diagnostics_state: State<'_, TranscriptDiagnosticsState>,
+) -> Result<TranscriptHistoryExport, String> {
+    diagnostics_state.0.export_transcript_history(&app_handle)
 }
 
 fn count_lines_if_exists(path: &std::path::Path) -> u64 {
@@ -849,6 +1226,49 @@ pub fn get_transcript_history(
     diagnostics_state
         .0
         .list_history(limit, offset, search.as_deref())
+}
+
+#[cfg(test)]
+mod storage_location_tests {
+    use super::{storage_overview_from_app_data, StorageLocationKind};
+    use std::path::Path;
+
+    #[test]
+    fn storage_location_kind_rejects_unknown_values() {
+        assert!(StorageLocationKind::try_from("unknown").is_err());
+        assert_eq!(
+            StorageLocationKind::try_from("history").unwrap(),
+            StorageLocationKind::History
+        );
+    }
+
+    #[test]
+    fn storage_overview_uses_expected_path_layout() {
+        let base = Path::new("C:/Users/Test/AppData/Roaming/com.yolo.voice");
+        let overview = storage_overview_from_app_data(
+            base,
+            &base.join("config.json"),
+            &base.join("models"),
+            &base.join("models").join("parakeet-tdt-v3"),
+            &base.join("models").join("distil-whisper"),
+            &base.join("diagnostics"),
+            &base.join("diagnostics").join("transcript_samples.sqlite3"),
+            &base.join("diagnostics").join("exports"),
+            &base.join("profiles"),
+            &base.join("text_actions"),
+        );
+        let normalized_support_exports = overview.support_exports_dir.replace('\\', "/");
+
+        assert!(overview.config_path.ends_with("config.json"));
+        assert!(overview.models_dir.ends_with("models"));
+        assert!(overview.parakeet_models_dir.ends_with("parakeet-tdt-v3"));
+        assert!(overview.distil_whisper_models_dir.ends_with("distil-whisper"));
+        assert!(overview.diagnostics_dir.ends_with("diagnostics"));
+        assert!(overview.transcript_history_db_path.ends_with("transcript_samples.sqlite3"));
+        assert!(normalized_support_exports.ends_with("diagnostics/exports"));
+        assert!(overview.profiles_dir.ends_with("profiles"));
+        assert!(overview.text_actions_dir.ends_with("text_actions"));
+    }
 }
 
 #[tauri::command]

@@ -2,7 +2,7 @@ mod app;
 mod features;
 mod infra;
 
-use app::commands::AudioState;
+use app::commands::{AudioState, OnboardingPreviewState};
 use features::capture::recorder::{RecordingState, WarmDeviceState};
 use features::capture::{
     ActiveStyleKey, ContinuousGeneration, HotkeyRuntimeState, RuntimeDictionaryCache,
@@ -27,6 +27,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(AudioState(Mutex::new(None)))
+        .manage(OnboardingPreviewState(Mutex::new(None)))
         .manage(ConfigState(Mutex::new(features::settings::AppConfig::default())))
         .manage(RecordingState(Mutex::new(None)))
         .manage(WarmDeviceState(Mutex::new(None)))
@@ -47,9 +48,18 @@ pub fn run() {
             app::commands::start_test,
             app::commands::stop_test,
             app::commands::get_config,
+            app::commands::get_storage_overview,
+            app::commands::open_storage_location,
             app::commands::save_config_cmd,
+            app::commands::get_text_actions,
+            app::commands::save_text_action,
+            app::commands::delete_text_action,
+            app::commands::reset_text_action_to_default,
             app::commands::start_recording,
             app::commands::stop_recording,
+            app::commands::start_onboarding_preview_recording,
+            app::commands::cancel_onboarding_preview_recording,
+            app::commands::finish_onboarding_preview,
             app::commands::download_model_cmd,
             app::commands::cancel_model_download_cmd,
             app::commands::delete_model_cmd,
@@ -76,6 +86,7 @@ pub fn run() {
             app::commands::get_transcript_diagnostics_status,
             app::commands::clear_transcript_diagnostics,
             app::commands::export_support_diagnostics,
+            app::commands::export_transcript_history,
             app::commands::preview_sound,
             app::commands::get_available_sounds,
             app::commands::test_command_llm_connection,
@@ -93,9 +104,20 @@ pub fn run() {
         ])
         .setup(|app| {
             // Load persisted config
-            let saved_config = features::settings::load_config(&app.handle());
+            let mut saved_config = features::settings::load_config(&app.handle());
+            let text_actions_changed =
+                features::speech::ensure_text_actions_ready(&app.handle(), &mut saved_config)
+                    .unwrap_or_else(|err| {
+                        eprintln!("[app] Failed to initialize text actions: {}", err);
+                        false
+                    });
             let config_state = app.state::<ConfigState>();
             *config_state.0.lock().unwrap() = saved_config.clone();
+            if text_actions_changed {
+                if let Err(err) = features::settings::save_config(&app.handle(), &saved_config) {
+                    eprintln!("[app] Failed to persist text action migration: {}", err);
+                }
+            }
 
             // Load user dictionary and migrate legacy merged dictionaries if needed.
             let load_result = features::speech::vocabulary::load_user_dictionary(&app.handle());

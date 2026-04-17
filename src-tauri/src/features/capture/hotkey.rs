@@ -8,7 +8,9 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::features::speech;
 
-use super::{ActiveStyleKey, HotkeyRecordingMode, HotkeyRuntimeState};
+use super::{
+    ActiveStyleKey, DictationRuntimePhase, HotkeyRecordingMode, HotkeyRuntimeState,
+};
 
 /// Lightweight cache of the parsed hotkey keys.
 /// Updated only when config changes, read on every rdev event.
@@ -442,8 +444,43 @@ pub fn start_hotkey_listener(app_handle: AppHandle, cache: HotkeyCache) {
             };
 
             let backend_mode = runtime.recording_mode();
+            let voice_activated = app
+                .state::<crate::features::settings::ConfigState>()
+                .0
+                .lock()
+                .map(|config| config.dictation_activation_mode == "voice_activated")
+                .unwrap_or(false);
 
             if let Some(target_key) = dict_key {
+                if voice_activated {
+                    match event.event_type {
+                        EventType::KeyPress(key)
+                            if key == target_key
+                                && !key_was_held
+                                && backend_mode != HotkeyRecordingMode::Command =>
+                        {
+                            match backend_mode {
+                                HotkeyRecordingMode::None => {
+                                    state.reset_dictation();
+                                    let _ = app.emit("hotkey-action", "start");
+                                }
+                                HotkeyRecordingMode::Dictation => {
+                                    state.reset_dictation();
+                                    let action = if runtime.dictation_phase()
+                                        == DictationRuntimePhase::Listening
+                                    {
+                                        "cancel"
+                                    } else {
+                                        "stop"
+                                    };
+                                    let _ = app.emit("hotkey-action", action);
+                                }
+                                HotkeyRecordingMode::Command => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                } else {
                 match event.event_type {
                     EventType::KeyPress(key) if key == target_key => {
                         if backend_mode == HotkeyRecordingMode::Command {
@@ -537,6 +574,7 @@ pub fn start_hotkey_listener(app_handle: AppHandle, cache: HotkeyCache) {
                         }
                     }
                     _ => {}
+                }
                 }
             }
 

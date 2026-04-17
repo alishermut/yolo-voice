@@ -6,6 +6,7 @@ pub mod inference;
 pub mod language;
 pub mod llm;
 pub mod profiles;
+pub mod text_actions;
 pub mod vad;
 pub mod vocabulary;
 
@@ -52,6 +53,15 @@ pub struct Profile {
     /// Single letter A-Z for command key + letter style shortcut.
     #[serde(default)]
     pub shortcut_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextAction {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub builtin: bool,
+    pub prompt: String,
 }
 
 fn default_tone() -> String {
@@ -130,6 +140,24 @@ pub fn command_llm_call(
     )
 }
 
+pub fn text_action_llm_call(
+    source_text: &str,
+    action_prompt: &str,
+    provider: &str,
+    model: &str,
+    api_key: &str,
+    base_url: &str,
+) -> Result<String, String> {
+    llm::text_action_llm_call(
+        source_text,
+        action_prompt,
+        provider,
+        model,
+        api_key,
+        base_url,
+    )
+}
+
 /// Get the profiles directory path.
 pub fn get_profiles_dir(app_handle: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     profiles::get_profiles_dir(app_handle)
@@ -157,4 +185,49 @@ pub fn reset_profile_to_default(
     app_handle: &tauri::AppHandle,
 ) -> Result<(), String> {
     profiles::reset_profile_to_default(profiles_dir, id, app_handle)
+}
+
+pub fn get_text_actions_dir(app_handle: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    text_actions::get_text_actions_dir(app_handle)
+}
+
+pub fn ensure_text_actions_ready(
+    app_handle: &tauri::AppHandle,
+    config: &mut crate::features::settings::AppConfig,
+) -> Result<bool, String> {
+    text_actions::ensure_text_actions_ready(app_handle, config)
+}
+
+pub fn list_text_actions(text_actions_dir: &std::path::Path) -> Result<Vec<TextAction>, String> {
+    text_actions::list_text_actions(text_actions_dir)
+}
+
+pub fn get_text_action(text_actions_dir: &std::path::Path, id: &str) -> Result<TextAction, String> {
+    text_actions::get_text_action(text_actions_dir, id)
+}
+
+pub fn save_text_action(
+    text_actions_dir: &std::path::Path,
+    action: &TextAction,
+) -> Result<(), String> {
+    text_actions::save_text_action(text_actions_dir, action)
+}
+
+pub fn delete_text_action(text_actions_dir: &std::path::Path, id: &str) -> Result<(), String> {
+    text_actions::delete_text_action(text_actions_dir, id)
+}
+
+pub fn reset_text_action_to_default(
+    text_actions_dir: &std::path::Path,
+    id: &str,
+) -> Result<(), String> {
+    text_actions::reset_text_action_to_default(text_actions_dir, id)
+}
+
+pub fn default_text_action_id() -> &'static str {
+    text_actions::default_text_action_id()
+}
+
+pub fn freeform_command_action_id() -> &'static str {
+    text_actions::freeform_command_action_id()
 }

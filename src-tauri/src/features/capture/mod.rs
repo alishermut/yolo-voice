@@ -53,9 +53,27 @@ impl HotkeyRecordingMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DictationRuntimePhase {
+    Idle = 0,
+    Listening = 1,
+    Recording = 2,
+}
+
+impl DictationRuntimePhase {
+    fn from_raw(value: u8) -> Self {
+        match value {
+            1 => Self::Listening,
+            2 => Self::Recording,
+            _ => Self::Idle,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct HotkeyRuntimeState {
     pub recording_mode: Arc<AtomicU8>,
+    pub dictation_phase: Arc<AtomicU8>,
     pub dictation_stop_token: Arc<AtomicU64>,
     pub reset_generation: Arc<AtomicU64>,
 }
@@ -64,6 +82,7 @@ impl HotkeyRuntimeState {
     pub fn new() -> Self {
         Self {
             recording_mode: Arc::new(AtomicU8::new(HotkeyRecordingMode::None as u8)),
+            dictation_phase: Arc::new(AtomicU8::new(DictationRuntimePhase::Idle as u8)),
             dictation_stop_token: Arc::new(AtomicU64::new(0)),
             reset_generation: Arc::new(AtomicU64::new(0)),
         }
@@ -77,12 +96,21 @@ impl HotkeyRuntimeState {
         self.recording_mode.store(mode as u8, Ordering::SeqCst);
     }
 
+    pub fn dictation_phase(&self) -> DictationRuntimePhase {
+        DictationRuntimePhase::from_raw(self.dictation_phase.load(Ordering::SeqCst))
+    }
+
+    pub fn set_dictation_phase(&self, phase: DictationRuntimePhase) {
+        self.dictation_phase.store(phase as u8, Ordering::SeqCst);
+    }
+
     pub fn cancel_pending_dictation_stop(&self) {
         self.dictation_stop_token.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn reset_listener_state(&self) {
         self.cancel_pending_dictation_stop();
+        self.set_dictation_phase(DictationRuntimePhase::Idle);
         self.reset_generation.fetch_add(1, Ordering::SeqCst);
     }
 }
@@ -91,14 +119,25 @@ fn set_hotkey_recording_mode(app: &AppHandle, mode: HotkeyRecordingMode) {
     app.state::<HotkeyRuntimeState>().set_recording_mode(mode);
 }
 
+fn set_dictation_phase(app: &AppHandle, phase: DictationRuntimePhase) {
+    app.state::<HotkeyRuntimeState>().set_dictation_phase(phase);
+}
+
 fn reset_hotkey_runtime(app: &AppHandle) {
     app.state::<HotkeyRuntimeState>().reset_listener_state();
 }
 
-const DEFAULT_COMMAND_SYSTEM_PROMPT: &str =
-    "You are a voice command assistant. The user speaks a command and you produce \
-     the exact text they want inserted. Do not explain, do not add commentary. \
-     Output only the requested text.";
+fn parakeet_segmented_supported(config: &crate::features::settings::AppConfig) -> bool {
+    config.transcription_mode == "offline"
+        && config.offline_engine == "parakeet"
+        && config.parakeet_segmented_mode_enabled
+}
+
+fn voice_activated_enabled(config: &crate::features::settings::AppConfig) -> bool {
+    config.dictation_activation_mode == "voice_activated"
+        && crate::features::settings::voice_activation_supported(config)
+}
+
 /// Set up the hotkey-action event listener that orchestrates the
 /// record → transcribe → insert pipeline.
 pub fn setup_hotkey_handler(app: &AppHandle) {
@@ -122,6 +161,7 @@ pub fn setup_hotkey_handler(app: &AppHandle) {
                 "action": action,
                 "offline_engine": config.offline_engine,
                 "transcription_mode": config.transcription_mode,
+                "dictation_activation_mode": config.dictation_activation_mode,
                 "continuous_recording_enabled": config.continuous_recording_enabled,
             }),
         );
@@ -136,6 +176,9 @@ pub fn setup_hotkey_handler(app: &AppHandle) {
 }
 
 fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) {
+    let voice_activated = voice_activated_enabled(config);
+    let should_use_continuous = config.continuous_recording_enabled && !voice_activated;
+
     maybe_log_support_event(
         app,
         "capture",
@@ -147,6 +190,7 @@ fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) 
             "offline_engine": config.offline_engine,
             "transcription_mode": config.transcription_mode,
             "parakeet_segmented_mode_enabled": config.parakeet_segmented_mode_enabled,
+            "dictation_activation_mode": config.dictation_activation_mode,
         }),
     );
 
@@ -169,11 +213,8 @@ fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) 
     // Stop any existing recording
     *guard = None;
 
-    // Build VAD config if offline mode is active and inference is ready
-    let vad_config = if config.transcription_mode == "offline"
-        && config.offline_engine == "parakeet"
-        && config.parakeet_segmented_mode_enabled
-    {
+    // Build VAD config if the Parakeet segmented path is active and inference is ready.
+    let vad_config = if parakeet_segmented_supported(config) {
         let inference_state = app.state::<InferenceState>();
         let inference_ready = inference_state
             .0
@@ -187,13 +228,39 @@ fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) 
                     silence_threshold_ms: config.vad_silence_threshold_ms,
                     model_path,
                     text_cleanup_enabled: config.text_cleanup_enabled,
+                    emit_speech_start_event: voice_activated,
+                    auto_stop_after_segment: voice_activated,
                 }),
                 Err(e) => {
+                    if voice_activated {
+                        emit_all(
+                            app,
+                            "transcription-error",
+                            "Voice activated mode is not ready yet. Finish loading Parakeet and try again."
+                                .to_string(),
+                        );
+                        set_hotkey_recording_mode(app, HotkeyRecordingMode::None);
+                        reset_hotkey_runtime(app);
+                        emit_all(app, "recording-state", "idle");
+                        return;
+                    }
                     eprintln!("[capture] VAD model not found, falling back to non-VAD: {e}");
                     None
                 }
             }
         } else {
+            if voice_activated {
+                emit_all(
+                    app,
+                    "transcription-error",
+                    "Voice activated mode needs Parakeet ready before it can listen for speech."
+                        .to_string(),
+                );
+                set_hotkey_recording_mode(app, HotkeyRecordingMode::None);
+                reset_hotkey_runtime(app);
+                emit_all(app, "recording-state", "idle");
+                return;
+            }
             eprintln!("[capture] Inference not ready, falling back to non-VAD");
             None
         }
@@ -202,7 +269,7 @@ fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) 
     };
 
     // Track continuous recording generation
-    if config.continuous_recording_enabled {
+    if should_use_continuous {
         app.state::<ContinuousGeneration>()
             .0
             .fetch_add(1, Ordering::SeqCst);
@@ -210,8 +277,24 @@ fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) 
 
     // Emit events BEFORE audio init so the pill reacts instantly.
     emit_all(app, "active-mode", "dictation");
-    emit_all(app, "recording-state", "recording");
-    if config.continuous_recording_enabled {
+    emit_all(
+        app,
+        "recording-state",
+        if voice_activated {
+            "listening"
+        } else {
+            "recording"
+        },
+    );
+    set_dictation_phase(
+        app,
+        if voice_activated {
+            DictationRuntimePhase::Listening
+        } else {
+            DictationRuntimePhase::Recording
+        },
+    );
+    if should_use_continuous {
         emit_all(app, "continuous-active", "true");
     }
     if config.auto_pause_media_enabled {
@@ -235,9 +318,8 @@ fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) 
                 serde_json::json!({
                     "pipeline_mode": "dictation",
                     "device_index": config.device_index,
-                    "vad_enabled": config.transcription_mode == "offline"
-                        && config.offline_engine == "parakeet"
-                        && config.parakeet_segmented_mode_enabled,
+                    "vad_enabled": parakeet_segmented_supported(config),
+                    "voice_activated": voice_activated,
                 }),
             );
             if config.sounds_enabled {
@@ -308,6 +390,7 @@ fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) 
             );
             set_hotkey_recording_mode(app, HotkeyRecordingMode::None);
             reset_hotkey_runtime(app);
+            set_dictation_phase(app, DictationRuntimePhase::Idle);
             emit_all(app, "recording-state", "idle");
             emit_all(app, "transcription-error", format!("Recording failed: {e}"));
         }
@@ -336,6 +419,7 @@ fn handle_stop(app: &AppHandle, config: &crate::features::settings::AppConfig) {
         .store(0, Ordering::SeqCst);
     emit_all(app, "continuous-active", "false");
     set_hotkey_recording_mode(app, HotkeyRecordingMode::None);
+    set_dictation_phase(app, DictationRuntimePhase::Idle);
     reset_hotkey_runtime(app);
 
     // Read and clear the active style key (set by hotkey listener if style key was held)
@@ -1009,7 +1093,10 @@ fn finalize_and_insert(
     emit_all(app, "recording-state", "done");
 
     // Auto-restart if continuous recording is still active (generation unchanged)
-    if config.continuous_recording_enabled && continuous_gen > 0 {
+    if config.continuous_recording_enabled
+        && config.dictation_activation_mode == "manual"
+        && continuous_gen > 0
+    {
         let current = app.state::<ContinuousGeneration>().0.load(Ordering::SeqCst);
         if current == continuous_gen {
             let app_clone = app.clone();
@@ -1654,6 +1741,7 @@ fn handle_dictation_cancel(app: &AppHandle) {
         .store(0, Ordering::SeqCst);
     emit_all(app, "continuous-active", "false");
     set_hotkey_recording_mode(app, HotkeyRecordingMode::None);
+    set_dictation_phase(app, DictationRuntimePhase::Idle);
     reset_hotkey_runtime(app);
 
     if let Ok(mut style_key) = app.state::<ActiveStyleKey>().0.lock() {
@@ -1919,9 +2007,8 @@ fn handle_command_stop(app: &AppHandle, config: &crate::features::settings::AppC
     }
 }
 
-/// Finalize a command: send transcript to command LLM and paste the result.
-/// If vision is enabled, runs intent classification first, then captures
-/// a screenshot only when the command references on-screen content.
+/// Finalize a text action: send transcript through the selected action and
+/// paste the result using the existing command pipeline.
 fn command_finalize(
     app: &AppHandle,
     config: &crate::features::settings::AppConfig,
@@ -1947,76 +2034,89 @@ fn command_finalize(
     }
 
     let transcript = raw_transcript.trim();
+    let text_action = match resolve_default_text_action(app, config) {
+        Ok(action) => action,
+        Err(e) => {
+            emit_all(app, "transcription-error", e);
+            emit_all(app, "recording-state", "idle");
+            return;
+        }
+    };
     eprintln!("[capture] Command transcript: {}", transcript);
     maybe_log_support_event(
         app,
         "capture",
-        "command_finalize_started",
-        "Starting command finalize pipeline",
+        "text_action_finalize_started",
+        "Starting text action finalize pipeline",
         serde_json::json!({
             "pipeline_mode": "command",
             "raw_text_len": transcript.len(),
+            "text_action_id": text_action.id,
+            "text_action_name": text_action.name,
             "provider": config.command_provider,
             "model": config.command_model,
         }),
     );
 
+    let is_freeform_action = text_action.id == speech::freeform_command_action_id();
+
     // Check if this is a vocabulary addition command
-    if let Some(vocab_cmd) = speech::llm::detect_vocab_command(transcript, &config.command_api_key)
-    {
-        eprintln!(
-            "[capture] Vocab command detected: term='{}', full_form={:?}",
-            vocab_cmd.term, vocab_cmd.full_form
-        );
-        match add_term_to_general_vocabulary(app, &vocab_cmd, &config.command_api_key) {
-            Ok(_) => {
-                let msg = format!("Added: {}", vocab_cmd.term);
-                emit_all(app, "vocab-added", &msg);
-                maybe_log_support_event(
-                    app,
-                    "capture",
-                    "command_vocab_add_success",
-                    "Added vocabulary term from command mode",
-                    serde_json::json!({
-                        "pipeline_mode": "command",
-                        "term": vocab_cmd.term,
-                    }),
-                );
+    if is_freeform_action {
+        if let Some(vocab_cmd) =
+            speech::llm::detect_vocab_command(transcript, &config.command_api_key)
+        {
+            eprintln!(
+                "[capture] Vocab command detected: term='{}', full_form={:?}",
+                vocab_cmd.term, vocab_cmd.full_form
+            );
+            match add_term_to_general_vocabulary(app, &vocab_cmd, &config.command_api_key) {
+                Ok(_) => {
+                    let msg = format!("Added: {}", vocab_cmd.term);
+                    emit_all(app, "vocab-added", &msg);
+                    maybe_log_support_event(
+                        app,
+                        "capture",
+                        "command_vocab_add_success",
+                        "Added vocabulary term from command mode",
+                        serde_json::json!({
+                            "pipeline_mode": "command",
+                            "term": vocab_cmd.term,
+                        }),
+                    );
+                }
+                Err(e) => {
+                    eprintln!("[capture] Failed to add vocab term: {}", e);
+                    maybe_log_support_event(
+                        app,
+                        "capture",
+                        "command_vocab_add_error",
+                        "Failed to add vocabulary term from command mode",
+                        serde_json::json!({
+                            "pipeline_mode": "command",
+                            "term": vocab_cmd.term,
+                            "error": e,
+                        }),
+                    );
+                    emit_all(
+                        app,
+                        "transcription-error",
+                        format!("Vocab add failed: {}", e),
+                    );
+                }
             }
-            Err(e) => {
-                eprintln!("[capture] Failed to add vocab term: {}", e);
-                maybe_log_support_event(
-                    app,
-                    "capture",
-                    "command_vocab_add_error",
-                    "Failed to add vocabulary term from command mode",
-                    serde_json::json!({
-                        "pipeline_mode": "command",
-                        "term": vocab_cmd.term,
-                        "error": e,
-                    }),
-                );
-                emit_all(
-                    app,
-                    "transcription-error",
-                    format!("Vocab add failed: {}", e),
-                );
+            if config.sounds_enabled {
+                output::play_done_sound(&config.stop_sound);
             }
+            emit_all(app, "recording-state", "done");
+            return;
         }
-        if config.sounds_enabled {
-            output::play_done_sound(&config.stop_sound);
-        }
-        emit_all(app, "recording-state", "done");
-        return;
     }
 
-    let system_prompt = if config.command_system_prompt.trim().is_empty() {
-        DEFAULT_COMMAND_SYSTEM_PROMPT
+    let result = if is_freeform_action {
+        text_only_command(transcript, text_action.prompt.trim(), config)
     } else {
-        config.command_system_prompt.trim()
+        transform_with_text_action(transcript, &text_action, config)
     };
-
-    let result = text_only_command(transcript, system_prompt, config);
 
     match result {
         Ok(text) => {
@@ -2063,16 +2163,18 @@ fn command_finalize(
             maybe_log_support_event(
                 app,
                 "capture",
-                "command_error",
-                "Command LLM pipeline failed",
+                "text_action_error",
+                "Text action pipeline failed",
                 serde_json::json!({
                     "pipeline_mode": "command",
+                    "text_action_id": text_action.id,
+                    "text_action_name": text_action.name,
                     "provider": config.command_provider,
                     "model": config.command_model,
                     "error": e,
                 }),
             );
-            emit_all(app, "transcription-error", format!("Command error: {}", e));
+            emit_all(app, "transcription-error", format!("Text action error: {}", e));
         }
     }
 
@@ -2080,6 +2182,16 @@ fn command_finalize(
         output::play_done_sound(&config.stop_sound);
     }
     emit_all(app, "recording-state", "done");
+}
+
+fn resolve_default_text_action(
+    app: &AppHandle,
+    config: &crate::features::settings::AppConfig,
+) -> Result<speech::TextAction, String> {
+    let text_actions_dir = speech::get_text_actions_dir(app)?;
+    speech::get_text_action(&text_actions_dir, &config.default_text_action_id).or_else(|_| {
+        speech::get_text_action(&text_actions_dir, speech::default_text_action_id())
+    })
 }
 
 fn text_only_command(
@@ -2090,6 +2202,21 @@ fn text_only_command(
     speech::command_llm_call(
         transcript,
         system_prompt,
+        &config.command_provider,
+        &config.command_model,
+        &config.command_api_key,
+        &config.command_base_url,
+    )
+}
+
+fn transform_with_text_action(
+    source_text: &str,
+    action: &speech::TextAction,
+    config: &crate::features::settings::AppConfig,
+) -> Result<String, String> {
+    speech::text_action_llm_call(
+        source_text,
+        &action.prompt,
         &config.command_provider,
         &config.command_model,
         &config.command_api_key,

@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { AppConfig, DistilWhisperModelStatus } from "../shared/types";
+import type {
+  AppConfig,
+  DistilWhisperModelStatus,
+  SettingsExperienceMode,
+} from "../shared/types";
 import {
   cancelModelDownload,
   deleteDistilWhisperModel,
@@ -24,10 +28,15 @@ import { Select } from "./ui/Select";
 
 interface ModelSelectorProps {
   config: AppConfig;
+  settingsMode: SettingsExperienceMode;
   updateConfig: (updates: Partial<AppConfig>) => Promise<void>;
 }
 
-export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
+export function ModelSelector({
+  config,
+  settingsMode,
+  updateConfig,
+}: ModelSelectorProps) {
   const { t } = useTranslation();
   const [gpuAvailable, setGpuAvailable] = useState(false);
   const [parakeetStatus, setParakeetStatus] = useState<string>("unknown");
@@ -318,6 +327,7 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
     (Boolean(distilStatus?.ready) ||
       distilBusy === "reload" ||
       (distilStatus?.status === "preparing" && Boolean(distilStatus?.device)));
+  const isAdvanced = settingsMode === "advanced";
 
   return (
     <div className="space-y-4">
@@ -359,17 +369,19 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
                 )}
               </div>
 
-              <div className="text-xs text-text-secondary bg-bg-base border border-border-default rounded-lg px-3 py-2">
-                {config.parakeet_segmented_mode_enabled
-                  ? t("transcription.offline.parakeetSegmentedSummary", {
-                      defaultValue:
-                        "Fast segmented mode is on. Parakeet uses VAD-based batching for much faster response.",
-                    })
-                  : t("transcription.offline.parakeetOneShotSummary", {
-                      defaultValue:
-                        "Fast segmented mode is off. Parakeet waits until stop, then transcribes the whole clip for cleaner wording.",
-                    })}
-              </div>
+              {isAdvanced && (
+                <div className="text-xs text-text-secondary bg-bg-base border border-border-default rounded-lg px-3 py-2">
+                  {config.parakeet_segmented_mode_enabled
+                    ? t("transcription.offline.parakeetSegmentedSummary", {
+                        defaultValue:
+                          "Fast segmented mode is on. Parakeet uses VAD-based batching for much faster response.",
+                      })
+                    : t("transcription.offline.parakeetOneShotSummary", {
+                        defaultValue:
+                          "Fast segmented mode is off. Parakeet waits until stop, then transcribes the whole clip for cleaner wording.",
+                      })}
+                </div>
+              )}
 
               {parakeetStatus === "ready" && !reloading && (
                 <div className="text-xs text-text-secondary bg-bg-base border border-border-default rounded-lg px-3 py-2 flex items-center justify-between">
@@ -394,7 +406,10 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
                 </div>
               )}
 
-              {parakeetStatus === "ready" && !downloading && !confirmingDelete && (
+              {isAdvanced &&
+                parakeetStatus === "ready" &&
+                !downloading &&
+                !confirmingDelete && (
                 <div className="text-xs text-text-secondary bg-bg-base border border-border-default rounded-lg px-3 py-2 flex items-center justify-between">
                   <span>{t("model.diskSize")}</span>
                   <button
@@ -406,7 +421,7 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
                 </div>
               )}
 
-              {confirmingDelete && (
+              {isAdvanced && confirmingDelete && (
                 <div className="text-xs text-error bg-error-muted border border-error/30 rounded-lg px-3 py-2 space-y-2">
                   <p>{t("model.deleteConfirm")}</p>
                   <div className="flex gap-2 justify-end">
@@ -509,26 +524,28 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
                 {distilStatus?.status ?? "unknown"}
               </div>
 
-              <div className="text-xs text-text-secondary bg-bg-base border border-border-default rounded-lg px-3 py-2 space-y-1">
-                <div>
-                  {t("transcription.offline.distilQualityNote", {
-                    defaultValue:
-                      "Better raw English dictation quality than Parakeet, but it is slower because it transcribes after stop.",
-                  })}
-                </div>
-                <div>
-                  {t("transcription.offline.distilHardwareNote", {
-                    defaultValue:
-                      "Runs on CPU or GPU. GPU is strongly recommended. CPU works as a fallback, but it is significantly slower on longer clips.",
+              {isAdvanced && (
+                <div className="text-xs text-text-secondary bg-bg-base border border-border-default rounded-lg px-3 py-2 space-y-1">
+                  <div>
+                    {t("transcription.offline.distilQualityNote", {
+                      defaultValue:
+                        "Better raw English dictation quality than Parakeet, but it is slower because it transcribes after stop.",
                     })}
                   </div>
-                <div>
-                  {t("transcription.offline.distilChunkNote", {
-                    defaultValue:
-                      "Whole-clip transcription stays single-pass up to 30s, then switches to native chunking.",
-                  })}
+                  <div>
+                    {t("transcription.offline.distilHardwareNote", {
+                      defaultValue:
+                        "Runs on CPU or GPU. GPU is strongly recommended. CPU works as a fallback, but it is significantly slower on longer clips.",
+                      })}
+                    </div>
+                  <div>
+                    {t("transcription.offline.distilChunkNote", {
+                      defaultValue:
+                        "Whole-clip transcription stays single-pass up to 30s, then switches to native chunking.",
+                    })}
+                  </div>
                 </div>
-              </div>
+              )}
 
               {distilStatus?.message && (
                 <div className="text-xs text-warning bg-warning-muted border border-warning/30 rounded-lg px-3 py-2">
@@ -581,12 +598,14 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
                     })}
                   </span>
                   <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => handleDistilAction("open", openDistilWhisperModelPage)}
-                      className="text-text-muted hover:text-text-primary transition-colors"
-                    >
-                      {t("transcription.offline.openModelPage", { defaultValue: "Open model page" })}
-                    </button>
+                    {isAdvanced && (
+                      <button
+                        onClick={() => handleDistilAction("open", openDistilWhisperModelPage)}
+                        className="text-text-muted hover:text-text-primary transition-colors"
+                      >
+                        {t("transcription.offline.openModelPage", { defaultValue: "Open model page" })}
+                      </button>
+                    )}
                     <button
                       onClick={() => handleDistilAction("download", downloadDistilWhisperModel)}
                       className="text-accent hover:text-accent-hover underline"
@@ -627,12 +646,14 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
                         {t("transcription.offline.prepareModel", { defaultValue: "Prepare model" })}
                       </button>
                     )}
-                    <button
-                      onClick={() => handleDistilAction("delete", deleteDistilWhisperModel)}
-                      className="text-text-muted hover:text-error transition-colors"
-                    >
-                      {t("model.deleteModel")}
-                    </button>
+                    {isAdvanced && (
+                      <button
+                        onClick={() => handleDistilAction("delete", deleteDistilWhisperModel)}
+                        className="text-text-muted hover:text-error transition-colors"
+                      >
+                        {t("model.deleteModel")}
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
@@ -660,7 +681,7 @@ export function ModelSelector({ config, updateConfig }: ModelSelectorProps) {
             </>
           )}
 
-          <OfflineInfoCard engine={selectedEngine} />
+          {isAdvanced && <OfflineInfoCard engine={selectedEngine} />}
         </div>
       </div>
     </div>

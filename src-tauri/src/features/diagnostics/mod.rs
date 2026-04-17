@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use zip::write::SimpleFileOptions;
 
@@ -48,6 +48,13 @@ pub struct SupportRuntimeEvent {
 pub struct SupportDiagnosticsExport {
     pub archive_path: String,
     pub file_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TranscriptHistoryExport {
+    pub file_path: String,
+    pub file_name: String,
+    pub exported_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -304,35 +311,41 @@ impl TranscriptDiagnosticsStore {
 }
 
 pub fn diagnostics_db_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
-    Ok(dir.join("diagnostics").join("transcript_samples.sqlite3"))
+    Ok(diagnostics_dir(app_handle)?.join("transcript_samples.sqlite3"))
 }
 
 pub fn parakeet_events_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
-    Ok(dir.join("diagnostics").join("parakeet_events.jsonl"))
+    Ok(diagnostics_dir(app_handle)?.join("parakeet_events.jsonl"))
 }
 
 pub fn distil_whisper_events_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
-    Ok(dir.join("diagnostics").join("distil_whisper_events.jsonl"))
+    Ok(diagnostics_dir(app_handle)?.join("distil_whisper_events.jsonl"))
 }
 
 pub fn runtime_events_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    Ok(diagnostics_dir(app_handle)?.join("runtime_events.jsonl"))
+}
+
+pub fn diagnostics_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
     let dir = app_handle
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?;
-    Ok(dir.join("diagnostics").join("runtime_events.jsonl"))
+    let diagnostics_dir = dir.join("diagnostics");
+    fs::create_dir_all(&diagnostics_dir).map_err(|e| e.to_string())?;
+    Ok(diagnostics_dir)
+}
+
+pub fn support_exports_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    Ok(diagnostics_dir(app_handle)?.join("exports"))
+}
+
+pub fn history_exports_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    Ok(dir.join("exports").join("history"))
 }
 
 pub fn support_diagnostics_enabled(app_handle: &AppHandle) -> bool {
@@ -644,7 +657,7 @@ fn append_parakeet_event(path: &Path, event: &ParakeetDiagnosticsEvent) -> Resul
 }
 
 /// A lightweight transcript history entry for the user-facing history UI.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptHistoryEntry {
     pub id: i64,
     pub created_at: i64,
@@ -826,6 +839,64 @@ impl TranscriptDiagnosticsStore {
             file_name,
         })
     }
+
+    pub fn export_transcript_history(
+        &self,
+        app_handle: &AppHandle,
+    ) -> Result<TranscriptHistoryExport, String> {
+        let exports_dir = history_exports_dir(app_handle)?;
+        self.export_transcript_history_to_dir(&exports_dir)
+    }
+
+    pub fn export_transcript_history_to_dir(
+        &self,
+        exports_dir: &Path,
+    ) -> Result<TranscriptHistoryExport, String> {
+        self.flush_writer();
+        fs::create_dir_all(exports_dir).map_err(|e| e.to_string())?;
+
+        let entries = self.list_all_history()?;
+        let file_name = format!("yolo-voice-history-{}.json", current_timestamp_ms());
+        let file_path = exports_dir.join(&file_name);
+        let json = serde_json::to_string_pretty(&entries).map_err(|e| e.to_string())?;
+        fs::write(&file_path, json).map_err(|e| e.to_string())?;
+
+        Ok(TranscriptHistoryExport {
+            file_path: file_path.to_string_lossy().to_string(),
+            file_name,
+            exported_count: entries.len() as u64,
+        })
+    }
+
+    fn list_all_history(&self) -> Result<Vec<TranscriptHistoryEntry>, String> {
+        self.flush_writer();
+        let conn = open_connection(&self.db_path)?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, created_at, final_text, inserted_text, transcription_mode, stt_provider, pipeline_mode, insert_success \
+                 FROM transcript_samples ORDER BY created_at DESC, id DESC",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let entries = stmt
+            .query_map([], |row| {
+                Ok(TranscriptHistoryEntry {
+                    id: row.get(0)?,
+                    created_at: row.get(1)?,
+                    final_text: row.get(2)?,
+                    inserted_text: row.get(3)?,
+                    transcription_mode: row.get(4)?,
+                    stt_provider: row.get(5)?,
+                    pipeline_mode: row.get(6)?,
+                    insert_success: row.get(7)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(entries)
+    }
 }
 
 fn write_json_to_zip<T: Serialize>(
@@ -888,6 +959,15 @@ mod tests {
             .map(|duration| duration.as_nanos())
             .unwrap_or_default();
         let unique = format!("{}-{}-{}.sqlite3", label, std::process::id(), nanos);
+        std::env::temp_dir().join(unique)
+    }
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let unique = format!("{}-{}-{}", label, std::process::id(), nanos);
         std::env::temp_dir().join(unique)
     }
 
@@ -961,10 +1041,12 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         let db_path = dir.join("samples.sqlite3");
+        let runtime_jsonl_path = dir.join("runtime_events.jsonl");
         let jsonl_path = dir.join("distil_whisper_events.jsonl");
         let parakeet_jsonl_path = dir.join("parakeet_events.jsonl");
         let store = TranscriptDiagnosticsStore::from_paths(
             db_path.clone(),
+            runtime_jsonl_path,
             jsonl_path.clone(),
             parakeet_jsonl_path,
         )
@@ -1069,5 +1151,47 @@ mod tests {
         assert!(columns.contains(&"mixed_script_detected".to_string()));
 
         let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn export_transcript_history_writes_all_rows_to_json() {
+        let db_path = temp_db_path("diagnostics-history-export");
+        let store = TranscriptDiagnosticsStore::from_db_path(db_path.clone()).unwrap();
+        let exports_dir = temp_dir("diagnostics-history-exports");
+
+        store.log_sample(sample_with_id("session-export", "utt-1", 10));
+        store.log_sample(sample_with_id("session-export", "utt-2", 20));
+        store.flush_for_tests();
+
+        let export = store.export_transcript_history_to_dir(&exports_dir).unwrap();
+        let contents = fs::read_to_string(&export.file_path).unwrap();
+        let rows: Vec<TranscriptHistoryEntry> = serde_json::from_str(&contents).unwrap();
+
+        assert_eq!(export.exported_count, 2);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].created_at, 20);
+        assert_eq!(rows[0].pipeline_mode, "dictation");
+        assert!(rows[0].insert_success);
+        assert!(rows[0].final_text.as_deref().unwrap_or_default().contains("Hello world."));
+
+        let _ = fs::remove_file(db_path);
+        let _ = fs::remove_dir_all(exports_dir);
+    }
+
+    #[test]
+    fn export_transcript_history_handles_empty_history() {
+        let db_path = temp_db_path("diagnostics-history-empty");
+        let store = TranscriptDiagnosticsStore::from_db_path(db_path.clone()).unwrap();
+        let exports_dir = temp_dir("diagnostics-history-empty-exports");
+
+        let export = store.export_transcript_history_to_dir(&exports_dir).unwrap();
+        let contents = fs::read_to_string(&export.file_path).unwrap();
+        let rows: Vec<TranscriptHistoryEntry> = serde_json::from_str(&contents).unwrap();
+
+        assert_eq!(export.exported_count, 0);
+        assert!(rows.is_empty());
+
+        let _ = fs::remove_file(db_path);
+        let _ = fs::remove_dir_all(exports_dir);
     }
 }

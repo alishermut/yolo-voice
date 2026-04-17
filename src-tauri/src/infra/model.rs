@@ -16,24 +16,27 @@ const MODEL_FILES: &[(&str, bool)] = &[
     ("tokenizer.json", false),           // optional (parakeet-rs may use vocab.txt)
 ];
 
-/// Get the models directory path: AppData/models/parakeet-tdt-v3/
-pub fn get_models_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
+pub fn get_models_root_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
     let dir = app_handle
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?;
-    let models_dir = dir.join("models").join("parakeet-tdt-v3");
+    let models_dir = dir.join("models");
+    std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
+    Ok(models_dir)
+}
+
+/// Get the models directory path: AppData/models/parakeet-tdt-v3/
+pub fn get_models_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let models_dir = get_models_root_dir(app_handle)?.join("parakeet-tdt-v3");
     std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
     Ok(models_dir)
 }
 
 pub fn get_distil_whisper_models_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
     migrate_legacy_distil_whisper_dir(&dir)?;
-    let models_dir = dir.join("models").join(DISTIL_WHISPER_MODEL_DIR);
+    let models_dir = get_models_root_dir(app_handle)?.join(DISTIL_WHISPER_MODEL_DIR);
     std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
     Ok(models_dir)
 }

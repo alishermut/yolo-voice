@@ -97,21 +97,31 @@ impl VadProcessor {
 
     /// Process a buffer of 16 kHz mono f32 samples. Returns completed segments.
     pub fn process(&mut self, samples: &[f32]) -> Vec<SpeechSegment> {
+        self.process_with_speech_start(samples).0
+    }
+
+    /// Process audio and report whether this buffer caused speech to start.
+    pub fn process_with_speech_start(&mut self, samples: &[f32]) -> (Vec<SpeechSegment>, bool) {
         let mut segments = Vec::new();
+        let mut speech_started = false;
 
         let mut offset = 0;
         while offset + CHUNK_SIZE <= samples.len() {
             let chunk = &samples[offset..offset + CHUNK_SIZE];
             let prob = self.forward(chunk);
+            let was_in_speech = self.in_speech;
 
             if let Some(seg) = self.update_segmentation(chunk, prob) {
                 segments.push(seg);
+            }
+            if !was_in_speech && self.in_speech {
+                speech_started = true;
             }
 
             offset += CHUNK_SIZE;
         }
 
-        segments
+        (segments, speech_started)
     }
 
     /// Flush any in-progress speech segment.

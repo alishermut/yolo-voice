@@ -1,9 +1,13 @@
 import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { AppConfig } from "../shared/types";
-import { getConfig, saveConfig, quitApp, getAppInfo, onOpenSettingsSection } from "../shared/platform";
-import type { AppInfo } from "../shared/types";
+import type {
+  AppConfig,
+  AppInfo,
+  SettingsExperienceMode,
+  StorageOverview,
+} from "../shared/types";
+import { getConfig, getStorageOverview, saveConfig, quitApp, getAppInfo, onOpenSettingsSection } from "../shared/platform";
 import { useToast, ToastContainer } from "../components/Toast";
 import { focusRing } from "../components/ui/styles";
 import { useUpdaterContext } from "../contexts/UpdaterContext";
@@ -35,7 +39,7 @@ const SECTIONS: {
   { key: "general", labelKey: "settings.sidebar.section.general", defaultLabel: "General", icon: "\u2699" },
   { key: "hotkeys", labelKey: "settings.sidebar.section.hotkeys", defaultLabel: "Hotkeys", icon: "\u2328" },
   { key: "transcription", labelKey: "settings.sidebar.section.transcription", defaultLabel: "Transcription", icon: "\uD83C\uDFA4" },
-  { key: "command", labelKey: "settings.sidebar.section.commandMode", defaultLabel: "Command Mode", icon: "\u26A1" },
+  { key: "command", labelKey: "settings.sidebar.section.textActions", defaultLabel: "Text Actions", icon: "\u26A1" },
   { key: "vocabulary", labelKey: "settings.sidebar.section.vocabulary", defaultLabel: "Vocabulary", icon: "\uD83D\uDCD6" },
   { key: "profiles", labelKey: "settings.sidebar.section.dictationStyles", defaultLabel: "Dictation Styles", icon: "\uD83C\uDFA8" },
   { key: "history", labelKey: "settings.sidebar.section.history", defaultLabel: "History", icon: "\uD83D\uDCCB" },
@@ -48,12 +52,14 @@ const SECTION_TITLE_KEYS: Record<
   general: { key: "settings.sectionTitle.general", defaultValue: "General" },
   hotkeys: { key: "settings.sectionTitle.hotkeys", defaultValue: "Hotkeys" },
   transcription: { key: "settings.sectionTitle.transcription", defaultValue: "Transcription Engine" },
-  command: { key: "settings.sectionTitle.command", defaultValue: "Command Mode" },
+  command: { key: "settings.sectionTitle.textActions", defaultValue: "Text Actions" },
   vocabulary: { key: "settings.sectionTitle.vocabulary", defaultValue: "Vocabulary" },
   profiles: { key: "settings.sectionTitle.profiles", defaultValue: "Dictation Styles" },
   history: { key: "settings.sectionTitle.history", defaultValue: "Transcription History" },
   about: { key: "settings.sectionTitle.about", defaultValue: "About" },
 };
+
+const ADVANCED_ONLY_SECTIONS: SettingsSection[] = ["vocabulary", "profiles"];
 
 export function Settings() {
   const { t } = useTranslation();
@@ -62,24 +68,65 @@ export function Settings() {
   const [activeSection, setActiveSection] =
     useState<SettingsSection>("general");
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
+  const [storageOverview, setStorageOverview] = useState<StorageOverview | null>(null);
   const { toasts, addToast } = useToast();
   const { status: updateStatus, version: updateVersion, installUpdate } = useUpdaterContext();
   const [updateDismissed, setUpdateDismissed] = useState(false);
+  const [advancedModeToastShown, setAdvancedModeToastShown] = useState(false);
+
+  const settingsMode: SettingsExperienceMode =
+    config?.settings_experience_mode === "advanced" ? "advanced" : "simple";
+  const visibleSections = SECTIONS.filter(({ key }) =>
+    settingsMode === "advanced" ? true : !ADVANCED_ONLY_SECTIONS.includes(key),
+  );
+  const visibleNavigationSections: SettingsSection[] = [
+    ...visibleSections.map(({ key }) => key),
+    "about",
+  ];
 
   useEffect(() => {
     getConfig()
       .then(setConfig)
       .catch((e) => setError(String(e)));
     getAppInfo().then(setAppInfo).catch(() => {});
+    getStorageOverview().then(setStorageOverview).catch(() => {});
   }, []);
 
   const updateConfig = async (updates: Partial<AppConfig>) => {
     if (!config) return;
-    const newConfig = { ...config, ...updates };
+    const requestedConfig = { ...config, ...updates };
     try {
-      await saveConfig(newConfig);
-      setConfig(newConfig);
+      const savedConfig = await saveConfig(requestedConfig);
+      setConfig(savedConfig);
       setError(null);
+
+      if (
+        requestedConfig.dictation_activation_mode === "voice_activated" &&
+        savedConfig.dictation_activation_mode === "manual"
+      ) {
+        addToast(
+          t("hotkeys.activationMode.resetToast", {
+            defaultValue:
+              "Voice activated mode was turned off because it only works with offline Parakeet segmented mode.",
+          }),
+          "info",
+        );
+      }
+
+      if (
+        requestedConfig.settings_experience_mode === "advanced" &&
+        savedConfig.settings_experience_mode === "advanced" &&
+        !advancedModeToastShown
+      ) {
+        addToast(
+          t("settings.mode.advancedToast", {
+            defaultValue:
+              "Advanced settings show deeper engine, style, and vocabulary controls.",
+          }),
+          "info",
+        );
+        setAdvancedModeToastShown(true);
+      }
     } catch (e) {
       const msg = String(e);
       setError(msg);
@@ -94,16 +141,12 @@ export function Settings() {
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
       const index = parseInt(e.key, 10);
-      if (index >= 1 && index <= SECTIONS.length) {
+      if (index >= 1 && index <= visibleNavigationSections.length) {
         e.preventDefault();
-        setActiveSection(SECTIONS[index - 1].key);
-      }
-      if (e.key === "7") {
-        e.preventDefault();
-        setActiveSection("about");
+        setActiveSection(visibleNavigationSections[index - 1]);
       }
     },
-    [],
+    [visibleNavigationSections],
   );
 
   useEffect(() => {
@@ -125,6 +168,15 @@ export function Settings() {
       unlistenPromise.then((unlisten) => unlisten());
     };
   }, []);
+
+  useEffect(() => {
+    if (
+      settingsMode === "simple" &&
+      ADVANCED_ONLY_SECTIONS.includes(activeSection)
+    ) {
+      setActiveSection("general");
+    }
+  }, [activeSection, settingsMode]);
 
   if (!config) {
     return (
@@ -155,7 +207,7 @@ export function Settings() {
 
         {/* Sections */}
         <div className="flex-1 overflow-y-auto px-2 space-y-0.5">
-          {SECTIONS.map(({ key, labelKey, defaultLabel, icon }) => (
+          {visibleSections.map(({ key, labelKey, defaultLabel, icon }) => (
             <button
               key={key}
               onClick={() => setActiveSection(key)}
@@ -283,42 +335,100 @@ export function Settings() {
             })}
           </h2>
 
+          <div className="mb-6 p-3 rounded-lg border border-border-default bg-bg-base">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-text-primary">
+                  {t("settings.mode.heading", {
+                    defaultValue: "Settings view",
+                  })}
+                </p>
+                <p className="text-xs text-text-muted mt-1">
+                  {t("settings.mode.description", {
+                    defaultValue:
+                      "Simple keeps the everyday controls up front. Advanced restores the full settings surface.",
+                  })}
+                </p>
+              </div>
+              <div className="inline-flex rounded-lg border border-border-default bg-bg-raised p-1">
+                {(["simple", "advanced"] as SettingsExperienceMode[]).map((mode) => {
+                  const active = settingsMode === mode;
+                  return (
+                    <button
+                      key={mode}
+                      onClick={() =>
+                        updateConfig({ settings_experience_mode: mode })
+                      }
+                      className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${focusRing} ${
+                        active
+                          ? "bg-accent text-white"
+                          : "text-text-secondary hover:text-text-primary"
+                      }`}
+                    >
+                      {mode === "simple"
+                        ? t("settings.mode.simple", { defaultValue: "Simple" })
+                        : t("settings.mode.advanced", {
+                            defaultValue: "Advanced",
+                          })}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
           {/* Active section */}
           {activeSection === "general" && (
             <GeneralSection
               config={config}
+              settingsMode={settingsMode}
               updateConfig={updateConfig}
               setConfig={setConfig}
               setError={setError}
             />
           )}
           {activeSection === "hotkeys" && (
-            <HotkeySection config={config} updateConfig={updateConfig} />
+            <HotkeySection
+              config={config}
+              settingsMode={settingsMode}
+              updateConfig={updateConfig}
+            />
           )}
           {activeSection === "transcription" && (
             <TranscriptionSection
+              addToast={addToast}
               config={config}
+              settingsMode={settingsMode}
+              storageOverview={storageOverview}
               updateConfig={updateConfig}
               setError={setError}
             />
           )}
           {activeSection === "command" && (
-            <CommandSection config={config} updateConfig={updateConfig} />
+            <CommandSection
+              config={config}
+              settingsMode={settingsMode}
+              storageOverview={storageOverview}
+              updateConfig={updateConfig}
+            />
           )}
-          {activeSection === "vocabulary" && (
+          {activeSection === "vocabulary" && settingsMode === "advanced" && (
             <VocabularySection
               config={config}
               setConfig={setConfig}
               setError={setError}
             />
           )}
-          {activeSection === "profiles" && (
+          {activeSection === "profiles" && settingsMode === "advanced" && (
             <ProfilesSection config={config} updateConfig={updateConfig} />
           )}
-          {activeSection === "history" && <HistorySection />}
+          {activeSection === "history" && (
+            <HistorySection storageOverview={storageOverview} />
+          )}
           {activeSection === "about" && (
             <AboutSection
               config={config}
+              storageOverview={storageOverview}
               updateConfig={updateConfig}
             />
           )}
