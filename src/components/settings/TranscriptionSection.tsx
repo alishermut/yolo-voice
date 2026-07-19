@@ -17,6 +17,7 @@ import { Select } from "../ui/Select";
 import { Switch } from "../ui/Switch";
 import { CloudInfoCard } from "./EngineInfoCard";
 import { TrustCard } from "./TrustCard";
+import { ConfigTextInput } from "./ConfigTextInput";
 
 interface TranscriptionSectionProps {
   addToast: (message: string, type?: "success" | "error" | "info") => void;
@@ -314,7 +315,9 @@ export function TranscriptionSection({
               updateConfig={updateConfig}
             />
 
-            {isAdvanced && config.offline_engine === "parakeet" && (
+            {isAdvanced &&
+              (config.offline_engine === "parakeet" ||
+                config.offline_engine === "parakeet_en") && (
               <div className="flex items-center justify-between">
                 <div>
                   <span className="text-sm font-medium text-text-primary">
@@ -454,11 +457,11 @@ export function TranscriptionSection({
               <span className="text-sm font-medium text-text-primary w-20">
                 {t("transcription.cloud.apiKeyLabel")}
               </span>
-              <input
+              <ConfigTextInput
                 type="password"
                 value={config.cloud_stt_api_key ?? ""}
-                onChange={(e) =>
-                  updateConfig({ cloud_stt_api_key: e.target.value })
+                onCommit={(cloud_stt_api_key) =>
+                  updateConfig({ cloud_stt_api_key })
                 }
                 placeholder={t("transcription.cloud.apiKeyPlaceholder")}
                 className={`flex-1 ${inputStyles}`}

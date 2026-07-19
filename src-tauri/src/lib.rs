@@ -2,7 +2,7 @@ mod app;
 mod features;
 mod infra;
 
-use app::commands::{AudioState, OnboardingPreviewState};
+use app::commands::{AudioState, LoadedParakeetEngine, OnboardingPreviewState};
 use features::capture::recorder::{RecordingState, WarmDeviceState};
 use features::capture::{
     ActiveStyleKey, ContinuousGeneration, HotkeyRuntimeState, RuntimeDictionaryCache,
@@ -23,6 +23,12 @@ use tauri::{
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Debug)
+                .max_file_size(5_000_000)
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -33,6 +39,7 @@ pub fn run() {
         .manage(WarmDeviceState(Mutex::new(None)))
         .manage(FocusedWindowState(Mutex::new(0)))
         .manage(InferenceState(Mutex::new(None)))
+        .manage(LoadedParakeetEngine(Mutex::new(None)))
         .manage(DistilWhisperState(Mutex::new(
             features::speech::distil_whisper::DistilWhisperManager::default(),
         )))
@@ -113,6 +120,21 @@ pub fn run() {
                     });
             let config_state = app.state::<ConfigState>();
             *config_state.0.lock().unwrap() = saved_config.clone();
+            log::info!(
+                target: "yolo_voice::startup",
+                "startup config loaded app_data_dir={:?} app_log_dir={:?} resource_dir={:?} current_exe={:?} hotkey={} command_hotkey={} device_index={} transcription_mode={} offline_engine={} distil_segmented={} start_minimized={}",
+                app.path().app_data_dir().ok(),
+                app.path().app_log_dir().ok(),
+                app.path().resource_dir().ok(),
+                std::env::current_exe().ok(),
+                saved_config.hotkey,
+                saved_config.command_hotkey,
+                saved_config.device_index,
+                saved_config.transcription_mode,
+                saved_config.offline_engine,
+                saved_config.parakeet_segmented_mode_enabled,
+                saved_config.start_minimized,
+            );
             if text_actions_changed {
                 if let Err(err) = features::settings::save_config(&app.handle(), &saved_config) {
                     eprintln!("[app] Failed to persist text action migration: {}", err);
@@ -268,10 +290,27 @@ pub fn run() {
                 }
             }
 
-            // Start global hotkey listener with cached keys
+            // Ensure default profiles are seeded before building the hotkey cache
+            // (style shortcuts are loaded from profile files).
+            if let Ok(profiles_dir) = features::speech::profiles::get_profiles_dir(&app.handle()) {
+                let _ = features::speech::profiles::ensure_profiles_dir(&profiles_dir, &app.handle());
+            }
+
+            // Register hotkey action handlers BEFORE starting the listener so
+            // early keypresses after launch are not dropped.
+            features::capture::setup_hotkey_handler(&app.handle());
+            features::capture::setup_command_hotkey_handler(&app.handle());
+            features::capture::setup_style_switch_handler(&app.handle());
+
+            let voice_activated = saved_config.dictation_activation_mode == "voice_activated"
+                && features::settings::voice_activation_supported(&saved_config);
+            let style_shortcuts =
+                features::capture::hotkey::load_style_shortcuts(&app.handle());
             let hotkey_cache = features::capture::hotkey::HotkeyCache::new(
                 &saved_config.hotkey,
                 &saved_config.command_hotkey,
+                voice_activated,
+                style_shortcuts,
             );
             app.manage(hotkey_cache.clone());
             features::capture::hotkey::start_hotkey_listener(app.handle().clone(), hotkey_cache);
@@ -285,15 +324,18 @@ pub fn run() {
             // Clean up old whisper models from previous versions
             let _ = infra::model::cleanup_old_models(&app.handle());
 
-            // Ensure default profiles are seeded
-            if let Ok(profiles_dir) = features::speech::profiles::get_profiles_dir(&app.handle()) {
-                let _ = features::speech::profiles::ensure_profiles_dir(&profiles_dir, &app.handle());
-            }
-
-            // Initialize inference engine in the background
+            // Initialize inference engine in the background.
+            // Only Parakeet variants are loaded here; distil_whisper prepares
+            // its own sidecar below when selected.
             let inference_handle = app.handle().clone();
+            let startup_engine = if infra::model::is_parakeet_variant(&saved_config.offline_engine)
+            {
+                saved_config.offline_engine.clone()
+            } else {
+                "parakeet".to_string()
+            };
             std::thread::spawn(move || {
-                let models_dir = match infra::model::get_models_dir(&inference_handle) {
+                let models_dir = match infra::model::get_models_dir_for(&inference_handle, &startup_engine) {
                     Ok(dir) => dir,
                     Err(e) => {
                         eprintln!("[app] Failed to get models dir: {}", e);
@@ -314,7 +356,7 @@ pub fn run() {
                     "parakeet",
                     "startup_load_requested",
                     "Initializing Parakeet model during app startup",
-                    serde_json::json!({}),
+                    serde_json::json!({ "engine": startup_engine }),
                 );
 
                 match features::speech::inference::InferenceSession::new(&models_dir) {
@@ -322,7 +364,12 @@ pub fn run() {
                         let gpu = session.is_gpu();
                         let state = inference_handle.state::<InferenceState>();
                         match state.0.lock() {
-                            Ok(mut g) => *g = Some(session),
+                            Ok(mut g) => {
+                                *g = Some(session);
+                                inference_handle
+                                    .state::<LoadedParakeetEngine>()
+                                    .set(Some(startup_engine.clone()));
+                            }
                             Err(e) => {
                                 eprintln!("[app] InferenceState mutex poisoned: {}", e);
                                 let _ = inference_handle.emit("model-status", "error");
@@ -336,6 +383,7 @@ pub fn run() {
                             "Initialized Parakeet model during app startup",
                             serde_json::json!({
                                 "gpu": gpu,
+                                "engine": startup_engine,
                             }),
                         );
                         let _ = inference_handle.emit("model-status", "ready");
@@ -351,6 +399,7 @@ pub fn run() {
                             "startup_load_error",
                             "Failed to initialize Parakeet model during app startup",
                             serde_json::json!({
+                                "engine": startup_engine,
                                 "error": e,
                             }),
                         );
@@ -360,20 +409,11 @@ pub fn run() {
 
             });
 
-            // Set up the hotkey-action event handler (record → transcribe → insert pipeline)
             if saved_config.transcription_mode == "offline"
                 && saved_config.offline_engine == "distil_whisper"
             {
                 let _ = features::speech::distil_whisper::maybe_prepare_in_background(&app.handle());
             }
-            features::capture::setup_hotkey_handler(&app.handle());
-
-            // Set up the command-hotkey-action event handler (command pipeline)
-            features::capture::setup_command_hotkey_handler(&app.handle());
-
-            // Set up the style-switch event handler (command key + letter)
-            features::capture::setup_style_switch_handler(&app.handle());
-
             Ok(())
         })
         .on_window_event(|window, event| {

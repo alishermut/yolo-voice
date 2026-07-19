@@ -349,6 +349,44 @@ mod tests {
         assert_eq!(normalized.dictation_activation_mode, "voice_activated");
         assert!(!normalized.continuous_recording_enabled);
     }
+
+    #[test]
+    fn normalize_keeps_parakeet_en_engine() {
+        let mut config = AppConfig::default();
+        config.offline_engine = "parakeet_en".to_string();
+        let normalized = super::normalize_config(config);
+        assert_eq!(normalized.offline_engine, "parakeet_en");
+    }
+
+    #[test]
+    fn normalize_falls_back_for_unknown_engine() {
+        let mut config = AppConfig::default();
+        config.offline_engine = "whisper_x".to_string();
+        let normalized = super::normalize_config(config);
+        assert_eq!(normalized.offline_engine, AppConfig::default().offline_engine);
+    }
+
+    #[test]
+    fn is_parakeet_variant_recognizes_both_engines() {
+        let mut config = AppConfig::default();
+        config.offline_engine = "parakeet".to_string();
+        assert!(super::is_parakeet_variant(&config));
+        config.offline_engine = "parakeet_en".to_string();
+        assert!(super::is_parakeet_variant(&config));
+        config.offline_engine = "distil_whisper".to_string();
+        assert!(!super::is_parakeet_variant(&config));
+    }
+
+    #[test]
+    fn voice_activation_supported_for_parakeet_en() {
+        let mut config = AppConfig::default();
+        config.transcription_mode = "offline".to_string();
+        config.offline_engine = "parakeet_en".to_string();
+        config.parakeet_segmented_mode_enabled = true;
+        config.dictation_activation_mode = "voice_activated".to_string();
+        let normalized = super::normalize_config(config);
+        assert!(super::voice_activation_supported(&normalized));
+    }
 }
 
 pub struct ConfigState(pub Mutex<AppConfig>);
@@ -368,7 +406,27 @@ pub fn load_config(app_handle: &AppHandle) -> AppConfig {
     };
 
     match fs::read_to_string(&path) {
-        Ok(contents) => normalize_config(serde_json::from_str(&contents).unwrap_or_default()),
+        Ok(contents) => match serde_json::from_str::<AppConfig>(&contents) {
+            Ok(config) => normalize_config(config),
+            Err(err) => {
+                match crate::infra::fs_util::backup_corrupt_file(&path) {
+                    Ok(backup) => {
+                        log::error!(
+                            target: "yolo_voice::settings",
+                            "Corrupt config.json backed up to {} (parse error: {err})",
+                            backup.display()
+                        );
+                    }
+                    Err(backup_err) => {
+                        log::error!(
+                            target: "yolo_voice::settings",
+                            "Corrupt config.json could not be backed up ({backup_err}); parse error: {err}"
+                        );
+                    }
+                }
+                AppConfig::default()
+            }
+        },
         Err(_) => AppConfig::default(),
     }
 }
@@ -376,6 +434,7 @@ pub fn load_config(app_handle: &AppHandle) -> AppConfig {
 fn normalize_config(mut config: AppConfig) -> AppConfig {
     config.offline_engine = match config.offline_engine.as_str() {
         "parakeet" => "parakeet".to_string(),
+        "parakeet_en" => "parakeet_en".to_string(),
         "distil_whisper" => "distil_whisper".to_string(),
         "cohere" => "distil_whisper".to_string(),
         _ => default_offline_engine(),
@@ -408,9 +467,15 @@ fn normalize_config(mut config: AppConfig) -> AppConfig {
     config
 }
 
+/// Returns true if the configured offline engine is a Parakeet variant
+/// (`"parakeet"` v3 multilingual or `"parakeet_en"` v2 English-only).
+pub fn is_parakeet_variant(config: &AppConfig) -> bool {
+    crate::infra::model::is_parakeet_variant(&config.offline_engine)
+}
+
 pub fn voice_activation_supported(config: &AppConfig) -> bool {
     config.transcription_mode == "offline"
-        && config.offline_engine == "parakeet"
+        && is_parakeet_variant(config)
         && config.parakeet_segmented_mode_enabled
 }
 
@@ -418,16 +483,8 @@ pub fn save_config(app_handle: &AppHandle, config: &AppConfig) -> Result<AppConf
     let normalized = normalize_config(config.clone());
     let path = get_config_path(app_handle)?;
 
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-
     let json = serde_json::to_string_pretty(&normalized).map_err(|e| e.to_string())?;
-    fs::write(&path, json).map_err(|e| e.to_string())?;
-    // Ensure the write is flushed to disk (prevents data loss on crash/close)
-    if let Ok(file) = fs::File::open(&path) {
-        let _ = file.sync_all();
-    }
+    crate::infra::fs_util::write_json_atomic(&path, &json)?;
     Ok(normalized)
 }
 
