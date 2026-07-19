@@ -15,6 +15,7 @@ import {
   sectionHeader,
 } from "../ui/styles";
 import { TrustCard } from "./TrustCard";
+import { ConfigTextInput } from "./ConfigTextInput";
 
 interface CommandSectionProps {
   config: AppConfig;
@@ -121,12 +122,10 @@ export function CommandSection({
               <span className="text-sm font-medium text-text-primary w-36">
                 {t("llm.modelLabel")}
               </span>
-              <input
+              <ConfigTextInput
                 type="text"
                 value={config.command_model ?? ""}
-                onChange={(e) =>
-                  updateConfig({ command_model: e.target.value })
-                }
+                onCommit={(command_model) => updateConfig({ command_model })}
                 placeholder={t("llm.modelPlaceholder")}
                 className={`flex-1 ${inputStyles}`}
               />
@@ -137,11 +136,11 @@ export function CommandSection({
               <span className="text-sm font-medium text-text-primary w-36">
                 {t("textActions.api.keyLabel")}
               </span>
-              <input
+              <ConfigTextInput
                 type="password"
                 value={config.command_api_key ?? ""}
-                onChange={(e) =>
-                  updateConfig({ command_api_key: e.target.value })
+                onCommit={(command_api_key) =>
+                  updateConfig({ command_api_key })
                 }
                 placeholder={t("textActions.api.keyPlaceholder")}
                 className={`flex-1 ${inputStyles}`}
@@ -153,11 +152,11 @@ export function CommandSection({
               <span className="text-sm font-medium text-text-primary w-36">
                 {t("llm.baseUrlLabel")}
               </span>
-              <input
+              <ConfigTextInput
                 type="text"
                 value={config.command_base_url ?? ""}
-                onChange={(e) =>
-                  updateConfig({ command_base_url: e.target.value })
+                onCommit={(command_base_url) =>
+                  updateConfig({ command_base_url })
                 }
                 placeholder={t("llm.baseUrlPlaceholder")}
                 className={`flex-1 ${inputStyles}`}

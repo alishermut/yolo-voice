@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type {
@@ -84,55 +84,87 @@ export function Settings() {
     "about",
   ];
 
+  // Keep a mutable mirror so concurrent updateConfig calls never build from a
+  // stale React closure (F2).
+  const configRef = useRef<AppConfig | null>(null);
+  const saveSeqRef = useRef(0);
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve());
+
   useEffect(() => {
     getConfig()
-      .then(setConfig)
+      .then((loaded) => {
+        configRef.current = loaded;
+        setConfig(loaded);
+      })
       .catch((e) => setError(String(e)));
     getAppInfo().then(setAppInfo).catch(() => {});
     getStorageOverview().then(setStorageOverview).catch(() => {});
   }, []);
 
-  const updateConfig = async (updates: Partial<AppConfig>) => {
-    if (!config) return;
-    const requestedConfig = { ...config, ...updates };
-    try {
-      const savedConfig = await saveConfig(requestedConfig);
-      setConfig(savedConfig);
-      setError(null);
+  const updateConfig = useCallback(
+    async (updates: Partial<AppConfig>) => {
+      const base = configRef.current;
+      if (!base) return;
 
-      if (
-        requestedConfig.dictation_activation_mode === "voice_activated" &&
-        savedConfig.dictation_activation_mode === "manual"
-      ) {
-        addToast(
-          t("hotkeys.activationMode.resetToast", {
-            defaultValue:
-              "Voice activated mode was turned off because it only works with offline Parakeet segmented mode.",
-          }),
-          "info",
-        );
-      }
+      // Optimistic merge against the latest known config, not a stale closure.
+      const requestedConfig = { ...base, ...updates };
+      configRef.current = requestedConfig;
+      setConfig(requestedConfig);
 
-      if (
-        requestedConfig.settings_experience_mode === "advanced" &&
-        savedConfig.settings_experience_mode === "advanced" &&
-        !advancedModeToastShown
-      ) {
-        addToast(
-          t("settings.mode.advancedToast", {
-            defaultValue:
-              "Advanced settings show deeper engine, style, and vocabulary controls.",
-          }),
-          "info",
-        );
-        setAdvancedModeToastShown(true);
-      }
-    } catch (e) {
-      const msg = String(e);
-      setError(msg);
-      addToast(msg, "error");
-    }
-  };
+      const seq = ++saveSeqRef.current;
+
+      const runSave = async () => {
+        try {
+          const savedConfig = await saveConfig(requestedConfig);
+          // Ignore out-of-order responses; the serialized queue + latest seq win.
+          if (seq !== saveSeqRef.current) return;
+
+          configRef.current = savedConfig;
+          setConfig(savedConfig);
+          setError(null);
+
+          if (
+            requestedConfig.dictation_activation_mode === "voice_activated" &&
+            savedConfig.dictation_activation_mode === "manual"
+          ) {
+            addToast(
+              t("hotkeys.activationMode.resetToast", {
+                defaultValue:
+                  "Voice activated mode was turned off because it only works with offline Parakeet segmented mode.",
+              }),
+              "info",
+            );
+          }
+
+          if (
+            requestedConfig.settings_experience_mode === "advanced" &&
+            savedConfig.settings_experience_mode === "advanced" &&
+            !advancedModeToastShown
+          ) {
+            addToast(
+              t("settings.mode.advancedToast", {
+                defaultValue:
+                  "Advanced settings show deeper engine, style, and vocabulary controls.",
+              }),
+              "info",
+            );
+            setAdvancedModeToastShown(true);
+          }
+        } catch (e) {
+          if (seq !== saveSeqRef.current) return;
+          const msg = String(e);
+          setError(msg);
+          addToast(msg, "error");
+        }
+      };
+
+      // Serialize IPC saves so they cannot silently overwrite each other.
+      const queued = saveChainRef.current.then(runSave, runSave);
+      saveChainRef.current = queued;
+      await queued;
+    },
+    [addToast, t, advancedModeToastShown],
+  );
 
   // Keyboard shortcuts: press 1-7 to jump between sections
   const handleKeyDown = useCallback(
