@@ -445,6 +445,7 @@
 
   "keybinding.placeholder": "Click to set",
   "keybinding.listening": "Press any key...",
+  "keybinding.unsupported": "That key isn't supported as a hotkey",
 
   "engine.toggleHide": "Hide details",
   "engine.toggleShow": "Details",

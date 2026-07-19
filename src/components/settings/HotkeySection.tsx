@@ -19,7 +19,10 @@ function getVoiceActivationReason(
   if (config.transcription_mode !== "offline") {
     return "offline";
   }
-  if (config.offline_engine !== "parakeet") {
+  if (
+    config.offline_engine !== "parakeet" &&
+    config.offline_engine !== "parakeet_en"
+  ) {
     return "engine";
   }
   if (!config.parakeet_segmented_mode_enabled) {

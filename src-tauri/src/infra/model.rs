@@ -4,8 +4,39 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager};
 
-const REPO_ID: &str = "istupakov/parakeet-tdt-0.6b-v3-onnx";
 const DISTIL_WHISPER_MODEL_DIR: &str = "distil-whisper";
+
+/// Subdirectory name under `models/` for each Parakeet variant.
+const PARAKEET_V3_DIR: &str = "parakeet-tdt-v3";
+const PARAKEET_V2_DIR: &str = "parakeet-tdt-v2";
+
+/// HuggingFace repo id for each Parakeet variant.
+const PARAKEET_V3_REPO: &str = "istupakov/parakeet-tdt-0.6b-v3-onnx";
+const PARAKEET_V2_REPO: &str = "istupakov/parakeet-tdt-0.6b-v2-onnx";
+
+/// Resolve a Parakeet variant engine id (`"parakeet"` or `"parakeet_en"`)
+/// to its HuggingFace repo id. Falls back to the v3 multilingual repo.
+pub fn parakeet_repo_id(engine: &str) -> &'static str {
+    match engine {
+        "parakeet_en" => PARAKEET_V2_REPO,
+        _ => PARAKEET_V3_REPO,
+    }
+}
+
+/// Resolve a Parakeet variant engine id to its on-disk subdirectory name
+/// under `models/`. Falls back to the v3 multilingual directory.
+pub fn parakeet_dir_name(engine: &str) -> &'static str {
+    match engine {
+        "parakeet_en" => PARAKEET_V2_DIR,
+        _ => PARAKEET_V3_DIR,
+    }
+}
+
+/// Returns true for either Parakeet variant engine id.
+pub fn is_parakeet_variant(engine: &str) -> bool {
+    engine == "parakeet" || engine == "parakeet_en"
+}
+
 const MODEL_FILES: &[(&str, bool)] = &[
     ("encoder-model.onnx", true),        // ~41MB graph, required
     ("encoder-model.onnx.data", true),   // ~2.3GB weights (external data), required
@@ -26,15 +57,29 @@ pub fn get_models_root_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
     Ok(models_dir)
 }
 
-/// Get the models directory path: AppData/models/parakeet-tdt-v3/
-pub fn get_models_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
-    let models_dir = get_models_root_dir(app_handle)?.join("parakeet-tdt-v3");
+/// Get the models directory path for a specific Parakeet variant engine.
+/// `engine` is the `offline_engine` config value (`"parakeet"` or `"parakeet_en"`).
+/// Resolves to `AppData/models/parakeet-tdt-v3/` or `AppData/models/parakeet-tdt-v2/`.
+pub fn get_models_dir_for(app_handle: &AppHandle, engine: &str) -> Result<PathBuf, String> {
+    let dir_name = parakeet_dir_name(engine);
+    let models_dir = get_models_root_dir(app_handle)?.join(dir_name);
     std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
     Ok(models_dir)
 }
 
+/// Get the models directory path for the currently-configured Parakeet variant.
+/// Reads `offline_engine` from the persisted config so existing callers keep
+/// working without threading the engine through.
+pub fn get_models_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let engine = crate::features::settings::load_config(app_handle).offline_engine;
+    get_models_dir_for(app_handle, &engine)
+}
+
 pub fn get_distil_whisper_models_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
     migrate_legacy_distil_whisper_dir(&dir)?;
     let models_dir = get_models_root_dir(app_handle)?.join(DISTIL_WHISPER_MODEL_DIR);
     std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
@@ -100,13 +145,16 @@ pub fn is_distil_whisper_model_downloaded(models_dir: &Path) -> bool {
 }
 
 /// Download Parakeet model files from HuggingFace with progress reporting.
+/// `engine` selects the variant repo (`"parakeet"` v3 multilingual or
+/// `"parakeet_en"` v2 English-only). The file layout is identical for both.
 pub fn download_model(
+    engine: &str,
     models_dir: &Path,
     app_handle: &AppHandle,
     cancelled: &AtomicBool,
 ) -> Result<(), String> {
     download_hf_files(
-        REPO_ID,
+        parakeet_repo_id(engine),
         MODEL_FILES,
         models_dir,
         app_handle,

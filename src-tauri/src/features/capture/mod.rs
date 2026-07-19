@@ -1,9 +1,9 @@
 pub mod hotkey;
 pub mod recorder;
 
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json;
 use tauri::{AppHandle, Listener, Manager};
@@ -76,6 +76,16 @@ pub struct HotkeyRuntimeState {
     pub dictation_phase: Arc<AtomicU8>,
     pub dictation_stop_token: Arc<AtomicU64>,
     pub reset_generation: Arc<AtomicU64>,
+    /// Set when a dictation start is enqueued; cleared when handle_start finishes.
+    pub dictation_start_pending: Arc<AtomicBool>,
+    /// Bumped when installing / invalidating a hotkey listener instance.
+    pub listener_generation: Arc<AtomicU64>,
+    /// Millis (since `hook_epoch`, +1 so 0 means "never") of the last event delivered to
+    /// the keyboard hook callback. Atomic rather than a mutex because this is written on
+    /// the WH_KEYBOARD_LL thread for *every* input event, including mouse moves.
+    pub last_hook_event_ms: Arc<AtomicU64>,
+    /// Baseline for `last_hook_event_ms`.
+    pub hook_epoch: Arc<Instant>,
 }
 
 impl HotkeyRuntimeState {
@@ -85,6 +95,10 @@ impl HotkeyRuntimeState {
             dictation_phase: Arc::new(AtomicU8::new(DictationRuntimePhase::Idle as u8)),
             dictation_stop_token: Arc::new(AtomicU64::new(0)),
             reset_generation: Arc::new(AtomicU64::new(0)),
+            dictation_start_pending: Arc::new(AtomicBool::new(false)),
+            listener_generation: Arc::new(AtomicU64::new(0)),
+            last_hook_event_ms: Arc::new(AtomicU64::new(0)),
+            hook_epoch: Arc::new(Instant::now()),
         }
     }
 
@@ -108,8 +122,42 @@ impl HotkeyRuntimeState {
         self.dictation_stop_token.fetch_add(1, Ordering::SeqCst);
     }
 
+    pub fn dictation_start_pending(&self) -> bool {
+        self.dictation_start_pending.load(Ordering::SeqCst)
+    }
+
+    pub fn set_dictation_start_pending(&self, pending: bool) {
+        self.dictation_start_pending.store(pending, Ordering::SeqCst);
+    }
+
+    pub fn listener_generation(&self) -> u64 {
+        self.listener_generation.load(Ordering::SeqCst)
+    }
+
+    pub fn bump_listener_generation(&self) -> u64 {
+        self.listener_generation.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Runs on the hook thread for every input event — must stay lock-free.
+    pub fn mark_hook_event(&self) {
+        let ms = self.hook_epoch.elapsed().as_millis() as u64;
+        self.last_hook_event_ms
+            .store(ms.saturating_add(1), Ordering::Relaxed);
+    }
+
+    /// Time since the hook last delivered an event, or `None` if it never has.
+    pub fn last_hook_event_elapsed(&self) -> Option<Duration> {
+        let raw = self.last_hook_event_ms.load(Ordering::Relaxed);
+        if raw == 0 {
+            return None;
+        }
+        let then = Duration::from_millis(raw - 1);
+        Some(self.hook_epoch.elapsed().saturating_sub(then))
+    }
+
     pub fn reset_listener_state(&self) {
         self.cancel_pending_dictation_stop();
+        self.set_dictation_start_pending(false);
         self.set_dictation_phase(DictationRuntimePhase::Idle);
         self.reset_generation.fetch_add(1, Ordering::SeqCst);
     }
@@ -129,8 +177,19 @@ fn reset_hotkey_runtime(app: &AppHandle) {
 
 fn parakeet_segmented_supported(config: &crate::features::settings::AppConfig) -> bool {
     config.transcription_mode == "offline"
-        && config.offline_engine == "parakeet"
+        && crate::features::settings::is_parakeet_variant(config)
         && config.parakeet_segmented_mode_enabled
+}
+
+/// True when the configured offline engine is either Parakeet variant.
+fn is_parakeet_variant(config: &crate::features::settings::AppConfig) -> bool {
+    crate::features::settings::is_parakeet_variant(config)
+}
+
+/// True when in offline mode using either Parakeet variant. Used to decide
+/// whether to emit Parakeet diagnostics events.
+fn offline_parakeet_variant(config: &crate::features::settings::AppConfig) -> bool {
+    config.transcription_mode == "offline" && is_parakeet_variant(config)
 }
 
 fn voice_activated_enabled(config: &crate::features::settings::AppConfig) -> bool {
@@ -176,6 +235,17 @@ pub fn setup_hotkey_handler(app: &AppHandle) {
 }
 
 fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) {
+    // Always clear the start-pending flag when this handler returns (success or error).
+    struct ClearStartPending<'a>(&'a AppHandle);
+    impl Drop for ClearStartPending<'_> {
+        fn drop(&mut self) {
+            self.0
+                .state::<HotkeyRuntimeState>()
+                .set_dictation_start_pending(false);
+        }
+    }
+    let _clear_start_pending = ClearStartPending(app);
+
     let voice_activated = voice_activated_enabled(config);
     let should_use_continuous = config.continuous_recording_enabled && !voice_activated;
 
@@ -328,7 +398,7 @@ fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) 
         }
         Err(e) => {
             // Rollback: audio init failed after we already showed "recording"
-            eprintln!("Failed to start recording: {}", e);
+            log::error!(target: "yolo_voice::capture", "Failed to start recording: {}", e);
             if config.transcription_mode == "offline" && config.offline_engine == "distil_whisper" {
                 log_distil_whisper_event(
                     app,
@@ -352,8 +422,7 @@ fn handle_start(app: &AppHandle, config: &crate::features::settings::AppConfig) 
                         error: Some(e.clone()),
                     },
                 );
-            } else if config.transcription_mode == "offline" && config.offline_engine == "parakeet"
-            {
+            } else if offline_parakeet_variant(config) {
                 log_parakeet_event(
                     app,
                     ParakeetEventContext {
@@ -488,7 +557,7 @@ fn handle_stop(app: &AppHandle, config: &crate::features::settings::AppConfig) {
                     let preview_analysis =
                         language::analyze_preview_segments(&recording.transcript.raw_segments);
                     let preview_segment_count = preview_analysis.non_empty_segments;
-                    if config.transcription_mode == "offline" && config.offline_engine == "parakeet"
+                    if offline_parakeet_variant(&config)
                     {
                         log_parakeet_event(
                             &app,
@@ -523,7 +592,7 @@ fn handle_stop(app: &AppHandle, config: &crate::features::settings::AppConfig) {
                         TranscriptPipelineInput {
                             raw_segments: recording.transcript.raw_segments,
                             joined_text: recording.transcript.joined_text,
-                            stt_provider: "parakeet-tdt".to_string(),
+                            stt_provider: resolve_stt_provider(&config),
                             utterance_duration_ms: recording.utterance_duration_ms,
                             preview_segment_count,
                             preview_language_family: preview_analysis.family,
@@ -549,7 +618,7 @@ fn handle_stop(app: &AppHandle, config: &crate::features::settings::AppConfig) {
                             "error": e,
                         }),
                     );
-                    if config.transcription_mode == "offline" && config.offline_engine == "parakeet"
+                    if offline_parakeet_variant(&config)
                     {
                         log_parakeet_event(
                             &app,
@@ -707,8 +776,7 @@ fn handle_stop(app: &AppHandle, config: &crate::features::settings::AppConfig) {
                                 error: Some(e.clone()),
                             },
                         );
-                    } else if config.transcription_mode == "offline"
-                        && config.offline_engine == "parakeet"
+                    } else if offline_parakeet_variant(config)
                     {
                         log_parakeet_event(
                             app,
@@ -1032,7 +1100,6 @@ fn finalize_and_insert(
                     );
                 }
                 Err(error) => {
-                    eprintln!("Text insertion error: {}", error);
                     maybe_log_support_event(
                         app,
                         "capture",
@@ -1139,8 +1206,7 @@ fn transcribe_and_insert(
         } => diagnostics_utterance_id.clone(),
         _ => None,
     };
-    let parakeet_gpu_available = config.transcription_mode == "offline"
-        && config.offline_engine == "parakeet"
+    let parakeet_gpu_available = offline_parakeet_variant(config)
         && speech::get_gpu_available(&app.state::<InferenceState>());
 
     maybe_log_support_event(
@@ -1204,7 +1270,7 @@ fn transcribe_and_insert(
             let inference_state = app.state::<InferenceState>();
             let transcribe_started = Instant::now();
             let result = speech::transcribe_audio(&inference_state, capped, sample_rate, channels);
-            if config.transcription_mode == "offline" && config.offline_engine == "parakeet" {
+            if offline_parakeet_variant(config) {
                 match &result {
                     Ok(text) => {
                         eprintln!(
@@ -1405,8 +1471,10 @@ fn resolve_stt_provider(config: &crate::features::settings::AppConfig) -> String
         config.cloud_stt_provider.clone()
     } else if config.offline_engine == "distil_whisper" {
         "distil-whisper".to_string()
+    } else if config.offline_engine == "parakeet_en" {
+        "parakeet-tdt-v2".to_string()
     } else {
-        "parakeet-tdt".to_string()
+        "parakeet-tdt-v3".to_string()
     }
 }
 
@@ -2174,7 +2242,11 @@ fn command_finalize(
                     "error": e,
                 }),
             );
-            emit_all(app, "transcription-error", format!("Text action error: {}", e));
+            emit_all(
+                app,
+                "transcription-error",
+                format!("Text action error: {}", e),
+            );
         }
     }
 
@@ -2189,9 +2261,8 @@ fn resolve_default_text_action(
     config: &crate::features::settings::AppConfig,
 ) -> Result<speech::TextAction, String> {
     let text_actions_dir = speech::get_text_actions_dir(app)?;
-    speech::get_text_action(&text_actions_dir, &config.default_text_action_id).or_else(|_| {
-        speech::get_text_action(&text_actions_dir, speech::default_text_action_id())
-    })
+    speech::get_text_action(&text_actions_dir, &config.default_text_action_id)
+        .or_else(|_| speech::get_text_action(&text_actions_dir, speech::default_text_action_id()))
 }
 
 fn text_only_command(
@@ -2300,7 +2371,11 @@ mod tests {
     #[test]
     fn resolves_cloud_and_offline_stt_provider() {
         let mut config = AppConfig::default();
-        assert_eq!(resolve_stt_provider(&config), "parakeet-tdt");
+        // Default is the v3 multilingual Parakeet variant.
+        assert_eq!(resolve_stt_provider(&config), "parakeet-tdt-v3");
+
+        config.offline_engine = "parakeet_en".to_string();
+        assert_eq!(resolve_stt_provider(&config), "parakeet-tdt-v2");
 
         config.offline_engine = "distil_whisper".to_string();
         assert_eq!(resolve_stt_provider(&config), "distil-whisper");

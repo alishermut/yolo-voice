@@ -77,7 +77,8 @@ pub fn ensure_text_actions_ready(
     let actions = list_text_actions(&dir)?;
 
     let current_prompt = normalize_prompt(&config.command_system_prompt);
-    let default_prompt = normalize_prompt(crate::features::settings::legacy_default_command_system_prompt());
+    let default_prompt =
+        normalize_prompt(crate::features::settings::legacy_default_command_system_prompt());
     let command_prompt_is_custom = !current_prompt.is_empty() && current_prompt != default_prompt;
 
     if command_prompt_is_custom {
@@ -156,10 +157,8 @@ pub fn save_text_action(text_actions_dir: &Path, action: &TextAction) -> Result<
     let path = text_actions_dir.join(format!("{}.json", action.id));
     let json = serde_json::to_string_pretty(action)
         .map_err(|e| format!("Failed to serialize text action: {}", e))?;
-    std::fs::write(&path, json).map_err(|e| format!("Failed to write text action: {}", e))?;
-    if let Ok(file) = std::fs::File::open(&path) {
-        let _ = file.sync_all();
-    }
+    crate::infra::fs_util::write_json_atomic(&path, &json)
+        .map_err(|e| format!("Failed to write text action: {}", e))?;
     Ok(())
 }
 
@@ -255,7 +254,9 @@ mod tests {
 
         assert!(changed);
         assert!(actions.iter().any(|action| action.id == CLEAN_UP_ID));
-        assert!(actions.iter().any(|action| action.id == FREEFORM_COMMAND_ID));
+        assert!(actions
+            .iter()
+            .any(|action| action.id == FREEFORM_COMMAND_ID));
     }
 
     #[test]
@@ -263,7 +264,8 @@ mod tests {
         let dir = temp_actions_dir("migrate_custom");
         ensure_builtin_text_actions(&dir).expect("should seed built-ins");
         let mut config = AppConfig::default();
-        config.command_system_prompt = "Rewrite the source text into a concise Slack update.".to_string();
+        config.command_system_prompt =
+            "Rewrite the source text into a concise Slack update.".to_string();
         config.default_text_action_id.clear();
 
         let current_prompt = normalize_prompt(&config.command_system_prompt);
@@ -279,7 +281,9 @@ mod tests {
         save_text_action(&dir, &migrated).unwrap();
         let actions = list_text_actions(&dir).unwrap();
 
-        assert!(actions.iter().any(|action| action.id == MIGRATED_COMMAND_ID));
+        assert!(actions
+            .iter()
+            .any(|action| action.id == MIGRATED_COMMAND_ID));
         assert!(actions
             .iter()
             .any(|action| action.prompt == "Rewrite the source text into a concise Slack update."));

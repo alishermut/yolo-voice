@@ -134,6 +134,7 @@ function formatChordDisplay(value: string): string {
 export function KeybindingInput({ value, onChange, chord }: KeybindingInputProps) {
   const { t } = useTranslation();
   const [listening, setListening] = useState(false);
+  const [unsupportedHint, setUnsupportedHint] = useState(false);
 
   // --- Chord mode: accumulate held keys, register on full release ---
   const heldKeys = useRef<Set<string>>(new Set());
@@ -144,7 +145,11 @@ export function KeybindingInput({ value, onChange, chord }: KeybindingInputProps
     e.preventDefault();
     e.stopPropagation();
     const rdev = codeToRdev(e.code);
-    if (!rdev) return;
+    if (!rdev) {
+      setUnsupportedHint(true);
+      return;
+    }
+    setUnsupportedHint(false);
     heldKeys.current.add(rdev);
     peakKeys.current.add(rdev);
     setChordPreview(Array.from(peakKeys.current).map(displayName).join(" + "));
@@ -162,6 +167,7 @@ export function KeybindingInput({ value, onChange, chord }: KeybindingInputProps
       onChange(chord);
       peakKeys.current.clear();
       setChordPreview("");
+      setUnsupportedHint(false);
       setListening(false);
     }
   }, [onChange]);
@@ -173,8 +179,11 @@ export function KeybindingInput({ value, onChange, chord }: KeybindingInputProps
       e.stopPropagation();
       const rdevKey = codeToRdev(e.code);
       if (rdevKey) {
+        setUnsupportedHint(false);
         onChange(rdevKey);
         setListening(false);
+      } else {
+        setUnsupportedHint(true);
       }
     },
     [onChange],
@@ -206,19 +215,27 @@ export function KeybindingInput({ value, onChange, chord }: KeybindingInputProps
     : displayName(value) || t("keybinding.placeholder");
 
   return (
-    <button
-      onClick={() => setListening(!listening)}
-      className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus focus-visible:ring-offset-2 focus-visible:ring-offset-bg-base ${
-        listening
-          ? "bg-warning-muted border-warning text-warning animate-pulse"
-          : "bg-bg-raised border-border-default text-text-primary hover:border-border-hover"
-      }`}
-    >
-      {listening ? (
-        chordPreview || t("keybinding.listening")
-      ) : (
-        <span className="text-text-secondary">{displayValue}</span>
+    <div className="flex flex-col items-start gap-1">
+      <button
+        onClick={() => {
+          setUnsupportedHint(false);
+          setListening(!listening);
+        }}
+        className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus focus-visible:ring-offset-2 focus-visible:ring-offset-bg-base ${
+          listening
+            ? "bg-warning-muted border-warning text-warning animate-pulse"
+            : "bg-bg-raised border-border-default text-text-primary hover:border-border-hover"
+        }`}
+      >
+        {listening ? (
+          chordPreview || t("keybinding.listening")
+        ) : (
+          <span className="text-text-secondary">{displayValue}</span>
+        )}
+      </button>
+      {unsupportedHint && (
+        <span className="text-xs text-warning">{t("keybinding.unsupported")}</span>
       )}
-    </button>
+    </div>
   );
 }

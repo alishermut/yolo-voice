@@ -52,7 +52,7 @@ fn seed_default_profiles(profiles_dir: &Path, app_handle: &AppHandle) -> Result<
         let path = profiles_dir.join(format!("{}.json", profile.id));
         let json = serde_json::to_string_pretty(profile)
             .map_err(|e| format!("Failed to serialize profile: {}", e))?;
-        std::fs::write(&path, json)
+        crate::infra::fs_util::write_json_atomic(&path, &json)
             .map_err(|e| format!("Failed to write profile {}: {}", profile.id, e))?;
     }
 
@@ -139,11 +139,8 @@ pub fn save_profile(profiles_dir: &Path, profile: &Profile) -> Result<(), String
     let path = profiles_dir.join(format!("{}.json", profile.id));
     let json = serde_json::to_string_pretty(profile)
         .map_err(|e| format!("Failed to serialize profile: {}", e))?;
-    std::fs::write(&path, json).map_err(|e| format!("Failed to write profile: {}", e))?;
-    // Ensure the write is flushed to disk (prevents data loss on crash/close)
-    if let Ok(file) = std::fs::File::open(&path) {
-        let _ = file.sync_all();
-    }
+    crate::infra::fs_util::write_json_atomic(&path, &json)
+        .map_err(|e| format!("Failed to write profile: {}", e))?;
 
     Ok(())
 }

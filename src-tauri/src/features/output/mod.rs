@@ -543,25 +543,23 @@ pub fn insert_text(text: &str, target_hwnd: isize) -> Result<InsertTextReport, I
             send_input_last_error: None,
         },
     })?;
-    clipboard
-        .set_text(text)
-        .map_err(|e| InsertTextError {
-            message: format!("Failed to set clipboard text: {}", e),
-            report: InsertTextReport {
-                app_pid: std::process::id(),
-                app_is_elevated: {
-                    #[cfg(windows)]
-                    {
-                        get_process_elevation(std::process::id())
-                    }
-                    #[cfg(not(windows))]
-                    {
-                        None
-                    }
-                },
-                clipboard_text_len: text.chars().count(),
-                used_shift_paste: false,
-                target: describe_window(target_hwnd).unwrap_or(OutputWindowDetails {
+    clipboard.set_text(text).map_err(|e| InsertTextError {
+        message: format!("Failed to set clipboard text: {}", e),
+        report: InsertTextReport {
+            app_pid: std::process::id(),
+            app_is_elevated: {
+                #[cfg(windows)]
+                {
+                    get_process_elevation(std::process::id())
+                }
+                #[cfg(not(windows))]
+                {
+                    None
+                }
+            },
+            clipboard_text_len: text.chars().count(),
+            used_shift_paste: false,
+            target: describe_window(target_hwnd).unwrap_or(OutputWindowDetails {
                 hwnd: target_hwnd,
                 pid: None,
                 exe_name: None,
@@ -569,21 +567,21 @@ pub fn insert_text(text: &str, target_hwnd: isize) -> Result<InsertTextReport, I
                 title_length: None,
                 is_terminal: false,
                 is_own_window: false,
-                    is_elevated: None,
-                }),
-                foreground_before: None,
-                foreground_after_refocus: None,
-                foreground_after_paste: None,
-                set_foreground_attempted: false,
-                set_foreground_succeeded: None,
-                set_foreground_last_error_code: None,
-                set_foreground_last_error: None,
-                send_input_event_count: 0,
-                send_input_sent: None,
-                send_input_last_error_code: None,
-                send_input_last_error: None,
-            },
-        })?;
+                is_elevated: None,
+            }),
+            foreground_before: None,
+            foreground_after_refocus: None,
+            foreground_after_paste: None,
+            set_foreground_attempted: false,
+            set_foreground_succeeded: None,
+            set_foreground_last_error_code: None,
+            set_foreground_last_error: None,
+            send_input_event_count: 0,
+            send_input_sent: None,
+            send_input_last_error_code: None,
+            send_input_last_error: None,
+        },
+    })?;
 
     let use_shift = is_terminal_window(target_hwnd);
     let mut report = InsertTextReport {
@@ -682,7 +680,10 @@ pub fn insert_text(text: &str, target_hwnd: isize) -> Result<InsertTextReport, I
 #[cfg(windows)]
 fn send_paste_keystroke(
     with_shift: bool,
-) -> Result<(usize, u32, Option<u32>, Option<String>), (String, usize, u32, Option<u32>, Option<String>)> {
+) -> Result<
+    (usize, u32, Option<u32>, Option<String>),
+    (String, usize, u32, Option<u32>, Option<String>),
+> {
     let mut inputs: Vec<INPUT> = Vec::new();
 
     inputs.push(make_key_input(VK_CONTROL, false));
@@ -709,7 +710,9 @@ fn send_paste_keystroke(
                 sent,
                 inputs.len(),
                 code,
-                error_message.clone().unwrap_or_else(|| "unknown".to_string())
+                error_message
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string())
             )
         } else {
             format!("SendInput sent {} of {} events", sent, inputs.len())
@@ -764,20 +767,15 @@ pub fn send_media_play_pause() {
 #[cfg(target_os = "macos")]
 fn send_paste_keystroke(
     _with_shift: bool,
-) -> Result<(usize, u32, Option<u32>, Option<String>), (String, usize, u32, Option<u32>, Option<String>)> {
+) -> Result<
+    (usize, u32, Option<u32>, Option<String>),
+    (String, usize, u32, Option<u32>, Option<String>),
+> {
     // On macOS, use enigo to send Cmd+V
     use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 
-    let mut enigo =
-        Enigo::new(&Settings::default()).map_err(|e| {
-            (
-                format!("Failed to create enigo: {}", e),
-                0,
-                0,
-                None,
-                None,
-            )
-        })?;
+    let mut enigo = Enigo::new(&Settings::default())
+        .map_err(|e| (format!("Failed to create enigo: {}", e), 0, 0, None, None))?;
 
     enigo
         .key(Key::Meta, Direction::Press)

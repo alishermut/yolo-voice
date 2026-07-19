@@ -181,7 +181,14 @@ pub fn text_action_llm_call(
     );
 
     let user_prompt = format!("Source text:\n{}", source_text.trim());
-    command_llm_call(&user_prompt, &system_prompt, provider, model, api_key, base_url)
+    command_llm_call(
+        &user_prompt,
+        &system_prompt,
+        provider,
+        model,
+        api_key,
+        base_url,
+    )
 }
 
 /// Result of detecting a vocabulary addition command from voice input.

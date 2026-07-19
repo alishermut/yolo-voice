@@ -124,16 +124,28 @@ impl Drop for AudioStream {
     }
 }
 
+fn resolve_input_device(host: &cpal::Host, device_index: usize) -> Result<cpal::Device, String> {
+    let mut devices = host.input_devices().map_err(|e| e.to_string())?;
+    if let Some(device) = devices.nth(device_index) {
+        return Ok(device);
+    }
+
+    log::warn!(
+        target: "yolo_voice::audio",
+        "Input device index {} not found; falling back to default input device",
+        device_index
+    );
+    host.default_input_device()
+        .or_else(|| host.input_devices().ok()?.next())
+        .ok_or_else(|| "Device not found".to_string())
+}
+
 pub fn start_level_monitor(
     device_index: usize,
     app_handle: AppHandle,
 ) -> Result<AudioStream, String> {
     let host = cpal::default_host();
-    let device = host
-        .input_devices()
-        .map_err(|e| e.to_string())?
-        .nth(device_index)
-        .ok_or_else(|| "Device not found".to_string())?;
+    let device = resolve_input_device(&host, device_index)?;
 
     let config = device.default_input_config().map_err(|e| e.to_string())?;
 
@@ -153,7 +165,7 @@ pub fn start_level_monitor(
                 let rms_val = (sum / data.len() as f32).sqrt();
                 rms_writer.store(rms_val.to_bits(), Ordering::Relaxed);
             },
-            |err| eprintln!("Audio stream error: {}", err),
+            |err| log::error!(target: "yolo_voice::audio", "Audio stream error: {}", err),
             None,
         ),
         cpal::SampleFormat::I16 => device.build_input_stream(
@@ -169,7 +181,7 @@ pub fn start_level_monitor(
                 let rms_val = (sum / data.len() as f32).sqrt();
                 rms_writer.store(rms_val.to_bits(), Ordering::Relaxed);
             },
-            |err| eprintln!("Audio stream error: {}", err),
+            |err| log::error!(target: "yolo_voice::audio", "Audio stream error: {}", err),
             None,
         ),
         _ => return Err(format!("Unsupported sample format: {:?}", sample_format)),

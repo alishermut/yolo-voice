@@ -6,9 +6,9 @@ use std::time::Duration;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use tauri::{AppHandle, Emitter, Manager};
 
+use super::{DictationRuntimePhase, HotkeyRuntimeState};
 use crate::features::speech::accumulator::{FinalizedSegments, SegmentAccumulator, SegmentSender};
 use crate::features::speech::vad::VadProcessor;
-use super::{DictationRuntimePhase, HotkeyRuntimeState};
 
 // ── Warm device cache ────────────────────────────────────────────────────────
 
@@ -20,6 +20,22 @@ pub struct WarmDevice {
 }
 
 pub struct WarmDeviceState(pub Mutex<Option<WarmDevice>>);
+
+fn resolve_input_device(host: &cpal::Host, device_index: usize) -> Result<cpal::Device, String> {
+    let mut devices = host.input_devices().map_err(|e| e.to_string())?;
+    if let Some(device) = devices.nth(device_index) {
+        return Ok(device);
+    }
+
+    log::warn!(
+        target: "yolo_voice::recorder",
+        "Input device index {} not found; falling back to default input device",
+        device_index
+    );
+    host.default_input_device()
+        .or_else(|| host.input_devices().ok()?.next())
+        .ok_or_else(|| "Device not found".to_string())
+}
 
 /// Resolve audio device + config, using the warm cache if available.
 fn resolve_device(
@@ -43,11 +59,7 @@ fn resolve_device(
 
     // Cold path: enumerate devices
     let host = cpal::default_host();
-    let device = host
-        .input_devices()
-        .map_err(|e| e.to_string())?
-        .nth(device_index)
-        .ok_or_else(|| "Device not found".to_string())?;
+    let device = resolve_input_device(&host, device_index)?;
     let config = device.default_input_config().map_err(|e| e.to_string())?;
     Ok((device, config))
 }
@@ -59,11 +71,7 @@ pub fn spawn_warm_device(app_handle: &tauri::AppHandle, device_index: usize) {
         .name("warm-device".into())
         .spawn(move || {
             let host = cpal::default_host();
-            let device = match host.input_devices() {
-                Ok(mut devs) => devs.nth(device_index),
-                Err(_) => None,
-            };
-            if let Some(device) = device {
+            if let Ok(device) = resolve_input_device(&host, device_index) {
                 if let Ok(config) = device.default_input_config() {
                     if let Some(state) = handle.try_state::<WarmDeviceState>() {
                         if let Ok(mut guard) = state.0.lock() {
@@ -139,7 +147,10 @@ pub fn start_recording(
     let (device, supported_config) =
         resolve_device(device_index, warm_state).or_else(|first_err| {
             // If warm device failed, retry cold
-            eprintln!("[recorder] Warm device failed ({first_err}), retrying cold");
+            log::warn!(
+                target: "yolo_voice::recorder",
+                "Warm device failed ({first_err}), retrying cold"
+            );
             resolve_device(device_index, None)
         })?;
 
@@ -235,7 +246,7 @@ pub fn start_recording(
                         let _ = tx.send(data.to_vec());
                     }
                 },
-                |err| eprintln!("Recording stream error: {}", err),
+                |err| log::error!(target: "yolo_voice::recorder", "Recording stream error: {}", err),
                 None,
             )
         }
@@ -263,7 +274,7 @@ pub fn start_recording(
                         let _ = tx.send(floats);
                     }
                 },
-                |err| eprintln!("Recording stream error: {}", err),
+                |err| log::error!(target: "yolo_voice::recorder", "Recording stream error: {}", err),
                 None,
             )
         }
@@ -446,7 +457,7 @@ fn vad_thread(
     let mut vad = match VadProcessor::new(model_path, silence_ms) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("[vad-thread] Failed to initialize VAD: {e}");
+            log::error!(target: "yolo_voice::recorder", "Failed to initialize VAD: {e}");
             return;
         }
     };

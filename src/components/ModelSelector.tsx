@@ -55,7 +55,11 @@ export function ModelSelector({
   const [distilProgressMessage, setDistilProgressMessage] = useState("");
 
   const selectedEngine =
-    config.offline_engine === "distil_whisper" ? "distil_whisper" : "parakeet";
+    config.offline_engine === "distil_whisper"
+      ? "distil_whisper"
+      : config.offline_engine === "parakeet_en"
+        ? "parakeet_en"
+        : "parakeet";
 
   const refreshParakeetGpu = async () => {
     try {
@@ -313,6 +317,12 @@ export function ModelSelector({
       }),
     },
     {
+      value: "parakeet_en",
+      label: t("transcription.offline.parakeetEnLabel", {
+        defaultValue: "Parakeet English",
+      }),
+    },
+    {
       value: "distil_whisper",
       label: t("transcription.offline.distilLabel", {
         defaultValue: "Distil-Whisper",
@@ -345,17 +355,28 @@ export function ModelSelector({
         </div>
 
         <div className="rounded-lg border border-border-default bg-bg-raised p-3 space-y-3">
-          {selectedEngine === "parakeet" ? (
+          {selectedEngine === "parakeet" || selectedEngine === "parakeet_en" ? (
             <>
               <div className="space-y-1">
                 <p className="text-sm font-medium text-text-primary">
-                  {t("transcription.offline.parakeetLabel", { defaultValue: "Parakeet (Default)" })}
+                  {selectedEngine === "parakeet_en"
+                    ? t("transcription.offline.parakeetEnLabel", {
+                        defaultValue: "Parakeet English",
+                      })
+                    : t("transcription.offline.parakeetLabel", {
+                        defaultValue: "Parakeet (Default)",
+                      })}
                 </p>
                 <p className="text-xs text-text-muted">
-                  {t("transcription.offline.parakeetDescription", {
-                    defaultValue:
-                      "Fast, broad-device offline dictation with auto language detection.",
-                  })}
+                  {selectedEngine === "parakeet_en"
+                    ? t("transcription.offline.parakeetEnDescription", {
+                        defaultValue:
+                          "English-only Parakeet with no language-switch ambiguity. Same speed and footprint as Parakeet.",
+                      })
+                    : t("transcription.offline.parakeetDescription", {
+                        defaultValue:
+                          "Fast, broad-device offline dictation with auto language detection.",
+                      })}
                 </p>
               </div>
 

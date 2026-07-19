@@ -28,11 +28,20 @@ function SpeedRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function OfflineInfoCard({ engine }: { engine: "parakeet" | "distil_whisper" }) {
+export function OfflineInfoCard({
+  engine,
+}: {
+  engine: "parakeet" | "parakeet_en" | "distil_whisper";
+}) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const isDistil = engine === "distil_whisper";
-  const langs = isDistil ? DISTIL_PRIMARY_LANGUAGES : Object.values(PARAKEET_LANGUAGES);
+  const isParakeetEn = engine === "parakeet_en";
+  const langs = isDistil
+    ? DISTIL_PRIMARY_LANGUAGES
+    : isParakeetEn
+      ? ["English"]
+      : Object.values(PARAKEET_LANGUAGES);
 
   return (
     <div>
@@ -50,7 +59,7 @@ export function OfflineInfoCard({ engine }: { engine: "parakeet" | "distil_whisp
         <div className="mt-2 p-3 bg-bg-raised border border-border-default rounded-lg space-y-3">
           <div>
             <p className="text-[10px] font-medium text-text-primary mb-1.5">
-              {isDistil
+              {isDistil || isParakeetEn
                 ? t("engine.offline.distilLanguageCount", {
                     defaultValue: "Primary language: English",
                   })
@@ -64,6 +73,14 @@ export function OfflineInfoCard({ engine }: { engine: "parakeet" | "distil_whisp
                 {t("engine.offline.distilLanguageNote", {
                   defaultValue:
                     "This exact Distil-Whisper model is tuned for English dictation. It comes from the Whisper family, but it should be presented as English-focused in the app.",
+                })}
+              </p>
+            )}
+            {isParakeetEn && (
+              <p className="text-[10px] text-text-muted mt-2">
+                {t("engine.offline.parakeetEnLanguageNote", {
+                  defaultValue:
+                    "English-only Parakeet (TDT v2). Same architecture and speed as the multilingual Parakeet, but it cannot switch languages, so English stays English.",
                 })}
               </p>
             )}
@@ -102,7 +119,12 @@ export function OfflineInfoCard({ engine }: { engine: "parakeet" | "distil_whisp
                   defaultValue:
                     "Uses whole-clip transcription with external speech compaction first. Slower than Parakeet, but usually stronger on long-form English dictation.",
                 })
-              : t("engine.offline.privacyNote")}
+              : isParakeetEn
+                ? t("engine.offline.parakeetEnNote", {
+                    defaultValue:
+                      "English-only Parakeet. Same speed and device support as the multilingual Parakeet, with no risk of the model drifting into another language mid-dictation.",
+                  })
+                : t("engine.offline.privacyNote")}
           </p>
         </div>
       )}

@@ -27,6 +27,24 @@ use crate::infra::platform::{self, AudioStream, DeviceInfo};
 pub struct AudioState(pub Mutex<Option<AudioStream>>);
 pub struct OnboardingPreviewState(pub Mutex<Option<recorder::RecordingStream>>);
 
+/// Tracks which Parakeet variant (`"parakeet"` v3 multilingual or
+/// `"parakeet_en"` v2 English-only) is currently loaded into `InferenceState`.
+/// `None` means no Parakeet session is loaded.
+pub struct LoadedParakeetEngine(pub Mutex<Option<String>>);
+
+impl LoadedParakeetEngine {
+    /// Returns the variant currently loaded, or `None` if no session is loaded.
+    pub fn get(&self) -> Option<String> {
+        self.0.lock().ok().and_then(|g| g.clone())
+    }
+
+    pub fn set(&self, engine: Option<String>) {
+        if let Ok(mut g) = self.0.lock() {
+            *g = engine;
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct OnboardingPreviewRequest {
     pub transcription_mode: String,
@@ -137,7 +155,10 @@ fn storage_overview_from_app_data(
 }
 
 fn build_storage_overview(app_handle: &tauri::AppHandle) -> Result<StorageOverview, String> {
-    let app_data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
     let config_path = settings::get_config_path(app_handle)?;
     let models_dir = crate::infra::model::get_models_root_dir(app_handle)?;
     let parakeet_models_dir = crate::infra::model::get_models_dir(app_handle)?;
@@ -168,7 +189,10 @@ fn resolve_storage_location_path(
 ) -> Result<std::path::PathBuf, String> {
     match kind {
         StorageLocationKind::AppData => {
-            let dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+            let dir = app_handle
+                .path()
+                .app_data_dir()
+                .map_err(|e| e.to_string())?;
             fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             Ok(dir)
         }
@@ -177,11 +201,15 @@ fn resolve_storage_location_path(
             .map(|path| path.to_path_buf())
             .ok_or_else(|| "Config folder not available".to_string()),
         StorageLocationKind::Models => crate::infra::model::get_models_root_dir(app_handle),
-        StorageLocationKind::Diagnostics => crate::features::diagnostics::diagnostics_dir(app_handle),
-        StorageLocationKind::History => crate::features::diagnostics::diagnostics_db_path(app_handle)?
-            .parent()
-            .map(|path| path.to_path_buf())
-            .ok_or_else(|| "History folder not available".to_string()),
+        StorageLocationKind::Diagnostics => {
+            crate::features::diagnostics::diagnostics_dir(app_handle)
+        }
+        StorageLocationKind::History => {
+            crate::features::diagnostics::diagnostics_db_path(app_handle)?
+                .parent()
+                .map(|path| path.to_path_buf())
+                .ok_or_else(|| "History folder not available".to_string())
+        }
         StorageLocationKind::SupportExports => {
             let dir = crate::features::diagnostics::support_exports_dir(app_handle)?;
             fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -233,10 +261,7 @@ pub fn get_storage_overview(app_handle: tauri::AppHandle) -> Result<StorageOverv
 }
 
 #[tauri::command]
-pub fn open_storage_location(
-    kind: String,
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
+pub fn open_storage_location(kind: String, app_handle: tauri::AppHandle) -> Result<(), String> {
     let kind = StorageLocationKind::try_from(kind.as_str())?;
     let path = resolve_storage_location_path(&app_handle, kind)?;
     app_handle
@@ -275,7 +300,13 @@ pub fn save_config_cmd(
 
     let saved_config = settings::save_config(&app_handle, &new_config)?;
     // Update cached hotkey keys so the rdev listener picks up changes immediately
-    hotkey_cache.update(&saved_config.hotkey, &saved_config.command_hotkey);
+    let voice_activated = saved_config.dictation_activation_mode == "voice_activated"
+        && settings::voice_activation_supported(&saved_config);
+    hotkey_cache.update(
+        &saved_config.hotkey,
+        &saved_config.command_hotkey,
+        voice_activated,
+    );
     if saved_config.hotkey != old_hotkey
         || saved_config.command_hotkey != old_command_hotkey
         || saved_config.dictation_activation_mode != old_activation_mode
@@ -309,12 +340,95 @@ pub fn save_config_cmd(
     let should_prepare_distil = guard.transcription_mode == "offline"
         && guard.offline_engine == "distil_whisper"
         && old_offline_engine != "distil_whisper";
+    // Auto-load the selected Parakeet variant when switching engines, if its
+    // files are on disk but a different variant (or nothing) is loaded.
+    let should_reload_parakeet = guard.transcription_mode == "offline"
+        && crate::infra::model::is_parakeet_variant(&guard.offline_engine)
+        && guard.offline_engine != old_offline_engine;
+    let new_engine = guard.offline_engine.clone();
     drop(guard);
 
     if should_prepare_distil {
         let _ = maybe_prepare_in_background(&app_handle);
     }
+    if should_reload_parakeet {
+        maybe_load_parakeet_variant(&app_handle, &new_engine);
+    }
     Ok(saved_config)
+}
+
+/// Load the requested Parakeet variant in the background if its files are on
+/// disk and it is not already loaded. Emits `model-status` transitions so the
+/// UI reflects loading → ready/error, mirroring distil_whisper auto-prepare.
+fn maybe_load_parakeet_variant(app_handle: &tauri::AppHandle, engine: &str) {
+    // Already loading/loaded this variant — nothing to do.
+    if app_handle
+        .state::<LoadedParakeetEngine>()
+        .get()
+        .as_deref()
+        == Some(engine)
+    {
+        return;
+    }
+
+    let models_dir = match crate::infra::model::get_models_dir_for(app_handle, engine) {
+        Ok(dir) => dir,
+        Err(e) => {
+            eprintln!("[parakeet] Failed to resolve models dir for {engine}: {e}");
+            return;
+        }
+    };
+    if !crate::infra::model::is_model_downloaded(&models_dir) {
+        // Not on disk yet — UI will show not-downloaded; nothing to auto-load.
+        return;
+    }
+
+    let _ = app_handle.emit("model-status", "loading");
+    let handle = app_handle.clone();
+    let engine = engine.to_string();
+    std::thread::spawn(move || {
+        match speech::inference::InferenceSession::new(&models_dir) {
+            Ok(session) => {
+                let gpu = session.is_gpu();
+                let state = handle.state::<InferenceState>();
+                match state.0.lock() {
+                    Ok(mut g) => {
+                        *g = Some(session);
+                        handle
+                            .state::<LoadedParakeetEngine>()
+                            .set(Some(engine.clone()));
+                    }
+                    Err(e) => {
+                        eprintln!("[parakeet] InferenceState mutex poisoned: {e}");
+                        let _ = handle.emit("model-status", "error");
+                        return;
+                    }
+                }
+                maybe_log_support_event(
+                    &handle,
+                    "parakeet",
+                    "variant_switch_load_success",
+                    "Loaded selected Parakeet variant after engine switch",
+                    serde_json::json!({ "engine": engine, "gpu": gpu }),
+                );
+                let _ = handle.emit("model-status", "ready");
+                if !gpu {
+                    let _ = handle.emit("gpu-fallback", "CPU (GPU not available)");
+                }
+            }
+            Err(e) => {
+                eprintln!("[parakeet] Failed to load variant {engine}: {e}");
+                maybe_log_support_event(
+                    &handle,
+                    "parakeet",
+                    "variant_switch_load_error",
+                    "Failed to load selected Parakeet variant after engine switch",
+                    serde_json::json!({ "engine": engine, "error": e }),
+                );
+                let _ = handle.emit("model-status", "error");
+            }
+        }
+    });
 }
 
 // ---- Text Actions ----
@@ -461,13 +575,25 @@ pub fn finish_onboarding_preview(
         let wav_bytes = recorder::stop_and_get_wav_bytes(recording)?;
         let transcript = {
             let mut guard = distil_state.0.lock().map_err(|e| e.to_string())?;
-            guard.transcribe_local_wav_bytes(&app_handle, &wav_bytes)?.text
+            guard
+                .transcribe_local_wav_bytes(&app_handle, &wav_bytes)?
+                .text
         };
         (transcript, "distil_whisper".to_string())
     } else {
+        // Either Parakeet variant (v3 multilingual or v2 English-only) shares
+        // the same inference path. The effective provider reflects whichever
+        // variant the request asked for (and which should already be loaded
+        // from startup; the loaded variant is tracked separately).
         let (samples, sample_rate, channels) = recorder::stop_and_get_raw_samples(recording)?;
-        let transcript = speech::transcribe_audio(&inference_state, &samples, sample_rate, channels)?;
-        (transcript, "parakeet".to_string())
+        let transcript =
+            speech::transcribe_audio(&inference_state, &samples, sample_rate, channels)?;
+        let provider = if offline_engine == "parakeet_en" {
+            "parakeet_en"
+        } else {
+            "parakeet"
+        };
+        (transcript, provider.to_string())
     };
 
     Ok(build_onboarding_preview_result(
@@ -493,6 +619,8 @@ pub fn download_model_cmd(app_handle: tauri::AppHandle) -> Result<(), String> {
 
     DOWNLOAD_CANCELLED.store(false, Ordering::SeqCst);
 
+    // Resolve which Parakeet variant to download from the persisted config.
+    let engine = crate::features::settings::load_config(&app_handle).offline_engine;
     let handle = app_handle.clone();
     std::thread::spawn(move || {
         maybe_log_support_event(
@@ -500,11 +628,11 @@ pub fn download_model_cmd(app_handle: tauri::AppHandle) -> Result<(), String> {
             "parakeet",
             "download_requested",
             "Downloading Parakeet model",
-            serde_json::json!({}),
+            serde_json::json!({ "engine": engine }),
         );
         let result = (|| -> Result<(), String> {
-            let models_dir = crate::infra::model::get_models_dir(&handle)?;
-            crate::infra::model::download_model(&models_dir, &handle, &DOWNLOAD_CANCELLED)?;
+            let models_dir = crate::infra::model::get_models_dir_for(&handle, &engine)?;
+            crate::infra::model::download_model(&engine, &models_dir, &handle, &DOWNLOAD_CANCELLED)?;
 
             // Signal the UI that we're now initializing (loading ONNX into memory)
             let _ = handle.emit(
@@ -519,6 +647,9 @@ pub fn download_model_cmd(app_handle: tauri::AppHandle) -> Result<(), String> {
             let gpu = session.is_gpu();
             let state = handle.state::<InferenceState>();
             *state.0.lock().map_err(|e| e.to_string())? = Some(session);
+            handle
+                .state::<LoadedParakeetEngine>()
+                .set(Some(engine.clone()));
             maybe_log_support_event(
                 &handle,
                 "parakeet",
@@ -526,6 +657,7 @@ pub fn download_model_cmd(app_handle: tauri::AppHandle) -> Result<(), String> {
                 "Downloaded and initialized Parakeet model",
                 serde_json::json!({
                     "gpu": gpu,
+                    "engine": engine,
                 }),
             );
 
@@ -579,11 +711,18 @@ pub fn delete_model_cmd(
         return Err("Cannot delete model while download is in progress".to_string());
     }
 
-    // Unload the inference session (frees GPU/CPU memory)
-    *state.0.lock().map_err(|e| e.to_string())? = None;
+    let engine = crate::features::settings::load_config(&app_handle).offline_engine;
 
-    // Delete model files from disk
-    let models_dir = crate::infra::model::get_models_dir(&app_handle)?;
+    // Unload the inference session only if the loaded variant matches the one
+    // being deleted. Otherwise leave the currently-loaded variant in memory.
+    let loaded = app_handle.state::<LoadedParakeetEngine>().get();
+    if loaded.as_deref() == Some(engine.as_str()) {
+        *state.0.lock().map_err(|e| e.to_string())? = None;
+        app_handle.state::<LoadedParakeetEngine>().set(None);
+    }
+
+    // Delete the configured variant's model files from disk
+    let models_dir = crate::infra::model::get_models_dir_for(&app_handle, &engine)?;
     crate::infra::model::delete_model_files(&models_dir)?;
 
     let _ = app_handle.emit("model-status", "not-downloaded");
@@ -607,7 +746,8 @@ pub fn reload_model_cmd(
     app_handle: tauri::AppHandle,
     state: State<'_, InferenceState>,
 ) -> Result<(), String> {
-    let models_dir = crate::infra::model::get_models_dir(&app_handle)?;
+    let engine = crate::features::settings::load_config(&app_handle).offline_engine;
+    let models_dir = crate::infra::model::get_models_dir_for(&app_handle, &engine)?;
     if !crate::infra::model::is_model_downloaded(&models_dir) {
         return Err("Model not downloaded".to_string());
     }
@@ -626,6 +766,7 @@ pub fn reload_model_cmd(
             "Reloading Parakeet model",
             serde_json::json!({
                 "use_gpu": use_gpu,
+                "engine": engine,
             }),
         );
         match speech::inference::InferenceSession::with_gpu(&models_dir, use_gpu) {
@@ -633,6 +774,9 @@ pub fn reload_model_cmd(
                 let gpu = session.is_gpu();
                 let state = handle.state::<InferenceState>();
                 *state.0.lock().unwrap() = Some(session);
+                handle
+                    .state::<LoadedParakeetEngine>()
+                    .set(Some(engine.clone()));
                 maybe_log_support_event(
                     &handle,
                     "parakeet",
@@ -640,6 +784,7 @@ pub fn reload_model_cmd(
                     "Reloaded Parakeet model",
                     serde_json::json!({
                         "gpu": gpu,
+                        "engine": engine,
                     }),
                 );
                 let _ = handle.emit("model-status", "ready");
@@ -656,6 +801,7 @@ pub fn reload_model_cmd(
                     "Failed to reload Parakeet model",
                     serde_json::json!({
                         "use_gpu": use_gpu,
+                        "engine": engine,
                         "error": e,
                     }),
                 );
@@ -691,19 +837,29 @@ pub fn get_model_status(
     state: State<'_, InferenceState>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
+    let engine = crate::features::settings::load_config(&app_handle).offline_engine;
+    let loaded_engine = app_handle.state::<LoadedParakeetEngine>().get();
+
     let guard = state.0.lock().map_err(|e| e.to_string())?;
-    match guard.as_ref() {
-        Some(_) => Ok("ready".to_string()),
-        None => match crate::infra::model::get_models_dir(&app_handle) {
-            Ok(models_dir) => {
-                if crate::infra::model::is_model_downloaded(&models_dir) {
-                    Ok("error".to_string())
-                } else {
-                    Ok("not-downloaded".to_string())
-                }
+    let session_loaded = guard.is_some();
+    drop(guard);
+
+    // Only report "ready" if a session is loaded AND it is the selected variant.
+    if session_loaded && loaded_engine.as_deref() == Some(engine.as_str()) {
+        return Ok("ready".to_string());
+    }
+
+    // Otherwise report on the selected variant's files on disk.
+    match crate::infra::model::get_models_dir_for(&app_handle, &engine) {
+        Ok(models_dir) => {
+            if crate::infra::model::is_model_downloaded(&models_dir) {
+                // Files exist but the wrong/no variant is loaded.
+                Ok("error".to_string())
+            } else {
+                Ok("not-downloaded".to_string())
             }
-            Err(_) => Ok("not-downloaded".to_string()),
-        },
+        }
+        Err(_) => Ok("not-downloaded".to_string()),
     }
 }
 
@@ -713,7 +869,10 @@ fn build_onboarding_preview_result(
 ) -> Result<OnboardingPreviewResult, String> {
     let transcript = raw_transcript.trim().to_string();
     if transcript.is_empty() {
-        return Err("No speech detected. Try speaking a little longer and closer to the microphone.".to_string());
+        return Err(
+            "No speech detected. Try speaking a little longer and closer to the microphone."
+                .to_string(),
+        );
     }
 
     Ok(OnboardingPreviewResult {
@@ -871,21 +1030,42 @@ pub fn get_profiles(app_handle: tauri::AppHandle) -> Result<Vec<speech::Profile>
 pub fn save_profile_cmd(
     profile: speech::Profile,
     app_handle: tauri::AppHandle,
+    hotkey_cache: State<'_, HotkeyCache>,
 ) -> Result<(), String> {
     let profiles_dir = speech::get_profiles_dir(&app_handle)?;
-    speech::save_profile(&profiles_dir, &profile)
+    speech::save_profile(&profiles_dir, &profile)?;
+    hotkey_cache.update_style_shortcuts(crate::features::capture::hotkey::load_style_shortcuts(
+        &app_handle,
+    ));
+    Ok(())
 }
 
 #[tauri::command]
-pub fn delete_profile_cmd(id: String, app_handle: tauri::AppHandle) -> Result<(), String> {
+pub fn delete_profile_cmd(
+    id: String,
+    app_handle: tauri::AppHandle,
+    hotkey_cache: State<'_, HotkeyCache>,
+) -> Result<(), String> {
     let profiles_dir = speech::get_profiles_dir(&app_handle)?;
-    speech::delete_profile(&profiles_dir, &id)
+    speech::delete_profile(&profiles_dir, &id)?;
+    hotkey_cache.update_style_shortcuts(crate::features::capture::hotkey::load_style_shortcuts(
+        &app_handle,
+    ));
+    Ok(())
 }
 
 #[tauri::command]
-pub fn reset_profile_to_default(id: String, app_handle: tauri::AppHandle) -> Result<(), String> {
+pub fn reset_profile_to_default(
+    id: String,
+    app_handle: tauri::AppHandle,
+    hotkey_cache: State<'_, HotkeyCache>,
+) -> Result<(), String> {
     let profiles_dir = speech::get_profiles_dir(&app_handle)?;
-    speech::reset_profile_to_default(&profiles_dir, &id, &app_handle)
+    speech::reset_profile_to_default(&profiles_dir, &id, &app_handle)?;
+    hotkey_cache.update_style_shortcuts(crate::features::capture::hotkey::load_style_shortcuts(
+        &app_handle,
+    ));
+    Ok(())
 }
 
 #[tauri::command]
@@ -1262,9 +1442,13 @@ mod storage_location_tests {
         assert!(overview.config_path.ends_with("config.json"));
         assert!(overview.models_dir.ends_with("models"));
         assert!(overview.parakeet_models_dir.ends_with("parakeet-tdt-v3"));
-        assert!(overview.distil_whisper_models_dir.ends_with("distil-whisper"));
+        assert!(overview
+            .distil_whisper_models_dir
+            .ends_with("distil-whisper"));
         assert!(overview.diagnostics_dir.ends_with("diagnostics"));
-        assert!(overview.transcript_history_db_path.ends_with("transcript_samples.sqlite3"));
+        assert!(overview
+            .transcript_history_db_path
+            .ends_with("transcript_samples.sqlite3"));
         assert!(normalized_support_exports.ends_with("diagnostics/exports"));
         assert!(overview.profiles_dir.ends_with("profiles"));
         assert!(overview.text_actions_dir.ends_with("text_actions"));

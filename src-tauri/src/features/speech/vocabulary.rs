@@ -314,11 +314,7 @@ pub fn save_industry_pack(app_handle: &AppHandle, pack: &IndustryPack) -> Result
     std::fs::create_dir_all(&user_packs_dir).map_err(|e| e.to_string())?;
     let path = user_packs_dir.join(format!("{}.json", pack.id));
     let json = serde_json::to_string_pretty(pack).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
-    // Ensure the write is flushed to disk (prevents data loss on crash/close)
-    if let Ok(file) = std::fs::File::open(&path) {
-        let _ = file.sync_all();
-    }
+    crate::infra::fs_util::write_json_atomic(&path, &json)?;
     Ok(())
 }
 
@@ -407,22 +403,14 @@ pub fn save_general_vocabulary(app_handle: &AppHandle, pack: &IndustryPack) -> R
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let json = serde_json::to_string_pretty(pack).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
-    // Ensure the write is flushed to disk (prevents data loss on crash/close)
-    if let Ok(file) = std::fs::File::open(&path) {
-        let _ = file.sync_all();
-    }
+    crate::infra::fs_util::write_json_atomic(&path, &json)?;
     Ok(())
 }
 
 fn save_user_dictionary_to_path(path: &Path, dict: &UserDictionary) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-
     let sanitized = sanitize_user_dictionary(dict.clone());
     let json = serde_json::to_string_pretty(&sanitized).map_err(|e| e.to_string())?;
-    std::fs::write(path, json).map_err(|e| e.to_string())?;
+    crate::infra::fs_util::write_json_atomic(path, &json)?;
     Ok(())
 }
 
