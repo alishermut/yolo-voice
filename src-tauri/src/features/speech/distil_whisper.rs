@@ -4,9 +4,12 @@ use serde_json::{json, Value};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
 use tauri::Emitter;
 use tauri::{AppHandle, Manager};
 
@@ -26,6 +29,15 @@ const DISTIL_GPU_TORCH_SPEC: &str = "torch==2.6.0";
 const DISTIL_GPU_INDEX_URL: &str = "https://download.pytorch.org/whl/cu124";
 const DISTIL_GPU_EXPECTED_CUDA_BUILD: &str = "12.4";
 static DISTIL_PREPARE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Default RPC timeout for ping / status-style commands.
+const RPC_TIMEOUT_DEFAULT: Duration = Duration::from_secs(60);
+/// Model load can pull CUDA / weights into memory.
+const RPC_TIMEOUT_LOAD: Duration = Duration::from_secs(300);
+/// Snapshot download may take several minutes on a slow link.
+const RPC_TIMEOUT_DOWNLOAD: Duration = Duration::from_secs(600);
+/// Transcription of a single utterance.
+const RPC_TIMEOUT_TRANSCRIBE: Duration = Duration::from_secs(180);
 
 pub struct DistilWhisperState(pub Mutex<DistilWhisperManager>);
 
@@ -73,7 +85,8 @@ impl DistilWhisperDevicePreference {
 struct DistilWhisperProcess {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    /// Lines from sidecar stdout, produced by a dedicated reader thread.
+    response_rx: Receiver<Result<String, String>>,
     loaded: bool,
     device: String,
     gpu_available: bool,
@@ -141,12 +154,15 @@ impl DistilWhisperManager {
                 "target_dir": model_dir.display().to_string(),
             }),
         );
-        let proc = self.ensure_process(app)?;
-        let response = proc.send_request(json!({
-            "cmd": "download_model",
-            "model_id": DISTIL_WHISPER_REPO,
-            "target_dir": model_dir.display().to_string(),
-        }))?;
+        let response = self.rpc(
+            app,
+            json!({
+                "cmd": "download_model",
+                "model_id": DISTIL_WHISPER_REPO,
+                "target_dir": model_dir.display().to_string(),
+            }),
+            RPC_TIMEOUT_DOWNLOAD,
+        )?;
         ensure_ok_response("download_model", &response)?;
         maybe_log_support_event(
             app,
@@ -180,7 +196,10 @@ impl DistilWhisperManager {
         app: &AppHandle,
         wav_bytes: &[u8],
     ) -> Result<DistilWhisperResult, String> {
-        let proc = self.ensure_model_loaded(app)?;
+        let device = {
+            let proc = self.ensure_model_loaded(app)?;
+            proc.device.clone()
+        };
         maybe_log_support_event(
             app,
             "distil_whisper",
@@ -188,13 +207,17 @@ impl DistilWhisperManager {
             "Sending audio to Distil-Whisper sidecar",
             json!({
                 "wav_bytes": wav_bytes.len(),
-                "device": proc.device,
+                "device": device,
             }),
         );
-        let response = proc.send_request(json!({
-            "cmd": "transcribe_audio",
-            "audio_data": base64::engine::general_purpose::STANDARD.encode(wav_bytes),
-        }))?;
+        let response = self.rpc(
+            app,
+            json!({
+                "cmd": "transcribe_audio",
+                "audio_data": base64::engine::general_purpose::STANDARD.encode(wav_bytes),
+            }),
+            RPC_TIMEOUT_TRANSCRIBE,
+        )?;
         ensure_ok_response("transcribe_audio", &response)?;
         let text = response
             .get("text")
@@ -208,7 +231,7 @@ impl DistilWhisperManager {
             "Distil-Whisper sidecar returned a transcript",
             json!({
                 "wav_bytes": wav_bytes.len(),
-                "device": proc.device,
+                "device": device,
                 "text_len": text.len(),
             }),
         );
@@ -217,12 +240,47 @@ impl DistilWhisperManager {
     }
 
     pub fn shutdown(&mut self) -> Result<(), String> {
-        if let Some(mut proc) = self.process.take() {
-            let _ = proc.send_request(json!({ "cmd": "shutdown" }));
-            let _ = proc.child.kill();
-            let _ = proc.child.wait();
-        }
+        // Never block waiting for a sidecar reply during shutdown — a wedged
+        // Python process would deadlock Drop / app exit.
+        self.force_kill_process(true);
         Ok(())
+    }
+
+    fn force_kill_process(&mut self, send_shutdown_hint: bool) {
+        let Some(mut proc) = self.process.take() else {
+            return;
+        };
+        if send_shutdown_hint {
+            let _ = proc.stdin.write_all(b"{\"cmd\":\"shutdown\"}\n");
+            let _ = proc.stdin.flush();
+        }
+        let _ = proc.child.kill();
+        let _ = proc.child.wait();
+    }
+
+    /// Send an RPC request with a timeout. On timeout / broken pipe, kill the
+    /// child so the DistilWhisperState mutex is never held waiting forever.
+    fn rpc(&mut self, app: &AppHandle, payload: Value, timeout: Duration) -> Result<Value, String> {
+        let cmd = payload
+            .get("cmd")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        let result = {
+            let proc = self.ensure_process(app)?;
+            proc.send_request_timeout(payload, timeout)
+        };
+        if let Err(ref err) = result {
+            if is_fatal_sidecar_error(err) {
+                log::error!(
+                    target: "yolo_voice::distil_whisper",
+                    "Sidecar RPC '{cmd}' failed fatally ({err}); killing process"
+                );
+                self.last_error = Some(err.clone());
+                self.force_kill_process(false);
+            }
+        }
+        result
     }
 
     pub fn set_preferred_device(&mut self, use_gpu: bool) {
@@ -279,14 +337,15 @@ impl DistilWhisperManager {
                     "device_preference": device_preference.clone(),
                 }),
             );
-            let response = {
-                let proc = self.ensure_process(app)?;
-                proc.send_request(json!({
+            let response = self.rpc(
+                app,
+                json!({
                     "cmd": "load_model",
                     "model_source": model_dir.display().to_string(),
                     "device_preference": device_preference,
-                }))?
-            };
+                }),
+                RPC_TIMEOUT_LOAD,
+            )?;
             if let Err(err) = ensure_ok_response("load_model", &response) {
                 let message = format!(
                     "Distil-Whisper failed to load from the pinned local snapshot: {}",
@@ -296,7 +355,16 @@ impl DistilWhisperManager {
                 return Err(message);
             }
 
-            let proc = self.ensure_process(app)?;
+            // Mark loaded only on the process that actually answered load_model.
+            // Calling ensure_process() here can respawn a fresh child and falsely
+            // flag it as loaded (B2).
+            self.refresh_process_state();
+            let Some(proc) = self.process.as_mut() else {
+                let message =
+                    "Distil-Whisper sidecar exited immediately after load_model".to_string();
+                self.last_error = Some(message.clone());
+                return Err(message);
+            };
             proc.loaded = true;
             proc.device = response
                 .get("device")
@@ -416,12 +484,21 @@ pub fn maybe_prepare_in_background(app: &AppHandle) -> Result<(), String> {
             Ok(mut guard) => match guard.prepare_model(&handle) {
                 Ok(status) => status.status,
                 Err(err) => {
+                    log::error!(
+                        target: "yolo_voice::distil_whisper",
+                        "background prepare failed: {}",
+                        err
+                    );
                     guard.last_error = Some(err);
                     "error".to_string()
                 }
             },
             Err(err) => {
-                eprintln!("[distil-whisper] prepare lock error: {}", err);
+                log::error!(
+                    target: "yolo_voice::distil_whisper",
+                    "prepare lock error: {}",
+                    err
+                );
                 "error".to_string()
             }
         };
@@ -477,17 +554,57 @@ impl DistilWhisperProcess {
             .take()
             .ok_or_else(|| "Failed to open Distil-Whisper sidecar stdout".to_string())?;
 
+        let (response_tx, response_rx) = mpsc::channel::<Result<String, String>>();
+        thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) => {
+                        let _ = response_tx.send(Err(
+                            "Distil-Whisper sidecar closed unexpectedly".to_string(),
+                        ));
+                        break;
+                    }
+                    Ok(_) => {
+                        if response_tx.send(Ok(line)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        let _ = response_tx.send(Err(format!(
+                            "Failed to read Distil-Whisper sidecar response: {err}"
+                        )));
+                        break;
+                    }
+                }
+            }
+        });
+
         let mut proc = Self {
             child,
             stdin,
-            stdout: BufReader::new(stdout),
+            response_rx,
             loaded: false,
             device: "unknown".to_string(),
             gpu_available: false,
         };
 
-        let response = proc.send_request(json!({ "cmd": "ping" }))?;
-        ensure_ok_response("ping", &response)?;
+        let response = match proc
+            .send_request_timeout(json!({ "cmd": "ping" }), RPC_TIMEOUT_DEFAULT)
+        {
+            Ok(response) => response,
+            Err(err) => {
+                let _ = proc.child.kill();
+                let _ = proc.child.wait();
+                return Err(err);
+            }
+        };
+        if let Err(err) = ensure_ok_response("ping", &response) {
+            let _ = proc.child.kill();
+            let _ = proc.child.wait();
+            return Err(err);
+        }
         proc.device = response
             .get("device")
             .and_then(Value::as_str)
@@ -497,15 +614,23 @@ impl DistilWhisperProcess {
             .get("gpu_available")
             .and_then(Value::as_bool)
             .unwrap_or_else(|| proc.device.to_lowercase().starts_with("cuda"));
-        eprintln!(
-            "[distil-whisper] Sidecar ping succeeded via {} with device={} gpu_available={}",
+        log::info!(
+            target: "yolo_voice::distil_whisper",
+            "Sidecar ping succeeded via {} with device={} gpu_available={}",
             launcher.display, proc.device, proc.gpu_available
         );
 
         Ok(proc)
     }
 
-    fn send_request(&mut self, payload: Value) -> Result<Value, String> {
+    fn send_request_timeout(
+        &mut self,
+        payload: Value,
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        // Drop any stale lines left over from a previous timed-out request.
+        while self.response_rx.try_recv().is_ok() {}
+
         let line = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
         self.stdin
             .write_all(line.as_bytes())
@@ -513,18 +638,28 @@ impl DistilWhisperProcess {
             .and_then(|_| self.stdin.flush())
             .map_err(|e| format!("Failed to send request to Distil-Whisper sidecar: {}", e))?;
 
-        let mut response = String::new();
-        let bytes_read = self
-            .stdout
-            .read_line(&mut response)
-            .map_err(|e| format!("Failed to read Distil-Whisper sidecar response: {}", e))?;
-        if bytes_read == 0 {
-            return Err("Distil-Whisper sidecar closed unexpectedly".to_string());
+        match self.response_rx.recv_timeout(timeout) {
+            Ok(Ok(response)) => serde_json::from_str(response.trim())
+                .map_err(|e| format!("Invalid Distil-Whisper sidecar response: {}", e)),
+            Ok(Err(err)) => Err(err),
+            Err(RecvTimeoutError::Timeout) => Err(format!(
+                "Distil-Whisper sidecar request timed out after {}s",
+                timeout.as_secs()
+            )),
+            Err(RecvTimeoutError::Disconnected) => {
+                Err("Distil-Whisper sidecar reader disconnected".to_string())
+            }
         }
-
-        serde_json::from_str(response.trim())
-            .map_err(|e| format!("Invalid Distil-Whisper sidecar response: {}", e))
     }
+}
+
+fn is_fatal_sidecar_error(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("timed out")
+        || lower.contains("closed unexpectedly")
+        || lower.contains("reader disconnected")
+        || lower.contains("failed to send request")
+        || lower.contains("failed to read")
 }
 
 fn spawn_stderr_forwarder(stderr: ChildStderr) {
@@ -533,11 +668,15 @@ fn spawn_stderr_forwarder(stderr: ChildStderr) {
         for line in reader.lines() {
             match line {
                 Ok(line) if !line.trim().is_empty() => {
-                    eprintln!("[distil-whisper] {}", line);
+                    log::info!(target: "yolo_voice::distil_whisper::sidecar", "{}", line);
                 }
                 Ok(_) => {}
                 Err(err) => {
-                    eprintln!("[distil-whisper] Failed to read sidecar stderr: {}", err);
+                    log::error!(
+                        target: "yolo_voice::distil_whisper",
+                        "Failed to read sidecar stderr: {}",
+                        err
+                    );
                     break;
                 }
             }
@@ -573,8 +712,9 @@ fn resolve_launcher(
 ) -> Result<Launcher, String> {
     let script_path = resolve_sidecar_script(app)?;
     let python = resolve_python_command(app, preference)?;
-    eprintln!(
-        "[distil-whisper] Resolved launcher python={} script={}",
+    log::info!(
+        target: "yolo_voice::distil_whisper",
+        "Resolved launcher python={} script={}",
         python.2,
         script_path.display()
     );
@@ -587,14 +727,34 @@ fn resolve_launcher(
 }
 
 fn resolve_sidecar_script(app: &AppHandle) -> Result<PathBuf, String> {
-    for candidate in candidate_roots(app).into_iter().flat_map(|root| {
+    let roots = candidate_roots(app);
+    log::info!(
+        target: "yolo_voice::distil_whisper",
+        "sidecar script candidate_roots={}",
+        roots.iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(" | ")
+    );
+    for candidate in roots.into_iter().flat_map(|root| {
         [
             root.join("sidecar").join("distil_whisper.py"),
             root.join("distil_whisper.py"),
             root.join("_up_").join("sidecar").join("distil_whisper.py"),
         ]
     }) {
+        log::debug!(
+            target: "yolo_voice::distil_whisper",
+            "checking sidecar script candidate={} exists={}",
+            candidate.display(),
+            candidate.is_file()
+        );
         if candidate.is_file() {
+            log::info!(
+                target: "yolo_voice::distil_whisper",
+                "using sidecar script {}",
+                candidate.display()
+            );
             return Ok(candidate);
         }
     }
@@ -610,8 +770,9 @@ fn resolve_python_command(
     preference: DistilWhisperDevicePreference,
 ) -> Result<(String, Vec<String>, String), String> {
     if let Ok(path) = std::env::var("YOLO_VOICE_PYTHON") {
-        eprintln!(
-            "[distil-whisper] Using YOLO_VOICE_PYTHON override for sidecar runtime: {}",
+        log::info!(
+            target: "yolo_voice::distil_whisper",
+            "Using YOLO_VOICE_PYTHON override for sidecar runtime: {}",
             path
         );
         return Ok((path.clone(), Vec::new(), path));
@@ -620,8 +781,9 @@ fn resolve_python_command(
     if matches!(preference, DistilWhisperDevicePreference::Gpu) {
         let gpu_python = ensure_gpu_runtime(app)?;
         let display = gpu_python.display().to_string();
-        eprintln!(
-            "[distil-whisper] Using cached GPU runtime for sidecar: {}",
+        log::info!(
+            target: "yolo_voice::distil_whisper",
+            "Using cached GPU runtime for sidecar: {}",
             display
         );
         return Ok((display.clone(), Vec::new(), display));
@@ -629,8 +791,9 @@ fn resolve_python_command(
 
     if let Some(base_python) = resolve_bundled_python_path(app) {
         let display = base_python.display().to_string();
-        eprintln!(
-            "[distil-whisper] Using bundled sidecar Python runtime: {}",
+        log::info!(
+            target: "yolo_voice::distil_whisper",
+            "Using bundled sidecar Python runtime: {}",
             display
         );
         return Ok((display.clone(), Vec::new(), display));
@@ -661,8 +824,9 @@ fn resolve_python_command(
         }
     }
 
-    eprintln!(
-        "[distil-whisper] Bundled Python runtime not found; falling back to system command: {}",
+    log::warn!(
+        target: "yolo_voice::distil_whisper",
+        "Bundled Python runtime not found; falling back to system command: {}",
         DISTIL_WHISPER_SYSTEM_PYTHON
     );
     Ok((
@@ -714,8 +878,9 @@ fn distil_gpu_python_path(app: &AppHandle) -> Result<PathBuf, String> {
 fn ensure_gpu_runtime(app: &AppHandle) -> Result<PathBuf, String> {
     let python_path = distil_gpu_python_path(app)?;
     if gpu_runtime_is_valid(&python_path) {
-        eprintln!(
-            "[distil-whisper] Reusing cached GPU runtime {} at {}",
+        log::info!(
+            target: "yolo_voice::distil_whisper",
+            "Reusing cached GPU runtime {} at {}",
             DISTIL_GPU_RUNTIME_VERSION,
             python_path.display()
         );
@@ -777,8 +942,9 @@ print(json.dumps({\n\
             .and_then(Value::as_str)
             .is_some_and(|cuda| cuda == DISTIL_GPU_EXPECTED_CUDA_BUILD),
         Err(err) => {
-            eprintln!(
-                "[distil-whisper] Cached GPU runtime probe failed for {}: {}",
+            log::warn!(
+                target: "yolo_voice::distil_whisper",
+                "Cached GPU runtime probe failed for {}: {}",
                 python_path.display(),
                 err
             );
@@ -860,8 +1026,9 @@ print(json.dumps({\n\
     'device_count': int(torch.cuda.device_count()),\n\
 }))",
     )?;
-    eprintln!(
-        "[distil-whisper] Provisioned GPU runtime torch={} cuda_build={:?} cuda_available={:?} device_count={:?}",
+    log::info!(
+        target: "yolo_voice::distil_whisper",
+        "Provisioned GPU runtime torch={} cuda_build={:?} cuda_available={:?} device_count={:?}",
         payload
             .get("torch_version")
             .and_then(Value::as_str)
@@ -1011,10 +1178,17 @@ where
         let reader = BufReader::new(reader);
         for line in reader.lines() {
             match line {
-                Ok(line) if !line.trim().is_empty() => eprintln!("{} {}", label, line),
+                Ok(line) if !line.trim().is_empty() => {
+                    log::info!(target: "yolo_voice::distil_whisper::command", "{} {}", label, line)
+                }
                 Ok(_) => {}
                 Err(err) => {
-                    eprintln!("{} Failed to read process output: {}", label, err);
+                    log::error!(
+                        target: "yolo_voice::distil_whisper::command",
+                        "{} Failed to read process output: {}",
+                        label,
+                        err
+                    );
                     break;
                 }
             }
