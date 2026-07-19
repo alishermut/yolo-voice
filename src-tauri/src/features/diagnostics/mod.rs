@@ -831,6 +831,9 @@ impl TranscriptDiagnosticsStore {
             "diagnostics/parakeet_events.jsonl",
             options,
         )?;
+        if let Ok(log_dir) = app_handle.path().app_log_dir() {
+            add_log_dir_if_exists(&mut zip, &log_dir, options)?;
+        }
 
         zip.finish().map_err(|e| e.to_string())?;
 
@@ -936,6 +939,31 @@ fn add_file_if_exists(
     zip.start_file(target_name, options)
         .map_err(|e| e.to_string())?;
     zip.write_all(&bytes).map_err(|e| e.to_string())
+}
+
+fn add_log_dir_if_exists(
+    zip: &mut zip::ZipWriter<fs::File>,
+    log_dir: &Path,
+    options: SimpleFileOptions,
+) -> Result<(), String> {
+    if !log_dir.is_dir() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(log_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let target_name = format!("logs/{}", file_name.replace('\\', "_").replace('/', "_"));
+        add_file_if_exists(zip, &path, &target_name, options)?;
+    }
+
+    Ok(())
 }
 
 pub fn current_timestamp_ms() -> i64 {
@@ -1163,7 +1191,9 @@ mod tests {
         store.log_sample(sample_with_id("session-export", "utt-2", 20));
         store.flush_for_tests();
 
-        let export = store.export_transcript_history_to_dir(&exports_dir).unwrap();
+        let export = store
+            .export_transcript_history_to_dir(&exports_dir)
+            .unwrap();
         let contents = fs::read_to_string(&export.file_path).unwrap();
         let rows: Vec<TranscriptHistoryEntry> = serde_json::from_str(&contents).unwrap();
 
@@ -1172,7 +1202,11 @@ mod tests {
         assert_eq!(rows[0].created_at, 20);
         assert_eq!(rows[0].pipeline_mode, "dictation");
         assert!(rows[0].insert_success);
-        assert!(rows[0].final_text.as_deref().unwrap_or_default().contains("Hello world."));
+        assert!(rows[0]
+            .final_text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Hello world."));
 
         let _ = fs::remove_file(db_path);
         let _ = fs::remove_dir_all(exports_dir);
@@ -1184,7 +1218,9 @@ mod tests {
         let store = TranscriptDiagnosticsStore::from_db_path(db_path.clone()).unwrap();
         let exports_dir = temp_dir("diagnostics-history-empty-exports");
 
-        let export = store.export_transcript_history_to_dir(&exports_dir).unwrap();
+        let export = store
+            .export_transcript_history_to_dir(&exports_dir)
+            .unwrap();
         let contents = fs::read_to_string(&export.file_path).unwrap();
         let rows: Vec<TranscriptHistoryEntry> = serde_json::from_str(&contents).unwrap();
 
